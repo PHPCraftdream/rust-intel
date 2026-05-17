@@ -10,7 +10,7 @@ The core idea: Rust's compiler catches a large class of LLM mistakes (and a know
 
 ## Status
 
-**v0.1 — initial release.** 26 categories, ~730 lines. Living document — categories are added as new empirical data arrives. See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.1.1 — patch release (2026-05-17).** 26 categories. Same-day technical patches over v0.1.0 across two review rounds: §B15 AFIT/RPITIT terminology corrected (and then softened on a second pass), §B15 Pin paragraph reoriented from a strawman to the real LLM failure modes, §B15 `dyn`-compatibility row hedged temporally, §B11 `yield_now`/`spawn_blocking` separated, §C2 anyhow scope narrowed to published library crates, §B5 sample size disclosed, §B14 sizing formula instead of folk numbers and `Vec::push` clarified, §B12 `rand` 0.8/0.9 API gap noted, §B1 split into §B1a (laundering) + §B1b (leaking). Install scripts now clean-replace prior versions. Living document — categories will be added as new empirical data arrives. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Layout
 

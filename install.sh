@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the rust-intel skill and three slash commands into ~/.claude/.
-# Run from the repo root.
+# Run from the repo root. Cleanly replaces any previous installation.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ for arg in "$@"; do
             cat <<EOF
 Usage: ./install.sh [--symlink]
 
-Installs:
+Cleanly installs (any previous rust-intel skill directory and the three named command files are removed first):
   rust-intel.md          -> $SKILL_DIR/SKILL.md
   commands/rust-audit.md -> $COMMANDS_DIR/rust-audit.md
   commands/rust-fix.md   -> $COMMANDS_DIR/rust-fix.md
@@ -40,7 +40,26 @@ if [[ ! -f "$REPO_DIR/rust-intel.md" ]]; then
     exit 1
 fi
 
+echo "Installing rust-intel into $CLAUDE_DIR ..."
+
+# Remove any previous skill directory entirely. Handles stale files from older
+# versions (e.g. if a future release adds extra files alongside SKILL.md, an
+# older install must not be left mixed in).
+if [[ -e "$SKILL_DIR" || -L "$SKILL_DIR" ]]; then
+    echo "  cleaning   $SKILL_DIR (previous install)"
+    rm -rf "$SKILL_DIR"
+fi
 mkdir -p "$SKILL_DIR" "$COMMANDS_DIR"
+
+# Remove any previous versions of the three named command files (handles both
+# regular files and symlinks left by a prior --symlink install).
+for cmd in rust-audit.md rust-fix.md rust-plan.md; do
+    cmd_path="$COMMANDS_DIR/$cmd"
+    if [[ -e "$cmd_path" || -L "$cmd_path" ]]; then
+        echo "  cleaning   $cmd_path (previous install)"
+        rm -f "$cmd_path"
+    fi
+done
 
 install_file() {
     local src="$1"
@@ -54,7 +73,6 @@ install_file() {
     fi
 }
 
-echo "Installing rust-intel into $CLAUDE_DIR ..."
 install_file "$REPO_DIR/rust-intel.md"          "$SKILL_DIR/SKILL.md"
 install_file "$REPO_DIR/commands/rust-audit.md" "$COMMANDS_DIR/rust-audit.md"
 install_file "$REPO_DIR/commands/rust-fix.md"   "$COMMANDS_DIR/rust-fix.md"

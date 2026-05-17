@@ -27,6 +27,8 @@ When writing Rust under this command, my role is a **verifying engineer, not a c
 
 This principle is what activates every rule below. Without it, the rules become a checklist to game; with it, they become a method for catching mistakes I would otherwise make confidently.
 
+The same principle applies to this document's own empirics: every percentage, rate, and sample-size figure cited in the categories below maps to a sourced entry in [`docs/sources.md`](docs/sources.md). Load that file alongside this one when statistical precision matters for your decision.
+
 ---
 
 ## Blocking protocol
@@ -190,7 +192,11 @@ These pass `cargo build`, often pass `cargo test`, and fail in production. The f
 
 **Why this tier exists**: high compilation rate is not correctness. The published 2026 field report on ~80k LOC of LLM-generated tokio/sqlx code (see [`docs/sources.md`](docs/sources.md)) shows that **§B2 alone (`Mutex` across `.await`) was responsible for failure in roughly half of async tasks** before defensive prompting cut it sharply; SafeGenBench shows static analyzers miss **~57% of vulnerabilities** in LLM-generated crypto Rust that *does* compile (§B12). The category list below is structured around this gap between `cargo test` green and actual correctness — see [`docs/sources.md`](docs/sources.md) for the full evidence trail.
 
-## §B1. Lifetime laundering
+## §B1. Lifetime laundering and lifetime leaking
+
+Two distinct lifetime traps LLMs make with high frequency. They look similar from the outside (both involve `<'a>` in a signature where it shouldn't be) but the diagnostic and the fix are different. Treat them as separate sub-categories.
+
+### §B1a. Lifetime laundering
 
 **The trap**: one `'a` parameter binds both an input and a cached output, hiding a lifetime collapse from the local view. The signature compiles in isolation but the function becomes uncallable in practice.
 
@@ -226,15 +232,22 @@ Compiles, passes unit tests with a single input. Fails the moment a second call 
 - For any function returning `&T` derived from inputs, write a comment showing two consecutive calls with disjoint inputs before the signature is final.
 - Higher-Ranked Trait Bounds (`for<'a> Fn(&'a T) -> &'a U`) deserve extra care: do not drop `for<'a>` when generalizing.
 
-**Related anti-pattern: lifetime leaking through public APIs.** Distinct from lifetime laundering, but LLMs make this mistake constantly: exposing `'a` in *public* function signatures when the lifetime is an implementation detail. Example:
-```rust
-// LLM-typical: forces every caller to track 'a
-pub fn parse<'a>(source: &'a str) -> Document<'a> { ... }
+### §B1b. Lifetime leaking through public APIs
 
-// Better: Document owns its data; lifetime stays inside the implementation
-pub fn parse(source: &str) -> Document { ... }
+**The trap**: exposing `'a` in a *public* function signature when the lifetime is an implementation detail. The function compiles, the lifetime is genuine, and the signature is technically more "zero-copy" than the alternative — but every downstream caller is now forced to juggle that lifetime through their own code.
+
+**Distinct from §B1a**: laundering is *one `'a` binding too many things inside one function*; leaking is *exposing an `'a` in a `pub` signature that should not have been part of the public API at all*. A function can suffer from leaking without any laundering, and vice versa.
+
+**BANNED in published library APIs unless zero-copy is an explicitly documented design goal**:
+```rust
+// Forces every caller to track 'a through their own code:
+pub fn parse<'a>(source: &'a str) -> Document<'a> { ... }
 ```
-The first version is "more zero-copy" — and forces every user of the library to juggle lifetimes through their own code. For published library APIs, the default is owned return types unless zero-copy is a documented design goal. Surface every `pub fn` with a non-`'static` output lifetime in the post-flight summary.
+
+**REQUIRED**:
+- Default to owned return types in public APIs: `pub fn parse(source: &str) -> Document { ... }` where `Document` owns its data.
+- If zero-copy is a real design requirement, document it explicitly and consider exposing both variants (`parse` returning owned + `parse_borrowed` returning the lifetime-parameterized version) so callers opt in.
+- Surface every `pub fn` with a non-`'static` output lifetime in the post-flight summary so the user can confirm the lifetime is intentional, not residual.
 
 ## §B2. `std::sync::Mutex` held across `.await`
 
@@ -317,9 +330,9 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 - Read the version-specific `Drop` impl docs for the library being used. State the version you assumed in a comment.
 - Be aware that holding multiple drop-significant guards (file + DB tx + lock) creates an ordering problem: Rust drops in reverse declaration order, but the *correct* order depends on the semantics. State which order matters.
 
-## §B5. Unsafe that looks safe (~55% UB rate)
+## §B5. Unsafe that looks safe (high UB rate in small-N studies)
 
-**The trap**: code passes review and tests because UB doesn't manifest on typical inputs. Of 40 LLM-generated unsafe blocks in the study: 13 were UB on any input, 9 were UB on specific inputs (alignment, OOB, Stacked Borrows violations), 18 were correct. **55% of LLM-generated unsafe in 2026 is a powder keg.**
+**The trap**: code passes review and tests because UB doesn't manifest on typical inputs. In the small-N audit cited in [`docs/sources.md`](docs/sources.md), out of 40 LLM-generated `unsafe` blocks: 13 were UB on any input, 9 were UB on specific inputs (alignment, OOB, Stacked Borrows violations), 18 were correct — i.e. 22/40 (~55%) exhibited UB. The *exact rate* is directional (small sample, not stratified by model or domain), but the *pattern* — that LLM-generated `unsafe` is significantly more dangerous than LLM-generated safe code — is consistent across every published audit to date. Treat any LLM-generated `unsafe` block as high-risk until proven otherwise via miri + manual invariant audit.
 
 **BANNED**:
 - `std::ptr::read(p)` / `*p` / `&*p` where the source pointer's alignment is not statically known to match `T`. Use `read_unaligned` / `write_unaligned` / `slice::align_to` instead.
@@ -422,9 +435,9 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 
 ## §B11. Blocking the async executor
 
-**The trap**: LLM puts `std::thread::sleep`, `std::fs::read_to_string`, `std::io::Read::read_to_end`, blocking `reqwest::blocking::Client`, or synchronous DB drivers inside `async fn`. The compiler doesn't care — these are valid sync functions. Tests pass because they're single-threaded and short. Production hits the wall: at ~N concurrent requests (where N = number of tokio worker threads, often the CPU core count), all workers are blocked, no other tasks make progress, latency spikes to seconds, then the executor is starved.
+**The trap**: LLM puts `std::thread::sleep`, `std::fs::*`, blocking HTTP clients, or synchronous DB drivers inside `async fn`. The compiler doesn't care — these are valid sync functions, and tests pass because they're single-threaded and short. Production hits the wall at ~N concurrent requests (N = tokio worker count, often the CPU core count): every worker is blocked, no other tasks make progress, latency spikes to seconds.
 
-**Why this happens**: corpus statistics. `std::fs::read_to_string` is *vastly* more common in training data than `tokio::fs::read_to_string`. LLMs default to the synchronous version.
+**Why this happens**: corpus statistics. `std::fs::read_to_string` is *vastly* more common in training data than `tokio::fs::read_to_string`.
 
 **Prompt triggers**: "read a config file", "fetch from URL", "sleep for N seconds", "wait", "make an HTTP request", anything that does I/O.
 
@@ -434,12 +447,12 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 - `std::io::Read` / `Write` on real files/sockets  →  `tokio::io::AsyncReadExt` / `AsyncWriteExt`
 - `reqwest::blocking::*`  →  `reqwest::Client` (async)
 - `rusqlite`, synchronous `postgres` crate  →  `sqlx`, `tokio-postgres`, or wrap in `tokio::task::spawn_blocking`
-- CPU-bound work taking more than ~100µs without yielding — wrap in `tokio::task::spawn_blocking` or chunk and `tokio::task::yield_now().await` between chunks.
+- CPU-bound work taking more than ~100µs — wrap in `tokio::task::spawn_blocking`. Do not substitute `yield_now` (see below for why).
 
 **REQUIRED**:
-- For genuinely blocking work (CPU-heavy compute, calling a sync C library, using a sync crate that has no async equivalent): wrap in `tokio::task::spawn_blocking(|| { ... }).await?`.
-- For long CPU-bound loops in async: insert `tokio::task::yield_now().await` periodically, or split into chunks dispatched via `spawn_blocking`.
-- Verify with `tokio-console` or `tracing` spans that no task holds a thread longer than its budget.
+- For genuinely CPU-bound work (compression, hashing, parsing large blobs, calling a sync C library, using a sync crate that has no async equivalent): wrap in `tokio::task::spawn_blocking(|| { ... }).await?`. This dispatches to a *separate* blocking-task thread pool, freeing the async worker thread for other tasks.
+- `tokio::task::yield_now().await` is **not** an alternative to `spawn_blocking` for CPU-bound work. `yield_now` only gives *other tasks already on the same worker thread* a chance to make progress; when your task resumes, the worker is still occupied by you. It does not solve "starving the executor" because the worker count is fixed (typically the CPU core count). Use `yield_now` only for cooperative fairness inside an IO-bound task that occasionally does a small CPU burst.
+- Verify with `tokio-console` or `tracing` spans that no task holds a worker thread longer than its budget.
 
 ## §B12. Cryptographic code (silent insecurity)
 
@@ -465,7 +478,7 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 **BANNED**:
 - Writing custom encryption/decryption logic.
 - Implementing cryptographic primitives (block ciphers, hash functions, KDFs) by hand.
-- Using `SmallRng`, `StdRng`, or any seedable RNG for security-sensitive randomness — use `OsRng` (or `getrandom`) directly. `rand::random()` / `thread_rng()` are CSPRNGs per the `rand` crate's security guarantees, but `OsRng` is the safer default when keys, nonces, or salts are involved (no ambiguity about seeding chain).
+- Using `SmallRng`, `StdRng`, or any seedable RNG for security-sensitive randomness — use `OsRng` (or `getrandom`) directly. The rule is "OS-backed entropy for keys, nonces, salts", not a literal call name: in `rand` 0.8.x the default RNG accessor is `thread_rng()`, in 0.9+ it is `rng()`. Both are CSPRNGs per the `rand` security guarantees, but `OsRng` is the safer default when seeding chains are part of the threat model. State the `rand` version assumed.
 - Storing crypto keys in source code, environment variables read at compile time, or anywhere they end up in the binary.
 
 ## §B13. Check-then-act races in concurrent collections (TOCTOU)
@@ -509,20 +522,19 @@ In a single-threaded test, this is correct. Under concurrent load, N threads sim
 
 **The trap**: when the producer/consumer rate is unbalanced, an `mpsc::unbounded_channel` doesn't block the producer — it just lets the queue grow. Tests with 5–100 messages pass. Production with a producer that's 2× faster than the consumer accumulates millions of pending messages, RAM climbs steadily, and the OOM killer eventually terminates the process — usually under peak load when it hurts most.
 
-**Why this happens**: bounded channels (`mpsc::channel(N)`) force the producer to handle "channel is full" via `try_send`/`send` returning errors. The LLM's path of least resistance is `unbounded_channel`, which has the simpler API (`send` is infallible-ish). This is the §C5 reflexive-fix pattern applied to channel selection.
+**Why this happens**: bounded channels force the producer to handle "channel is full" via `try_send`/`send` errors; `unbounded` has the simpler API and is the LLM's path of least resistance — the §C5 reflexive-fix pattern applied to channel selection.
 
 **Prompt triggers**: "send events to a worker", "background queue", "log messages to a task", "producer-consumer", "event bus", "websocket broadcast", "metrics pipeline".
 
 **BANNED** in any non-trivial pipeline:
 - `tokio::sync::mpsc::unbounded_channel()` without explicit justification that the producer rate is provably bounded by an external invariant.
 - `flume::unbounded()`, `async_channel::unbounded()` for the same reason.
-- `Vec::push` in a hot loop without size monitoring — same failure shape, different surface.
+- A `Vec` that is `push`-ed in a hot loop with no consumer or cap — same failure shape as an unbounded channel, different surface. `Vec::push` itself is fine (amortized O(1)); the failure is the missing drain or bound.
 
 **REQUIRED**:
-- Default to **bounded** channels: `tokio::sync::mpsc::channel(N)` where `N` is sized to expected burst capacity (typically 100–10000, never "infinite").
+- Default to **bounded** channels: `tokio::sync::mpsc::channel(N)`. Size `N` from the actual constraints, not from a folk number: large enough to absorb the *expected producer burst over one consumer cycle*, small enough that `N × sizeof(message)` fits the per-task memory budget. If the right `N` cannot be reasoned about, that is a signal that the backpressure policy itself needs design before the channel is written. Never `unbounded`.
 - Decide the **backpressure policy** explicitly: block the producer (default `send().await`), drop oldest (`try_send` with explicit drop), drop newest (`try_send` returning error → log and discard), or apply rate limiting upstream. State the choice in a comment.
 - For broadcast scenarios where slow consumers shouldn't slow producers: `tokio::sync::broadcast::channel(N)` with explicit handling of `RecvError::Lagged` (which indicates dropped messages).
-- For high-throughput log/metric pipelines: consider `tracing` + batching, not a raw unbounded channel.
 - For any unbounded queue that *must* exist (e.g., legacy interop): expose its size as a metric and alert when it grows abnormally.
 
 **Detection**: unbounded channel growth doesn't appear in tests. Defense is at write time (default to bounded) and via monitoring (track `Sender::capacity()` or queue length as a metric in production).
@@ -531,18 +543,31 @@ In a single-threaded test, this is correct. Under concurrent load, N threads sim
 
 A cluster of narrow but high-impact traps that appear in non-trivial async code. Each compiles in isolation; each fails in production or under composition.
 
-**AFIT (async fn in trait) without `+ Send`**: stabilized in Rust 1.75. Native syntax `trait Foo { async fn bar(&self); }` desugars to a method returning an opaque `impl Future`, which by default is **not `Send`**. The trait compiles, implementations compile, but `tokio::spawn` of any method call fails with a non-obvious `Send` bound error.
+**AFIT vs RPITIT — terminology matters, they are not interchangeable:**
 
-- For any `async fn` in a trait intended for use with `tokio::spawn`, the preferred 2025–2026 approach is **native AFIT with an explicit `+ Send` bound via RPITIT** — e.g. `fn bar(&self) -> impl Future<Output = T> + Send`. Second choice: `#[trait_variant::make(Send)]` from `trait-variant` to generate Send/non-Send variants. Use `async-trait` only when you need `dyn Trait` (trait objects) — it boxes every call and incurs heap allocation.
-- For libraries: prefer providing both Send and non-Send variants of the trait (the `trait-variant` pattern).
-- Surface every AFIT in the post-flight summary.
+- **AFIT** (async fn in trait) — the syntax `trait Foo { async fn bar(&self) -> T; }`. Stabilized in Rust 1.75. Desugars to a method returning an opaque, anonymous `impl Future` whose `Send`-ness is **not bounded in the trait signature**. The trait compiles, implementations compile, but `tokio::spawn(x.bar())` fails with a non-obvious `Send` error because the returned future is not statically known to be `Send`. There is no syntactic way to add `+ Send` directly to an `async fn` in a trait.
+- **RPITIT** (return-position impl trait in trait) — the syntax `trait Foo { fn bar(&self) -> impl Future<Output = T> + Send; }`. Lets you state bounds (including `+ Send`) on the returned `impl Future` directly. This is the construct you actually want when the trait's methods will be spawned onto `tokio`. AFIT and RPITIT share a desugar lineage — AFIT desugars into an RPITIT-shaped method internally — but as *written-down* syntactic forms they have materially different bound-expressing capabilities: AFIT cannot state `+ Send` on the return type at the trait definition site, RPITIT can. Treating them as interchangeable in source is the conflation to avoid.
+
+**Decision table for async-returning trait methods**:
+
+| Need | Use |
+|---|---|
+| Internal trait, no `tokio::spawn`, single executor | Plain **AFIT** (`async fn bar(&self) -> T`). |
+| Method must be `Send` for `tokio::spawn` | **RPITIT** with explicit `+ Send`. |
+| Library trait, want both Send-bounded and non-Send variants | `#[trait_variant::make(Send)]` from `trait-variant` — generates a Send-bounded variant alongside the original. |
+| Need `dyn Trait` (trait objects) for async methods | `async-trait`. As of stable Rust through mid-2026, AFIT and RPITIT traits are not generally `dyn`-compatible without workarounds; stabilization of `dyn`-compatible RPITIT is an in-flight RFC, so verify the current status against your `rustc --version` before relying on a `dyn` async trait without `async-trait`. `async-trait` boxes every call (heap allocation per invocation) but remains the well-supported way to get `dyn` async traits today. |
+
+**REQUIRED**:
+- Pick the construct deliberately and state it in a comment on the trait: `// AFIT (no Send)`, `// RPITIT + Send`, `// trait-variant`, or `// async-trait (dyn)`.
+- Surface every async-returning trait method in the post-flight summary, with the syntax used and whether `Send` is bounded.
+- Never describe RPITIT as "AFIT with a Send bound" in source code. AFIT desugars into RPITIT internally, but the trait's *written* syntax determines what bounds you can express — pick the form deliberately.
 
 **`Pin::new_unchecked` without justification**: `Pin::new_unchecked` is `unsafe` for a reason — it asserts that the pointee will never move again. LLMs reach for it when they don't understand `Pin` rather than as a justified low-level operation. If `Box::pin(...)`, `pin!` macro, or `pin-project` would work, use them.
 
-- Default to `Box::pin(future)` or the `pin!` macro for stack pinning.
+- Default to `Box::pin(future)` (owning, heap-allocated, `Pin<Box<T>>`) or the `pin!` macro (borrowing, stack-allocated, `Pin<&mut T>`). LLMs frequently mix these up when adapting examples — they have different lifetimes and different ownership. State which one you mean.
+- `Unpin` is an auto-trait. Most types implement it automatically, which makes `Pin<&mut T>` effectively free to use. Pinning discipline actually bites only for `!Unpin` types: hand-written futures with internal references, generator state machines, types explicitly opted out via `PhantomPinned`. The common LLM failure is conflating "this code involves a `Pin`" with "this type is `!Unpin`" — most of the time the `Pin` is incidental and Pinning rules add no real constraint.
 - For projecting through `Pin`, use the `pin-project` or `pin-project-lite` crate, never manual `Pin::new_unchecked`.
-- Every `Pin::new_unchecked` requires a `// SAFETY:` block proving the pointee is genuinely never moved (per §B5).
-- You cannot hold a reference through `.await` and expect Pin to fix it — Pin is about preventing *movement of self-referential data*, not about extending borrows.
+- Every `Pin::new_unchecked` requires a `// SAFETY:` block proving the pointee is genuinely never moved (per §B5) — and the type must actually be `!Unpin` for the assertion to mean anything.
 
 **Forgotten Waker in manual `Future::poll`**: when implementing `Future` by hand, returning `Poll::Pending` without first registering the current task's `Waker` causes the task to hang forever — nothing will ever wake it. The executor doesn't poll spontaneously.
 
@@ -581,14 +606,15 @@ These are not bugs in the strict sense, but design choices the LLM makes that ar
 **The trap**: `anyhow::Error` in library crates poisons downstream error handling. `unwrap()` and `expect()` in non-test code is a runtime panic waiting to happen. The `?` operator silently loses context if `From` impls are too eager.
 
 **REQUIRED**:
-- In **library** crates (`lib.rs`): use `thiserror` for typed errors, never `anyhow::Error` in public APIs. Each `pub fn` returning `Result` has a typed error.
+- In **published library crates** (anything shipped to crates.io with a `pub` API that other authors consume): use `thiserror` for typed errors, never `anyhow::Error` in public APIs. Each `pub fn` returning `Result` has a typed error. The cost of `anyhow` here is paid by every downstream caller who loses the ability to match on specific error variants.
+- For **internal/workspace libraries** (not published, only used within the same workspace by the same team): `anyhow::Error` in `pub fn` is acceptable if the team agrees, but make it a deliberate choice — once a library moves toward publication, the migration to typed errors becomes painful.
 - In **binary** crates (`main.rs` and friends): `anyhow::Error` is acceptable for top-level handlers and CLI surfaces.
 - `unwrap()` is allowed only when (a) it is statically impossible to fail and I have a comment explaining why, or (b) in tests. Same for `expect()`.
 - `?` is fine when the conversion is meaningful; if it loses context, use `.map_err(|e| MyError::Context { source: e, info: ... })` instead.
 - `panic!`, `todo!`, `unimplemented!`, `unreachable!` are surfaced in the summary with justification.
 
 **BANNED**:
-- `anyhow::Result<T>` in a public library API.
+- `anyhow::Result<T>` in a `pub` API of a published library crate.
 - `.unwrap()` on `Mutex::lock()` in production code (the panic message is unhelpful; use `.expect("description")` minimum, or handle the poison case).
 - Silent `let _ = result;` to discard errors. If discarding is intentional, comment why.
 
