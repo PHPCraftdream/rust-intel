@@ -8,6 +8,14 @@ Patch = wording refinements, fixes, new sources.
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+See [`docs/roadmap.md`](docs/roadmap.md) for planned v0.2.0+ work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
+
+## [0.1.2] — 2026-05-17
+
+Tooling-only patch. No changes to `rust-intel.md` (the skill itself); no new categories.
+
 ### Added
 
 - **`uninstall.sh` / `uninstall.ps1`.** Inverse of the installers — removes the rust-intel skill directory and the named command files (`rust-audit.md`, `rust-fix.md`, `rust-plan.md`, and the legacy `rust-intel.md`) from `$CLAUDE_CONFIG_DIR`. Idempotent (safe to run when nothing is installed). Narrow by design: only touches paths the installers create, so other skills and commands under `~/.claude/` are left alone.
@@ -15,9 +23,7 @@ Patch = wording refinements, fixes, new sources.
 
 ### Changed
 
-- **`install.sh` / `install.ps1` also remove the legacy `commands/rust-intel.md`** before installing. Earliest iterations of the project shipped rust-intel as a single command file rather than a skill; that layout is no longer used, but a stale `commands/rust-intel.md` left over from such an install would shadow the proper skill in Claude Code's listing (appearing as a duplicate "rust-intel" entry). Both installers and both uninstallers now sweep this path explicitly. The uninstall scripts inherit the same cleanup.
-
-See [`docs/roadmap.md`](docs/roadmap.md) for planned v0.2.0+ work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
+- **`install.sh` / `install.ps1` also remove the legacy `commands/rust-intel.md`** before installing. Earliest iterations of the project shipped rust-intel as a single command file rather than a skill; that layout is no longer used, but a stale `commands/rust-intel.md` left over from such an install would shadow the proper skill in Claude Code's listing (appearing as a duplicate "rust-intel" entry). Both installers and both uninstallers now sweep this path explicitly.
 
 ## [0.1.1] — 2026-05-17
 
