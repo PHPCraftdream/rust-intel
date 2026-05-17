@@ -52,8 +52,11 @@ fi
 mkdir -p "$SKILL_DIR" "$COMMANDS_DIR"
 
 # Remove any previous versions of the three named command files (handles both
-# regular files and symlinks left by a prior --symlink install).
-for cmd in rust-audit.md rust-fix.md rust-plan.md; do
+# regular files and symlinks left by a prior --symlink install). Also remove
+# `commands/rust-intel.md` if present — that was the legacy single-command
+# layout used before the project was split into a skill + three commands; it
+# would otherwise shadow the skill in some Claude Code listings.
+for cmd in rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do
     cmd_path="$COMMANDS_DIR/$cmd"
     if [[ -e "$cmd_path" || -L "$cmd_path" ]]; then
         echo "  cleaning   $cmd_path (previous install)"

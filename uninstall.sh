@@ -45,7 +45,9 @@ if [[ -e "$SKILL_DIR" || -L "$SKILL_DIR" ]]; then
     removed_any=1
 fi
 
-for cmd in rust-audit.md rust-fix.md rust-plan.md; do
+# Includes the legacy `commands/rust-intel.md` (single-command layout used
+# before the project was split into a skill + three commands).
+for cmd in rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do
     cmd_path="$COMMANDS_DIR/$cmd"
     if [[ -e "$cmd_path" || -L "$cmd_path" ]]; then
         rm -f "$cmd_path"

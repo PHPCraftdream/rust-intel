@@ -53,8 +53,11 @@ if (Test-Path -LiteralPath $SkillDir) {
 New-Item -ItemType Directory -Force -Path $SkillDir    | Out-Null
 New-Item -ItemType Directory -Force -Path $CommandsDir | Out-Null
 
-# Remove any previous versions of the three named command files.
-foreach ($cmd in 'rust-audit.md', 'rust-fix.md', 'rust-plan.md') {
+# Remove any previous versions of the three named command files. Also remove
+# `commands\rust-intel.md` if present - that was the legacy single-command
+# layout used before the project was split into a skill + three commands; it
+# would otherwise shadow the skill in some Claude Code listings.
+foreach ($cmd in 'rust-audit.md', 'rust-fix.md', 'rust-plan.md', 'rust-intel.md') {
     $cmdPath = Join-Path $CommandsDir $cmd
     if (Test-Path -LiteralPath $cmdPath) {
         Write-Output "  cleaning   $cmdPath (previous install)"

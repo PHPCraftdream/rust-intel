@@ -45,7 +45,9 @@ if (Test-Path -LiteralPath $SkillDir) {
     $removedAny = $true
 }
 
-foreach ($cmd in 'rust-audit.md', 'rust-fix.md', 'rust-plan.md') {
+# Includes the legacy `commands\rust-intel.md` (single-command layout used
+# before the project was split into a skill + three commands).
+foreach ($cmd in 'rust-audit.md', 'rust-fix.md', 'rust-plan.md', 'rust-intel.md') {
     $cmdPath = Join-Path $CommandsDir $cmd
     if (Test-Path -LiteralPath $cmdPath) {
         Remove-Item -LiteralPath $cmdPath -Force
