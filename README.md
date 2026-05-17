@@ -57,6 +57,18 @@ ln -s "$(pwd)/rust-intel.md" ~/.claude/skills/rust-intel/SKILL.md
 
 To verify installation: start `claude` in any Rust project, ask for any Rust task, and the assistant should reference rules from §A1–§C7 unprompted. For a one-command install of skill + all three commands, see [`install.sh`](install.sh) / [`install.ps1`](install.ps1).
 
+**Uninstall** (removes only what the installers create — skill directory + the three named command files; other skills and commands under `~/.claude/` are not touched):
+
+```bash
+# macOS / Linux
+./uninstall.sh
+```
+
+```powershell
+# Windows (PowerShell)
+.\uninstall.ps1
+```
+
 ### As a checklist for humans
 
 The document reads top-to-bottom. The minimum bar before committing any non-trivial Rust: walk the **Pre-flight checklist** (7 questions at the end of the spec) and the **Post-flight checklist** (the list of things to surface in a summary).

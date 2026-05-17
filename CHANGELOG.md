@@ -8,9 +8,12 @@ Patch = wording refinements, fixes, new sources.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
 
-See [`docs/roadmap.md`](docs/roadmap.md) for planned v0.2.0+ work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, §B15 Pin reorientation (toward `Pin<&mut>` vs `Pin<Box>` + `Unpin` auto-trait), source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
+- **`uninstall.sh` / `uninstall.ps1`.** Inverse of the installers — removes the rust-intel skill directory and the three named command files (`rust-audit.md`, `rust-fix.md`, `rust-plan.md`) from `$CLAUDE_CONFIG_DIR`. Idempotent (safe to run when nothing is installed). Narrow by design: only touches paths the installers create, so other skills and commands under `~/.claude/` are left alone.
+- README "Uninstall" section documenting both scripts.
+
+See [`docs/roadmap.md`](docs/roadmap.md) for planned v0.2.0+ work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
 
 ## [0.1.1] — 2026-05-17
 
