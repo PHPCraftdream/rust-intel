@@ -12,6 +12,33 @@ _No unreleased changes._
 
 See [`docs/roadmap.md`](docs/roadmap.md) for planned work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
 
+## [0.2.1] — 2026-05-18
+
+Same-day rectification of v0.2.0. The skill itself (`rust-intel.md`) is byte-identical to v0.1.2 and v0.2.0 — no rule changes, no new categories.
+
+### Changed
+
+- **Slash commands flattened from `/rust-intel-cc:*` to `/rust-cc-*`.** v0.2.0 misread the original intent: the repo's nested `commands/rust-intel-cc/` directory was meant for *file organization only*, with the installer flattening to a simple-prefixed slash surface. v0.2.1 honors that split:
+  - **Repo source** (unchanged from v0.2.0): `commands/rust-intel-cc/{audit,fix,plan}.md`.
+  - **Installed target** (new): `<claude>/commands/rust-cc-{audit,fix,plan}.md` — flat, with a `rust-cc-` prefix, no subdirectory.
+  - **Slash commands** (new):
+    - `/rust-intel-cc:audit` → `/rust-cc-audit`
+    - `/rust-intel-cc:fix`   → `/rust-cc-fix`
+    - `/rust-intel-cc:plan`  → `/rust-cc-plan`
+  The installer does the rename during copy. Repo stays tidy (one umbrella directory for three related commands); slash surface stays short (no namespace prefix in the prompt).
+- **Installers and uninstallers sweep every prior layout** before copying:
+  - v0.2.1+ flat-with-prefix (`rust-cc-{audit,fix,plan}.md`)
+  - v0.2.0 namespace dir (`rust-intel-cc/`)
+  - v0.1.x legacy flat-no-prefix (`{rust-audit,rust-fix,rust-plan,rust-intel}.md`)
+
+### Migration from v0.2.0
+
+Re-run the installer (`./install.sh`, `.\install.ps1`, or `install.bat` — add `--user` / `-User` if you previously installed user-global). It will remove the v0.2.0 `commands/rust-intel-cc/` directory and install the v0.2.1 flat files. Update any references to the old `/rust-intel-cc:*` slash commands to the new `/rust-cc-*` form.
+
+### Migration from v0.1.x
+
+Same as v0.2.0's migration — re-running the installer sweeps the old `/rust-audit`, `/rust-fix`, `/rust-plan` automatically.
+
 ## [0.2.0] — 2026-05-18
 
 Tooling restructure. The skill itself (`rust-intel.md`) is byte-identical to v0.1.2 — no rule changes, no new categories. What changed is how the slash commands are organised and how the installers behave by default.

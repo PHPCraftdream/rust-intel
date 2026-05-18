@@ -9,9 +9,9 @@ rust-intel.md  ──  knowledge (26 categories, BANNED/REQUIRED, checklists)
        ▲
        │ invoke skill
        │
-┌──────┴──────────────────┬──────────────────────┬──────────────────────┐
-│ /rust-intel-cc:audit    │ /rust-intel-cc:fix   │ /rust-intel-cc:plan  │  ← process only
-└─────────────────────────┴──────────────────────┴──────────────────────┘
+┌──────┴─────────┬──────────────┬─────────────────┐
+│ /rust-cc-audit │ /rust-cc-fix │ /rust-cc-plan   │  ← process only
+└────────────────┴──────────────┴─────────────────┘
 ```
 
 - **Knowledge** lives in the skill — edit once, every command sees the change immediately.
@@ -19,15 +19,17 @@ rust-intel.md  ──  knowledge (26 categories, BANNED/REQUIRED, checklists)
 
 If a command wants a new rule, the rule lands in `rust-intel.md`, not in the command file. Duplication of knowledge is forbidden by design.
 
-## Commands
+## Repo layout vs installed layout
 
-All three live under the `rust-intel-cc` namespace (the directory `commands/rust-intel-cc/`) and are invoked with the colon-separator that Claude Code uses for nested commands.
+The repo organises the three command source files under `rust-intel-cc/` for readability. The installer flattens that on copy: the target files are named `rust-cc-<sub>.md` directly under `commands/`. The slash commands are therefore plain `/rust-cc-audit`, `/rust-cc-fix`, `/rust-cc-plan` — no colon namespace.
 
-| File | Trigger | Use case |
+| Repo source | Installed path | Slash command |
 |---|---|---|
-| `rust-intel-cc/audit.md` | `/rust-intel-cc:audit [path]` | Scan existing Rust against all 26 categories |
-| `rust-intel-cc/fix.md` | `/rust-intel-cc:fix <error>` | Explain a compiler / runtime error and propose a root-cause fix |
-| `rust-intel-cc/plan.md` | `/rust-intel-cc:plan <task>` | Pre-flight a task through the trigger table before any code is written |
+| `commands/rust-intel-cc/audit.md` | `<claude>/commands/rust-cc-audit.md` | `/rust-cc-audit [path]` |
+| `commands/rust-intel-cc/fix.md`   | `<claude>/commands/rust-cc-fix.md`   | `/rust-cc-fix <error>` |
+| `commands/rust-intel-cc/plan.md`  | `<claude>/commands/rust-cc-plan.md`  | `/rust-cc-plan <task>` |
+
+This split keeps the repo tidy (one umbrella directory for three related commands) while keeping the slash surface flat and short (no namespace prefix in the prompt).
 
 ## Installation
 
@@ -44,10 +46,10 @@ Use the one-command installer at the repo root. By default it installs **project
 
 # Windows (cmd.exe)
 install.bat
-install.bat --user
+install.bat -User
 ```
 
-The installer also handles the skill (`rust-intel.md` → `skills/rust-intel/SKILL.md`) and sweeps any prior install (including the legacy flat layout from v0.1.x with `commands/rust-audit.md`, `commands/rust-fix.md`, `commands/rust-plan.md`, and the very early `commands/rust-intel.md`).
+The installer also handles the skill (`rust-intel.md` → `skills/rust-intel/SKILL.md`) and sweeps every prior layout at the target — v0.2.1+ flat-with-prefix, v0.2.0 namespace dir, and the v0.1.x flat-no-prefix layout.
 
 ## Dependency on the skill
 

@@ -10,7 +10,7 @@ The core idea: Rust's compiler catches a large class of LLM mistakes (and a know
 
 ## Status
 
-**v0.2.0 — tooling restructure (2026-05-18).** The skill itself is unchanged from v0.1.2. What changed: the three slash commands moved into a namespace (`/rust-intel-cc:audit`, `/rust-intel-cc:fix`, `/rust-intel-cc:plan` — colon-namespaced under one umbrella), installers now default to **project-local** `./.claude/` (use `--user` / `-User` for the old user-global `~/.claude/` behaviour), and `.bat` wrappers are shipped for Windows `cmd.exe`. Installers sweep the legacy v0.1.x flat layout automatically. See [`CHANGELOG.md`](CHANGELOG.md) for full migration notes.
+**v0.2.1 — slash-command rectification (2026-05-18).** The skill itself is unchanged from v0.1.2. What changed since v0.1.x: slash commands are now `/rust-cc-audit`, `/rust-cc-fix`, `/rust-cc-plan` (flat, prefixed — *no* colon namespace; v0.2.0's `/rust-intel-cc:*` was a misread of the request and is corrected here). Repo files stay organised under `commands/rust-intel-cc/` for readability; the installer flattens to `<target>/commands/rust-cc-*.md` on copy. Installers default to **project-local** `./.claude/` (`--user` / `-User` for user-global), `.bat` wrappers for `cmd.exe`. The installer sweeps every prior layout — v0.2.0 namespace, v0.1.x flat-no-prefix — automatically. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Layout
 
@@ -24,9 +24,9 @@ rust-intel/
 ├── commands/
 │   ├── README.md
 │   └── rust-intel-cc/                  # Namespace dir → /rust-intel-cc:* commands
-│       ├── audit.md                    # /rust-intel-cc:audit  — scan existing code
-│       ├── fix.md                      # /rust-intel-cc:fix    — diagnose an error
-│       └── plan.md                     # /rust-intel-cc:plan   — pre-flight a new task
+│       ├── audit.md                    # /rust-cc-audit  — scan existing code
+│       ├── fix.md                      # /rust-cc-fix    — diagnose an error
+│       └── plan.md                     # /rust-cc-plan   — pre-flight a new task
 └── docs/
     ├── roadmap.md                      # Planned commands and category expansions
     └── sources.md                      # Empirical sources and citations
@@ -84,9 +84,9 @@ Only touches the paths the installer creates. Other skills and commands under th
 Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§C7 unprompted. Try:
 
 ```
-/rust-intel-cc:audit src/
-/rust-intel-cc:fix  E0277: the trait bound `T: Send` is not satisfied
-/rust-intel-cc:plan write a tokio task that consumes a sqlx stream and pushes to a websocket
+/rust-cc-audit src/
+/rust-cc-fix  E0277: the trait bound `T: Send` is not satisfied
+/rust-cc-plan write a tokio task that consumes a sqlx stream and pushes to a websocket
 ```
 
 ### As a checklist for humans
@@ -99,9 +99,9 @@ Three commands live under [`commands/rust-intel-cc/`](commands/rust-intel-cc/) a
 
 | Command | Trigger | Use case |
 |---|---|---|
-| [`audit`](commands/rust-intel-cc/audit.md) | `/rust-intel-cc:audit [path]` | Scan existing Rust against all 26 categories, return a triaged report with concrete fixes. |
-| [`fix`](commands/rust-intel-cc/fix.md) | `/rust-intel-cc:fix <error>` | Map a compiler / clippy / panic / runtime symptom onto a category, propose a root-cause fix. |
-| [`plan`](commands/rust-intel-cc/plan.md) | `/rust-intel-cc:plan <task>` | Run a task description through the trigger table and Pre-flight checklist before any code is written. |
+| [`audit`](commands/rust-intel-cc/audit.md) | `/rust-cc-audit [path]` | Scan existing Rust against all 26 categories, return a triaged report with concrete fixes. |
+| [`fix`](commands/rust-intel-cc/fix.md) | `/rust-cc-fix <error>` | Map a compiler / clippy / panic / runtime symptom onto a category, propose a root-cause fix. |
+| [`plan`](commands/rust-intel-cc/plan.md) | `/rust-cc-plan <task>` | Run a task description through the trigger table and Pre-flight checklist before any code is written. |
 
 Details: [`commands/README.md`](commands/README.md).
 
