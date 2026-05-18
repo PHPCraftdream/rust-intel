@@ -3,7 +3,7 @@ description: Before writing Rust — run the task through rust-intel's trigger t
 argument-hint: "<task description>"
 ---
 
-# /rust-plan
+# /rust-intel-cc:plan
 
 Catches mistakes at the design stage, while rolling them back is still cheap. This is **not** a code generator — it's a structured pre-flight before you start.
 

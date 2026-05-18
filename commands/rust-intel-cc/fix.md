@@ -3,7 +3,7 @@ description: Maps an error (rustc / clippy / panic / runtime anomaly) onto a rus
 argument-hint: "<error message or behavior description>"
 ---
 
-# /rust-fix
+# /rust-intel-cc:fix
 
 Removes the developer's need to navigate rustc docs and StackOverflow. Takes a symptom — returns the cause, the fix, **and** a preventive rule so it doesn't recur.
 
@@ -89,5 +89,5 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
 
 ## Limits
 
-- Doesn't replace static analysis. If the user has lots of code and the location is unclear, redirect to `/rust-audit`.
+- Doesn't replace static analysis. If the user has lots of code and the location is unclear, redirect to `/rust-intel-cc:audit`.
 - Doesn't execute code. All fixes are textual suggestions; the user applies them.

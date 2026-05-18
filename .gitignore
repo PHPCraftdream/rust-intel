@@ -13,6 +13,11 @@ desktop.ini
 # Claude Code local state
 .claude/settings.local.json
 
+# Project-local install target (when install.sh / install.ps1 are run without
+# --user from inside the repo, files land here). The repo source of truth is
+# rust-intel.md + commands/, not this dir.
+/.claude/
+
 # Future tooling artifacts
 /target/
 *.log

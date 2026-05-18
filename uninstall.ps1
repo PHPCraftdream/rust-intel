@@ -1,26 +1,37 @@
-# Removes the rust-intel skill and the three named slash commands from %USERPROFILE%\.claude\.
-# Inverse of install.ps1. Only touches paths that install.ps1 creates - other
-# skills and commands under %USERPROFILE%\.claude\ are untouched.
+# Removes the rust-intel skill and the /rust-intel-cc:* commands.
+# Inverse of install.ps1.
+#
+# Default target: .\.claude\ of the current working directory (project-local).
+# Pass -User to remove from the user-global %USERPROFILE%\.claude\ instead.
+# CLAUDE_CONFIG_DIR env var (if set) overrides everything.
 
 [CmdletBinding()]
 param(
+    [switch]$User,
     [switch]$Help
 )
 
 if ($Help) {
     @"
-Usage: .\uninstall.ps1
+Usage: .\uninstall.ps1 [-User]
+
+Default target (no flags): .\.claude\  (the current working directory).
+With -User:                %USERPROFILE%\.claude\  (user-global).
+If `$env:CLAUDE_CONFIG_DIR is set, it overrides both.
 
 Removes (only the files install.ps1 creates):
-  $env:USERPROFILE\.claude\skills\rust-intel\          (the entire skill directory)
-  $env:USERPROFILE\.claude\commands\rust-audit.md
-  $env:USERPROFILE\.claude\commands\rust-fix.md
-  $env:USERPROFILE\.claude\commands\rust-plan.md
+  <target>\skills\rust-intel\                      (entire directory)
+  <target>\commands\rust-intel-cc\                 (entire directory)
+  <target>\commands\{rust-audit,rust-fix,rust-plan,rust-intel}.md   (legacy v0.1.x flat layout)
 
-Other skills and commands under `$CLAUDE_CONFIG_DIR are not touched.
+Other skills and commands under <target> are not touched.
+
+Options:
+  -User       Remove from %USERPROFILE%\.claude\ instead of .\.claude\.
+  -Help       Show this message.
 
 Environment:
-  CLAUDE_CONFIG_DIR   Override the default %USERPROFILE%\.claude location.
+  CLAUDE_CONFIG_DIR   Override the target. If set, -User is ignored.
 "@ | Write-Output
     exit 0
 }
@@ -29,11 +40,15 @@ $ErrorActionPreference = 'Stop'
 
 if ($env:CLAUDE_CONFIG_DIR) {
     $ClaudeDir = $env:CLAUDE_CONFIG_DIR
-} else {
+} elseif ($User) {
     $ClaudeDir = Join-Path $env:USERPROFILE '.claude'
+} else {
+    $ClaudeDir = Join-Path (Get-Location).Path '.claude'
 }
-$SkillDir = Join-Path $ClaudeDir 'skills\rust-intel'
+
+$SkillDir    = Join-Path $ClaudeDir 'skills\rust-intel'
 $CommandsDir = Join-Path $ClaudeDir 'commands'
+$NsDir       = Join-Path $CommandsDir 'rust-intel-cc'
 
 Write-Output "Uninstalling rust-intel from $ClaudeDir ..."
 
@@ -45,13 +60,18 @@ if (Test-Path -LiteralPath $SkillDir) {
     $removedAny = $true
 }
 
-# Includes the legacy `commands\rust-intel.md` (single-command layout used
-# before the project was split into a skill + three commands).
-foreach ($cmd in 'rust-audit.md', 'rust-fix.md', 'rust-plan.md', 'rust-intel.md') {
-    $cmdPath = Join-Path $CommandsDir $cmd
-    if (Test-Path -LiteralPath $cmdPath) {
-        Remove-Item -LiteralPath $cmdPath -Force
-        Write-Output "  removed    $cmdPath"
+if (Test-Path -LiteralPath $NsDir) {
+    Remove-Item -LiteralPath $NsDir -Recurse -Force
+    Write-Output "  removed    $NsDir"
+    $removedAny = $true
+}
+
+# Includes the legacy flat layout from v0.1.x.
+foreach ($legacy in 'rust-audit.md', 'rust-fix.md', 'rust-plan.md', 'rust-intel.md') {
+    $legacyPath = Join-Path $CommandsDir $legacy
+    if (Test-Path -LiteralPath $legacyPath) {
+        Remove-Item -LiteralPath $legacyPath -Force
+        Write-Output "  removed    $legacyPath (legacy v0.1.x layout)"
         $removedAny = $true
     }
 }

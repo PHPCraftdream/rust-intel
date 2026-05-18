@@ -10,80 +10,100 @@ The core idea: Rust's compiler catches a large class of LLM mistakes (and a know
 
 ## Status
 
-**v0.1.1 — patch release (2026-05-17).** 26 categories. Same-day technical patches over v0.1.0 across two review rounds: §B15 AFIT/RPITIT terminology corrected (and then softened on a second pass), §B15 Pin paragraph reoriented from a strawman to the real LLM failure modes, §B15 `dyn`-compatibility row hedged temporally, §B11 `yield_now`/`spawn_blocking` separated, §C2 anyhow scope narrowed to published library crates, §B5 sample size disclosed, §B14 sizing formula instead of folk numbers and `Vec::push` clarified, §B12 `rand` 0.8/0.9 API gap noted, §B1 split into §B1a (laundering) + §B1b (leaking). Install scripts now clean-replace prior versions. Living document — categories will be added as new empirical data arrives. See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.2.0 — tooling restructure (2026-05-18).** The skill itself is unchanged from v0.1.2. What changed: the three slash commands moved into a namespace (`/rust-intel-cc:audit`, `/rust-intel-cc:fix`, `/rust-intel-cc:plan` — colon-namespaced under one umbrella), installers now default to **project-local** `./.claude/` (use `--user` / `-User` for the old user-global `~/.claude/` behaviour), and `.bat` wrappers are shipped for Windows `cmd.exe`. Installers sweep the legacy v0.1.x flat layout automatically. See [`CHANGELOG.md`](CHANGELOG.md) for full migration notes.
 
 ## Layout
 
 ```
 rust-intel/
-├── rust-intel.md          # The spec itself (Claude Code skill)
-├── README.md              # This file
-├── CHANGELOG.md           # Version history
-├── commands/              # Slash commands built on top of the skill
+├── rust-intel.md                       # The spec itself (Claude Code skill)
+├── README.md                           # This file
+├── CHANGELOG.md                        # Version history
+├── install.sh / install.ps1 / install.bat       # One-command install (project-local by default; --user for global)
+├── uninstall.sh / uninstall.ps1 / uninstall.bat # Inverse of install
+├── commands/
 │   ├── README.md
-│   ├── rust-audit.md      # /rust-audit  — scan existing code
-│   ├── rust-fix.md        # /rust-fix    — diagnose an error
-│   └── rust-plan.md       # /rust-plan   — pre-flight a new task
+│   └── rust-intel-cc/                  # Namespace dir → /rust-intel-cc:* commands
+│       ├── audit.md                    # /rust-intel-cc:audit  — scan existing code
+│       ├── fix.md                      # /rust-intel-cc:fix    — diagnose an error
+│       └── plan.md                     # /rust-intel-cc:plan   — pre-flight a new task
 └── docs/
-    ├── roadmap.md         # Planned commands and category expansions
-    └── sources.md         # Empirical sources and citations
+    ├── roadmap.md                      # Planned commands and category expansions
+    └── sources.md                      # Empirical sources and citations
 ```
 
 ## How to use it
 
-### As a Claude Code skill
+### Install (skill + commands)
 
-`rust-intel.md` ships with YAML frontmatter and registers as a Claude Code skill. Skills are not invoked by slash command — Claude Code activates them automatically when the current task matches the skill's description (in this case, any Rust-writing task).
-
-**Install** (run from the repo root after cloning):
+**Default is project-local** — files land in `./.claude/` of whatever directory you ran the installer from. Pass `--user` (or `-User` on PowerShell) to install to the user-global `~/.claude/` instead.
 
 ```bash
 # macOS / Linux
-mkdir -p ~/.claude/skills/rust-intel
-cp rust-intel.md ~/.claude/skills/rust-intel/SKILL.md
-```
+./install.sh                  # project-local: $PWD/.claude/
+./install.sh --user           # user-global:   $HOME/.claude/
+./install.sh --symlink        # symlink instead of copy (tracks repo updates)
 
-```powershell
 # Windows (PowerShell)
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\skills\rust-intel" | Out-Null
-Copy-Item -Path .\rust-intel.md -Destination "$env:USERPROFILE\.claude\skills\rust-intel\SKILL.md"
+.\install.ps1                 # project-local
+.\install.ps1 -User           # user-global
+
+# Windows (cmd.exe)
+install.bat                   # project-local
+install.bat -User             # user-global
 ```
 
-Or symlink, so the skill tracks repo updates (Unix only):
+`CLAUDE_CONFIG_DIR` env var overrides everything if set.
 
-```bash
-ln -s "$(pwd)/rust-intel.md" ~/.claude/skills/rust-intel/SKILL.md
-```
+The installer copies:
+- `rust-intel.md` → `<target>/skills/rust-intel/SKILL.md` (the skill — Claude Code activates it automatically on Rust tasks)
+- `commands/rust-intel-cc/{audit,fix,plan}.md` → `<target>/commands/rust-intel-cc/*.md` (the three slash commands)
 
-To verify installation: start `claude` in any Rust project, ask for any Rust task, and the assistant should reference rules from §A1–§C7 unprompted. For a one-command install of skill + all three commands, see [`install.sh`](install.sh) / [`install.ps1`](install.ps1).
+It also sweeps any prior install at the same target — including the legacy v0.1.x flat layout (`commands/rust-audit.md`, `commands/rust-fix.md`, `commands/rust-plan.md`, and the very early `commands/rust-intel.md`) — so re-running it cleanly migrates from any older version.
 
-**Uninstall** (removes only what the installers create — skill directory + the three named command files; other skills and commands under `~/.claude/` are not touched):
+### Uninstall
 
 ```bash
 # macOS / Linux
-./uninstall.sh
-```
+./uninstall.sh                # project-local
+./uninstall.sh --user         # user-global
 
-```powershell
 # Windows (PowerShell)
 .\uninstall.ps1
+.\uninstall.ps1 -User
+
+# Windows (cmd.exe)
+uninstall.bat
+uninstall.bat -User
+```
+
+Only touches the paths the installer creates. Other skills and commands under the target `.claude/` are not touched.
+
+### Verify
+
+Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§C7 unprompted. Try:
+
+```
+/rust-intel-cc:audit src/
+/rust-intel-cc:fix  E0277: the trait bound `T: Send` is not satisfied
+/rust-intel-cc:plan write a tokio task that consumes a sqlx stream and pushes to a websocket
 ```
 
 ### As a checklist for humans
 
 The document reads top-to-bottom. The minimum bar before committing any non-trivial Rust: walk the **Pre-flight checklist** (7 questions at the end of the spec) and the **Post-flight checklist** (the list of things to surface in a summary).
 
-### As a foundation for tooling
+### Commands
 
-Three commands live under [`commands/`](commands/) and share a single source of truth — the skill itself, never a copy:
+Three commands live under [`commands/rust-intel-cc/`](commands/rust-intel-cc/) and share a single source of truth — the skill itself, never a copy:
 
 | Command | Trigger | Use case |
 |---|---|---|
-| [`/rust-audit`](commands/rust-audit.md) | `/rust-audit [path]` | Scan existing Rust against all 26 categories, return a triaged report with concrete fixes. |
-| [`/rust-fix`](commands/rust-fix.md) | `/rust-fix <error>` | Map a compiler / clippy / panic / runtime symptom onto a category, propose a root-cause fix. |
-| [`/rust-plan`](commands/rust-plan.md) | `/rust-plan <task>` | Run a task description through the trigger table and Pre-flight checklist before any code is written. |
+| [`audit`](commands/rust-intel-cc/audit.md) | `/rust-intel-cc:audit [path]` | Scan existing Rust against all 26 categories, return a triaged report with concrete fixes. |
+| [`fix`](commands/rust-intel-cc/fix.md) | `/rust-intel-cc:fix <error>` | Map a compiler / clippy / panic / runtime symptom onto a category, propose a root-cause fix. |
+| [`plan`](commands/rust-intel-cc/plan.md) | `/rust-intel-cc:plan <task>` | Run a task description through the trigger table and Pre-flight checklist before any code is written. |
 
-Installation: see [`commands/README.md`](commands/README.md).
+Details: [`commands/README.md`](commands/README.md).
 
 ## Spec architecture
 

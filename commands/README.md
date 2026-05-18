@@ -9,9 +9,9 @@ rust-intel.md  ──  knowledge (26 categories, BANNED/REQUIRED, checklists)
        ▲
        │ invoke skill
        │
-┌──────┴──────┬─────────────┬──────────────┐
-│ /rust-audit │ /rust-fix   │ /rust-plan   │  ← process only
-└─────────────┴─────────────┴──────────────┘
+┌──────┴──────────────────┬──────────────────────┬──────────────────────┐
+│ /rust-intel-cc:audit    │ /rust-intel-cc:fix   │ /rust-intel-cc:plan  │  ← process only
+└─────────────────────────┴──────────────────────┴──────────────────────┘
 ```
 
 - **Knowledge** lives in the skill — edit once, every command sees the change immediately.
@@ -21,53 +21,36 @@ If a command wants a new rule, the rule lands in `rust-intel.md`, not in the com
 
 ## Commands
 
+All three live under the `rust-intel-cc` namespace (the directory `commands/rust-intel-cc/`) and are invoked with the colon-separator that Claude Code uses for nested commands.
+
 | File | Trigger | Use case |
 |---|---|---|
-| `rust-audit.md` | `/rust-audit [path]` | Scan existing Rust against all 26 categories |
-| `rust-fix.md` | `/rust-fix <error>` | Explain a compiler / runtime error and propose a root-cause fix |
-| `rust-plan.md` | `/rust-plan <task>` | Pre-flight a task through the trigger table before any code is written |
+| `rust-intel-cc/audit.md` | `/rust-intel-cc:audit [path]` | Scan existing Rust against all 26 categories |
+| `rust-intel-cc/fix.md` | `/rust-intel-cc:fix <error>` | Explain a compiler / runtime error and propose a root-cause fix |
+| `rust-intel-cc/plan.md` | `/rust-intel-cc:plan <task>` | Pre-flight a task through the trigger table before any code is written |
 
 ## Installation
 
-Claude Code looks for user commands in `~/.claude/commands/`. To install:
+Use the one-command installer at the repo root. By default it installs **project-local** — into `./.claude/` of whatever directory you ran it from. Pass `--user` to install to the user-global `~/.claude/` instead.
 
-**Windows (PowerShell):**
-```powershell
-Copy-Item -Path .\commands\*.md -Destination "$env:USERPROFILE\.claude\commands\"
-```
-
-**macOS / Linux:**
 ```bash
-cp commands/*.md ~/.claude/commands/
+# macOS / Linux  (project-local by default)
+./install.sh
+./install.sh --user           # user-global
+
+# Windows (PowerShell)
+.\install.ps1
+.\install.ps1 -User
+
+# Windows (cmd.exe)
+install.bat
+install.bat --user
 ```
 
-Or symlink, if you want command updates to track repo updates:
-```bash
-ln -s "$(pwd)/commands/rust-audit.md" ~/.claude/commands/rust-audit.md
-ln -s "$(pwd)/commands/rust-fix.md"   ~/.claude/commands/rust-fix.md
-ln -s "$(pwd)/commands/rust-plan.md"  ~/.claude/commands/rust-plan.md
-```
-
-Once installed, the commands appear in `/`-autocomplete inside Claude Code.
+The installer also handles the skill (`rust-intel.md` → `skills/rust-intel/SKILL.md`) and sweeps any prior install (including the legacy flat layout from v0.1.x with `commands/rust-audit.md`, `commands/rust-fix.md`, `commands/rust-plan.md`, and the very early `commands/rust-intel.md`).
 
 ## Dependency on the skill
 
-All three commands assume the `rust-intel` skill is registered in Claude Code. The skill source is `../rust-intel.md`.
-
-**Install the skill (do this before running any command).** Run from the **repo root**, not from inside `commands/`:
-
-```bash
-# macOS / Linux
-mkdir -p ~/.claude/skills/rust-intel
-cp rust-intel.md ~/.claude/skills/rust-intel/SKILL.md
-```
-
-```powershell
-# Windows (PowerShell)
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\skills\rust-intel" | Out-Null
-Copy-Item -Path .\rust-intel.md -Destination "$env:USERPROFILE\.claude\skills\rust-intel\SKILL.md"
-```
-
-Or use the one-command installer at the repo root: `./install.sh` (Unix) or `./install.ps1` (Windows).
+All three commands assume the `rust-intel` skill is registered in Claude Code at the same target. The installer puts it there for you.
 
 If the skill is unavailable, the commands emit `⚠️ BLOCKED: skill rust-intel is not registered` and stop.

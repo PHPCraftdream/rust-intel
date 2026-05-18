@@ -3,7 +3,7 @@ description: Scan Rust code against the 26 categories from rust-intel and return
 argument-hint: "[path]"
 ---
 
-# /rust-audit
+# /rust-intel-cc:audit
 
 Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes the developer's need to know all 26 categories — finds what a senior reviewer with that document in their head would catch.
 

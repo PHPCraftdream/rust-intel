@@ -10,7 +10,38 @@ Patch = wording refinements, fixes, new sources.
 
 _No unreleased changes._
 
-See [`docs/roadmap.md`](docs/roadmap.md) for planned v0.2.0+ work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
+See [`docs/roadmap.md`](docs/roadmap.md) for planned work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
+
+## [0.2.0] — 2026-05-18
+
+Tooling restructure. The skill itself (`rust-intel.md`) is byte-identical to v0.1.2 — no rule changes, no new categories. What changed is how the slash commands are organised and how the installers behave by default.
+
+### Changed
+
+- **Slash commands moved into the `rust-intel-cc` namespace.** The three top-level commands are gone; they now live under `commands/rust-intel-cc/` and are invoked with the colon-namespace syntax Claude Code uses for nested commands:
+  - `/rust-audit` → `/rust-intel-cc:audit`
+  - `/rust-fix`   → `/rust-intel-cc:fix`
+  - `/rust-plan`  → `/rust-intel-cc:plan`
+  Rationale: a single `rust-intel-cc` umbrella is easier to remember, easier to grep, and isolates the three sub-commands into one Claude Code namespace instead of three top-level slots.
+- **Installers default to project-local `./.claude/`** instead of user-global `~/.claude/`. Pass `--user` (bash) or `-User` (PowerShell) to get the v0.1.x global-install behaviour. `CLAUDE_CONFIG_DIR` env var still overrides everything. Rationale: a Rust skill is most useful scoped to the project being worked on; the global install is the rarer case and is now an explicit opt-in.
+- **Installers and uninstallers now sweep the legacy v0.1.x flat layout** (`commands/rust-audit.md`, `commands/rust-fix.md`, `commands/rust-plan.md`, plus the very early `commands/rust-intel.md`) and the entire `commands/rust-intel-cc/` directory before copying. Re-running the installer cleanly migrates from any previous version.
+
+### Added
+
+- **`install.bat` / `uninstall.bat`** — thin wrappers around the corresponding `.ps1` scripts for users in `cmd.exe`. Pass-through arguments work as expected (`install.bat -User`, etc.).
+- `.gitattributes` now pins `*.bat` to CRLF (cmd.exe will not parse LF-terminated batch files reliably).
+- `/.claude/` added to `.gitignore` so running the installer from the repo root does not pollute the working tree.
+
+### Migration
+
+For anyone upgrading from v0.1.x:
+
+1. Pull the new repo state.
+2. Re-run the installer (`./install.sh`, `.\install.ps1`, or `install.bat`). It will sweep the old flat layout — `/rust-audit`, `/rust-fix`, `/rust-plan` — from whatever target it was previously installed to, and put the new namespaced layout in its place.
+3. If you previously installed to `~/.claude/` (the v0.1.x default), pass `--user` / `-User` on the new install — otherwise the installer will treat your current directory as the install target.
+4. Update any tooling or notes that invoked the old slash commands to use the new namespaced names.
+
+The skill itself activates the same way as before. Only the slash-command names changed.
 
 ## [0.1.2] — 2026-05-17
 
