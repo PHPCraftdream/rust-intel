@@ -19,8 +19,8 @@ rust-intel/
 ├── rust-intel.md                       # The spec itself (Claude Code skill)
 ├── README.md                           # This file
 ├── CHANGELOG.md                        # Version history
-├── install.sh / install.ps1 / install.bat       # One-command install (project-local by default; --user for global)
-├── uninstall.sh / uninstall.ps1 / uninstall.bat # Inverse of install
+├── rust-cc-install.sh / rust-cc-install.ps1 / rust-cc-install.bat       # One-command install (project-local by default; --user for global)
+├── rust-cc-uninstall.sh / rust-cc-uninstall.ps1 / rust-cc-uninstall.bat # Inverse of install
 ├── commands/
 │   ├── README.md
 │   └── rust-intel-cc/                  # Namespace dir → /rust-intel-cc:* commands
@@ -40,17 +40,17 @@ rust-intel/
 
 ```bash
 # macOS / Linux
-./install.sh                  # project-local: $PWD/.claude/
-./install.sh --user           # user-global:   $HOME/.claude/
-./install.sh --symlink        # symlink instead of copy (tracks repo updates)
+./rust-cc-install.sh                  # project-local: $PWD/.claude/
+./rust-cc-install.sh --user           # user-global:   $HOME/.claude/
+./rust-cc-install.sh --symlink        # symlink instead of copy (tracks repo updates)
 
 # Windows (PowerShell)
-.\install.ps1                 # project-local
-.\install.ps1 -User           # user-global
+.\rust-cc-install.ps1                 # project-local
+.\rust-cc-install.ps1 -User           # user-global
 
 # Windows (cmd.exe)
-install.bat                   # project-local
-install.bat -User             # user-global
+rust-cc-install.bat                   # project-local
+rust-cc-install.bat -User             # user-global
 ```
 
 `CLAUDE_CONFIG_DIR` env var overrides everything if set.
@@ -65,16 +65,16 @@ It also sweeps any prior install at the same target — including the legacy v0.
 
 ```bash
 # macOS / Linux
-./uninstall.sh                # project-local
-./uninstall.sh --user         # user-global
+./rust-cc-uninstall.sh                # project-local
+./rust-cc-uninstall.sh --user         # user-global
 
 # Windows (PowerShell)
-.\uninstall.ps1
-.\uninstall.ps1 -User
+.\rust-cc-uninstall.ps1
+.\rust-cc-uninstall.ps1 -User
 
 # Windows (cmd.exe)
-uninstall.bat
-uninstall.bat -User
+rust-cc-uninstall.bat
+rust-cc-uninstall.bat -User
 ```
 
 Only touches the paths the installer creates. Other skills and commands under the target `.claude/` are not touched.

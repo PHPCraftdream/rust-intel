@@ -24,7 +24,7 @@ for arg in "$@"; do
         --symlink) USE_SYMLINK=1 ;;
         --help|-h)
             cat <<EOF
-Usage: ./install.sh [--user] [--symlink]
+Usage: ./rust-cc-install.sh [--user] [--symlink]
 
 Default target (no flags): \$PWD/.claude/  (the current working directory).
 With --user:               \$HOME/.claude/  (user-global).

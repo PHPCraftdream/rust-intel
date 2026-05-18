@@ -19,7 +19,7 @@ param(
 
 if ($Help) {
     @"
-Usage: .\install.ps1 [-User]
+Usage: .\rust-cc-install.ps1 [-User]
 
 Default target (no flags): .\.claude\  (the current working directory).
 With -User:                %USERPROFILE%\.claude\  (user-global).

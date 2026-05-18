@@ -1,7 +1,7 @@
 # Removes the rust-intel skill and the /rust-cc-* commands.
-# Inverse of install.ps1. Sweeps every known historical layout (v0.1.x, v0.2.0,
-# v0.2.1+) so this script is safe to run regardless of which version was used
-# to install.
+# Inverse of rust-cc-install.ps1. Sweeps every known historical layout (v0.1.x,
+# v0.2.0, v0.2.1+) so this script is safe to run regardless of which version
+# was used to install.
 #
 # Default target: .\.claude\ of the current working directory (project-local).
 # Pass -User to remove from the user-global %USERPROFILE%\.claude\ instead.
@@ -15,7 +15,7 @@ param(
 
 if ($Help) {
     @"
-Usage: .\uninstall.ps1 [-User]
+Usage: .\rust-cc-uninstall.ps1 [-User]
 
 Default target (no flags): .\.claude\  (the current working directory).
 With -User:                %USERPROFILE%\.claude\  (user-global).

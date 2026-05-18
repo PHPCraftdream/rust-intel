@@ -12,6 +12,25 @@ _No unreleased changes._
 
 See [`docs/roadmap.md`](docs/roadmap.md) for planned work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
 
+## [0.2.2] — 2026-05-18
+
+Same-day script renaming. The skill itself (`rust-intel.md`) is byte-identical to v0.1.2, v0.2.0, and v0.2.1 — no rule changes, no new categories.
+
+### Changed
+
+- **Install and uninstall scripts gained the `rust-cc-` prefix.** Generic names like `install.bat` / `install.sh` are a footgun: if the repo lives on the user's `PATH`, or if multiple tooling repos share a common convention, an unprefixed `install` shadows other things in the system. Renamed all six scripts to be project-specific:
+  - `install.sh`     → `rust-cc-install.sh`
+  - `install.ps1`    → `rust-cc-install.ps1`
+  - `install.bat`    → `rust-cc-install.bat`
+  - `uninstall.sh`   → `rust-cc-uninstall.sh`
+  - `uninstall.ps1`  → `rust-cc-uninstall.ps1`
+  - `uninstall.bat`  → `rust-cc-uninstall.bat`
+  Internal references (`.bat` → sibling `.ps1`, `--help` text) and external docs (README, `commands/README.md`) updated to match.
+
+### Migration
+
+If you previously cloned the repo and ran `./install.sh` / `.\install.ps1` / `install.bat`, the next pull will rename them. Update any automation, aliases, or notes accordingly. The script behaviour is unchanged.
+
 ## [0.2.1] — 2026-05-18
 
 Same-day rectification of v0.2.0. The skill itself (`rust-intel.md`) is byte-identical to v0.1.2 and v0.2.0 — no rule changes, no new categories.

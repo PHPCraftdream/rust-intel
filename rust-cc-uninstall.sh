@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Removes the rust-intel skill and the /rust-cc-* commands.
-# Inverse of install.sh. Sweeps every known historical layout (v0.1.x, v0.2.0,
-# v0.2.1+) so this script is safe to run regardless of which version was used
-# to install.
+# Inverse of rust-cc-install.sh. Sweeps every known historical layout (v0.1.x,
+# v0.2.0, v0.2.1+) so this script is safe to run regardless of which version
+# was used to install.
 #
 # Default target: ./.claude/ of the current working directory (project-local).
 # Pass --user to remove from the user-global ~/.claude/ instead.
@@ -16,7 +16,7 @@ for arg in "$@"; do
         --user) USE_USER=1 ;;
         --help|-h)
             cat <<EOF
-Usage: ./uninstall.sh [--user]
+Usage: ./rust-cc-uninstall.sh [--user]
 
 Default target (no flags): \$PWD/.claude/  (the current working directory).
 With --user:               \$HOME/.claude/  (user-global).

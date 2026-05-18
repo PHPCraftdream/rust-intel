@@ -37,16 +37,16 @@ Use the one-command installer at the repo root. By default it installs **project
 
 ```bash
 # macOS / Linux  (project-local by default)
-./install.sh
-./install.sh --user           # user-global
+./rust-cc-install.sh
+./rust-cc-install.sh --user           # user-global
 
 # Windows (PowerShell)
-.\install.ps1
-.\install.ps1 -User
+.\rust-cc-install.ps1
+.\rust-cc-install.ps1 -User
 
 # Windows (cmd.exe)
-install.bat
-install.bat -User
+rust-cc-install.bat
+rust-cc-install.bat -User
 ```
 
 The installer also handles the skill (`rust-intel.md` → `skills/rust-intel/SKILL.md`) and sweeps every prior layout at the target — v0.2.1+ flat-with-prefix, v0.2.0 namespace dir, and the v0.1.x flat-no-prefix layout.
