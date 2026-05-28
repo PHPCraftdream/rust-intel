@@ -133,6 +133,11 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "test that this panics", "should_panic", "expected panic" | §D1 tests by luck | `#[should_panic]` without `expected` catches any panic |
 | "MaybeUninit", "uninitialized memory", "zero-init buffer" | §B5 unsafe; §B7 large stack | `mem::uninitialized` is UB; `Box::new([0;N])` is on stack |
 | "FFI", "bindgen", "C library", "extern C", "native bindings", "wrap a C API" | §B25 FFI ABI; §B5 unsafe | Panic across `extern "C"`; allocator mismatch on `Box::from_raw`; `cap`-mismatched `Vec::from_raw_parts` |
+| "every N seconds", "periodically", "on a timer", "scheduled tick" | §B15 interval first-tick | First `.tick()` fires immediately, not after the period; Burst catch-up under lag |
+| "exit the program", "bail out", "exit with code", "abort on error" | §B4 process::exit skips Drop | Stack guards (transactions, files, locks) never run their Drop |
+| "wait for signal", "wait until ready", "condition variable", "notify the worker" | §B15 Notify lost-wakeup | Wakeup races with `notify_one` unless armed via `enable()` before the check |
+| "log this struct", "add debug logging", "derive Debug" (on types holding secrets) | §B12 crypto Debug-leak | `{:?}` prints `password`/`token`/`key` fields into logs |
+| "compare floats", "approximately equal", "assert the result is ~X" | §D1 tests by luck | `assert_eq!` on computed `f32`/`f64` flakes across builds/arches |
 
 **Triggered by code, not phrase** — when the user's input *contains code that matches any of these patterns*, the linked categories activate even if no English phrase fires:
 
@@ -153,6 +158,14 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `mem::transmute`, `ptr::read`, `slice::from_raw_parts` | §B5 (UB-prone unsafe) |
 | `Box::new([0u8; N])` where `N` is large | §B7 (stack overflow before placement) |
 | `extern "C" fn` body, `#[no_mangle]`, `Box::into_raw`/`Box::from_raw`, `Vec::from_raw_parts` | §B25 (FFI ABI and ownership), §B5 (UB-prone unsafe) |
+| `std::process::exit(...)` / `process::exit(...)` below a live RAII guard | §B4 (Drop skipped) |
+| `Arc::strong_count(...)` / `Rc::strong_count(...)` used in a conditional | §B13 (count TOCTOU — use `into_inner`/`try_unwrap`) |
+| `assert_eq!(...)` / `assert_ne!(...)` with an `f32`/`f64` operand | §D1 (float exact-equality) |
+| `notify.notified()` / `Notify` | §B15 (lost wakeup — arm with `enable()` before check) |
+| `#[derive(Debug)]` on a struct with a `password`/`secret`/`token`/`key`/`seed` field | §B12 (Debug-leak of secrets) |
+| `impl Drop` whose body can `panic!`/`.unwrap()`/`.expect()` | §B4 (panic-in-Drop double-abort) |
+| `tokio::time::interval(...)` | §B15 (first tick is immediate; pick `MissedTickBehavior`) |
+| `oneshot::channel()` with the result discarded or `.unwrap()`-ed | §B8 (drop cascade / `RecvError` panic) |
 
 When two or more triggers fire in one request, treat it as a high-risk task and explicitly enumerate which categories I'm guarding against in my response.
 
@@ -234,7 +247,7 @@ Concrete defenses:
 
 # TIER B — Silent correctness bugs
 
-These pass `cargo build`, often pass `cargo test`, and fail in production. The twenty-four categories below are the ones that hurt — and this is where the spec's real value lives. *We assume your code already compiles. We assume your tests pass. That's not enough.*
+These pass `cargo build`, often pass `cargo test`, and fail in production. The twenty-five categories below are the ones that hurt — and this is where the spec's real value lives. *We assume your code already compiles. We assume your tests pass. That's not enough.*
 
 **Why this tier exists**: high compilation rate is not correctness. The published 2026 field report on ~80k LOC of LLM-generated tokio/sqlx code (see [`docs/sources.md`](docs/sources.md)) shows that **§B2 alone (`Mutex` across `.await`) was responsible for failure in roughly half of async tasks** before defensive prompting cut it sharply; SafeGenBench shows static analyzers miss **~57% of vulnerabilities** in LLM-generated crypto Rust that *does* compile (§B12). The category list below is structured around this gap between `cargo test` green and actual correctness — see [`docs/sources.md`](docs/sources.md) for the full evidence trail.
 
@@ -448,7 +461,7 @@ Async resources have an additional constraint that `Drop` cannot honor — see �
 - `let _fut = async_fn();` followed by code that never `.await`s or spawns `_fut` — once the binding goes out of scope, the future is dropped without polling and the work never happens. Whether the type is `Pin<Box<dyn Future>>`, a chained adapter (`.map(...)`, `.then(...)`), or a plain `impl Future`, the rule is identical: a future that is dropped without polling does nothing.
 - An `impl Future`-returning function whose return value is bound to a variable inside a non-`async` function and never awaited there. The compiler warns via `#[must_use]` / `unused_must_use`, but the warning is silenced if the future type is wrapped (e.g., in a tuple, in `Result::Ok`, behind an adapter that does not itself carry `#[must_use]`).
 - `let (tx, rx) = tokio::sync::oneshot::channel();` followed by `let _ = tx.send(value);` (discarding the `Err(value)` returned when the receiver has been dropped) — the work that produced `value` is now invisible to the consumer side. Match the `Err` and either log it or propagate.
-- `recv.await.unwrap()` on a `tokio::sync::oneshot::Receiver` when the producer task can fail or be dropped — `RecvError` becomes a runtime panic at a distance. Handle it explicitly as a failure mode.
+- `rx.await.unwrap()` on a `tokio::sync::oneshot::Receiver` (the receiver *is* a `Future` — you `.await` it directly, there is no `.recv()` method) when the producer task can fail or be dropped — `RecvError` becomes a runtime panic at a distance. Handle it explicitly as a failure mode.
 
 **REQUIRED**:
 - Every async function call is followed by `.await`, OR wrapped in `tokio::spawn(async move { ... .await })` for fire-and-forget, OR explicitly stored in a `JoinHandle`/`FuturesUnordered` for later polling.
@@ -518,7 +531,7 @@ A spawned task that *did* run but produced a result the caller never observes is
 **REQUIRED**:
 - For genuinely CPU-bound work (compression, hashing, parsing large blobs, calling a sync C library, using a sync crate that has no async equivalent): wrap in `tokio::task::spawn_blocking(|| { ... }).await?`. This dispatches to a *separate* blocking-task thread pool, freeing the async worker thread for other tasks.
 - `tokio::task::yield_now().await` is **not** an alternative to `spawn_blocking` for CPU-bound work. `yield_now` only gives *other tasks already on the same worker thread* a chance to make progress; when your task resumes, the worker is still occupied by you. It does not solve "starving the executor" because the worker count is fixed (typically the CPU core count). Use `yield_now` only for cooperative fairness inside an IO-bound task that occasionally does a small CPU burst.
-- For modern tokio (1.x), `tokio::task::coop::consume_budget().await` is the explicit *budget-aware* primitive: it yields *only when the task's coop budget is exhausted*, otherwise returns immediately. Prefer it to `yield_now` inside a tight async loop that wants to be cooperative without paying the unconditional re-schedule cost. Note: the canonical path is `tokio::task::coop::consume_budget`; the older `tokio::task::consume_budget` re-export is `#[deprecated]` in recent tokio versions.
+- For modern tokio, `consume_budget().await` is the explicit *budget-aware* primitive: it yields *only when the task's coop budget is exhausted*, otherwise returns immediately. Prefer it to `yield_now` inside a tight async loop that wants to be cooperative without paying the unconditional re-schedule cost. Path note: the function lives at `tokio::task::consume_budget` through tokio 1.43, and moved to `tokio::task::coop::consume_budget` in **1.44.0** (the old path is `#[deprecated]` since 1.44.0). Use whichever path matches your pinned tokio.
 - Verify with `tokio-console` or `tracing` spans that no task holds a worker thread longer than its budget.
 
 ## §B12. Cryptographic code (silent insecurity)
@@ -579,6 +592,7 @@ In a single-threaded test, this is correct. Under concurrent load, N threads sim
 - "Two-phase commit"-style patterns across separate operations on a concurrent collection.
 - `let x = *counter.lock().unwrap(); *counter.lock().unwrap() = x + 1;` — read and write are separate critical sections, a thread can interleave.
 - `if Arc::strong_count(&arc) == 1 { ... unique-owner logic ... }` — count can change between read and use under any concurrent code. Use `Arc::into_inner(arc)` (returns `Option<T>` if unique) or `Arc::try_unwrap(arc)` (returns `Result<T, Arc<T>>`); the atomic variant is the only check-and-act pattern that's race-free.
+- `Ordering::Relaxed` on an atomic used to *publish* data to another thread (e.g. write the payload, then `flag.store(true, Relaxed)`; the reader does `flag.load(Relaxed)` then reads the payload). `Relaxed` establishes **no happens-before** edge, so the reader may observe the flag set before the payload writes are visible — a data race that x86's strong memory model usually hides in tests but that breaks on ARM/AArch64 under reordering. Use `Release` on the store and `Acquire` on the load (or `AcqRel`/`SeqCst` for read-modify-write) whenever the atomic guards access to other data.
 
 **REQUIRED**:
 - For "insert if absent": `map.entry(key).or_insert_with(|| compute_value())`. The `entry` API holds the relevant bucket lock across the check and act.
@@ -591,6 +605,7 @@ In a single-threaded test, this is correct. Under concurrent load, N threads sim
 - For atomic counters: `AtomicUsize::fetch_add(1, Ordering::Relaxed)`, not lock-load-add-store.
 - For "compare and swap" patterns: `Atomic*::compare_exchange` or `Atomic*::fetch_update`.
 - For ordered iteration of map keys, use `BTreeMap` (sorted by key) or collect to `Vec` and `sort_by`. `HashMap::iter` order is randomized per-process and per-rehash; relying on it makes tests flake across machines.
+- `Relaxed` is correct only for standalone counters/statistics where no other memory is published through the atomic. The moment the atomic gates visibility of other data, you need `Acquire`/`Release`. Don't blanket-`SeqCst` to "be safe" — it hides the wrong mental model and costs a fence; reason about the happens-before edge explicitly, and model-check multi-atomic code with `loom` (already in the post-flight list).
 
 **Detection**: this is invisible to type checking and almost always invisible to tests. The defense is recognizing the pattern at write time. If a function does two consecutive operations on a shared collection, it is a candidate.
 
@@ -606,6 +621,7 @@ In a single-threaded test, this is correct. Under concurrent load, N threads sim
 - `tokio::sync::mpsc::unbounded_channel()` without explicit justification that the producer rate is provably bounded by an external invariant.
 - `flume::unbounded()`, `async_channel::unbounded()` for the same reason.
 - A `Vec` that is `push`-ed in a hot loop with no consumer or cap — same failure shape as an unbounded channel, different surface. `Vec::push` itself is fine (amortized O(1)); the failure is the missing drain or bound.
+- Treating `tokio::sync::broadcast::error::RecvError::Lagged(n)` as a transient error to retry past. `Lagged(n)` means the receiver fell more than the channel's capacity behind the sender and **`n` messages are gone forever** — the receiver has already skipped to the oldest still-buffered message. A `match { Err(Lagged(_)) => continue, ... }` loop recovers nothing and silently masks data loss as a hiccup. On `Lagged`, log/metric the skipped count and decide explicitly whether dropping is acceptable or the consumer must be made faster / the buffer larger.
 
 **REQUIRED**:
 - Default to **bounded** channels: `tokio::sync::mpsc::channel(N)`. Size `N` from the actual constraints, not from a folk number: large enough to absorb the *expected producer burst over one consumer cycle*, small enough that `N × sizeof(message)` fits the per-task memory budget. If the right `N` cannot be reasoned about, that is a signal that the backpressure policy itself needs design before the channel is written. Never `unbounded`.
@@ -654,7 +670,7 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 **`block_on` inside an async runtime**: `tokio::runtime::Handle::block_on` (or `futures::executor::block_on`) called from code already running inside a tokio runtime panics with "Cannot start a runtime from within a runtime". This happens when LLM writes a sync-looking helper that internally calls `block_on`, then invokes it from async code.
 
 - Inside async code, use `.await`, not `block_on`.
-- For sync-to-async bridges, use `tokio::task::spawn_blocking` and `block_in_place`, never nested `block_on`.
+- For running blocking/CPU-bound work from inside async, use `tokio::task::spawn_blocking` (separate blocking-thread pool) or `tokio::task::block_in_place` (runs blocking code on the current worker without starving sibling tasks — note this is for async-calls-blocking-code, *not* a sync-to-async bridge; you still cannot `.await` inside it without a `Handle`). Never use nested `block_on`.
 - If a helper function is shared between sync and async callers, prefer making the helper async and forcing sync callers to bridge explicitly.
 
 **`Stream` vs `Iterator` — they are not interchangeable**: `Iterator::next(&mut self) -> Option<Item>` is synchronous; `futures::Stream::poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Item>>` is async and requires polling discipline. LLMs frequently write `for x in stream { ... }` (illegal — `Stream` does not impl `Iterator`) or call `.next().await` without importing the `StreamExt` extension trait.
@@ -664,12 +680,23 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Choosing the extension trait matters: `tokio_stream::StreamExt::next` returns the same shape as `futures::StreamExt::next`, but `tokio_stream` adds tokio-specific combinators (`.timeout(...)`, `.chunks_timeout(...)`). Pick one per module and stick with it.
 
 **Additional BANNED**:
-- `notify.notified().await` without first checking the condition the notification represents — wakeups can race with `notify_one()` and be lost. The canonical pattern is: `let permit = notify.notified(); pin!(permit); if !condition() { permit.await; }` — register the wakeup *before* checking, so a notification between check and await is not lost.
+- `notify.notified().await` without first checking the condition the notification represents — wakeups can race with `notify_one()` and be lost. Simply creating + `pin!`-ing a `Notified` future does **not** register the waker; only `.enable()` (or the first poll) does. The canonical lost-wakeup-free pattern:
+  ```rust
+  let notified = notify.notified();
+  tokio::pin!(notified);
+  notified.as_mut().enable();          // registers the waker BEFORE the check — closes the race
+  if !condition() {
+      notified.await;
+  }
+  ```
+  The `enable()` call is load-bearing: it is what actually arms the wakeup before you inspect the condition, so a `notify_one()` that lands between the check and the await is not lost.
 - Dropping a half-consumed `Stream` without explicit acknowledgement that the buffered items are lost. For `tokio::sync::mpsc::ReceiverStream`, dropping the stream signals the sender side; for `BroadcastStream`, in-flight items are gone. Document the drop semantics or wrap the stream in a `Drop` that drains.
 - `tokio::select! { ... }` without a `biased;` directive when arm-priority matters (e.g., shutdown signal must win over data-availability when both are ready). The default behavior is pseudo-random per poll, which surfaces as occasional starvation under load.
+- `tokio::time::interval(period)` used as `loop { iv.tick().await; do_work().await; }` assuming the first `do_work` runs after `period`. The **first** `.tick().await` returns **immediately** (at creation time), not after one period — so the loop body fires once right away. Worse, the default `MissedTickBehavior::Burst` makes a delayed interval fire all missed ticks back-to-back to "catch up", producing a load spike. Compiles, passes a single-iteration test, surprises in production.
 
 **Additional REQUIRED**:
 - For arm-priority, use `tokio::select! { biased; _ = shutdown.notified() => ..., msg = rx.recv() => ..., }` — left-to-right priority is now deterministic.
+- For "do X every N": either consume and discard the first immediate tick, or use `tokio::time::interval_at(Instant::now() + period, period)`, and set `MissedTickBehavior::Delay` (steady cadence) or `Skip` (drop missed ticks) explicitly rather than relying on the `Burst` default.
 
 ## §B16. Equality and hashing contracts
 
@@ -880,7 +907,7 @@ These are not bugs in the strict sense, but design choices the LLM makes that ar
 - `.unwrap()` on `Mutex::lock()` in production code (the panic message is unhelpful; use `.expect("description")` minimum, or handle the poison case).
 - Silent `let _ = result;` to discard errors. If discarding is intentional, comment why.
 - `Result<T, Box<dyn Error>>` (or `Result<T, Box<dyn Error + Send + Sync>>`) as the return type of any `pub fn` in a published library crate. Callers cannot match on the error variant — every error becomes an opaque blob. For libraries, define a concrete error enum (typically via `thiserror`). Internal/workspace code may use `Box<dyn Error>` or `anyhow::Error` as a deliberate trade-off.
-- `thiserror::Error` enum with two or more `#[from]` variants whose source types are interconvertible (e.g., `#[from] io::Error` and `#[from] MyWrapperAroundIoError`). The `?` operator's type inference becomes ambiguous; one of the `From` impls will be silently preferred, surprising readers.
+- Reflexive `#[from]` on every error variant. `#[from] io::Error` makes every `?` on an I/O operation collapse into one variant — the resulting error can no longer say *which* operation failed (the config read? the socket write? the temp-file flush?). It compiles, tests pass, and production logs become "I/O error" with no call-site context. Use `#[from]` only where the source type already uniquely identifies the failure; otherwise carry context with `#[source]` plus an explicit `.map_err(|e| MyError::ConfigRead(e))` at each call site, or use `anyhow::Context::context` in binary code.
 
 ## §C3. Async runtime and ecosystem coherence
 
@@ -1029,6 +1056,9 @@ Code passes `cargo test` for two distinct reasons: (a) it is correct, (b) the te
 - Tests that assert no postcondition: `let _ = do_thing(); assert!(true);` — proves only that `do_thing` returned without panicking, which is the weakest possible assertion.
 - Tests that compare two outputs derived from the same buggy intermediate (e.g., `assert_eq!(serialize(x), serialize(parse(serialize(x))))` does not prove `parse` is correct, only that it is idempotent on serialize output).
 - `assert_eq!(a, b)` where `a: f32` or `f64` and the values are computed (not literal). Floating-point exact equality flakes between debug/release builds, between architectures (SSE vs AVX vs NEON), and across compiler versions due to reassociation. Use `approx::assert_relative_eq!(a, b, epsilon = …)` or `assert_abs_diff_eq!`, or write the comparison manually as `(a - b).abs() < eps`.
+- A test whose mock/fake always returns `Ok`/success and never reproduces the failure modes the real dependency exhibits (timeouts, partial reads, `5xx`, connection resets). A green test against a happy-path-only mock proves behavior against fiction, not against the dependency. Mock the error paths too, or use a fake that can be told to fail.
+- `#[ignore]` left on a test "temporarily" to make the suite green. An ignored test is invisible to `cargo test` and rots silently — CI stays green because the test never runs. If a test must be ignored, gate it behind a named feature or document the re-enable condition.
+- Tests that share mutable global state (a `static` cell, a fixed-name temp file, a hard-coded port, an env var) and pass only because of run order. `cargo test` runs tests in parallel threads by default; shared state makes them flake or clobber each other. Isolate per-test state (unique temp dirs/ports, `serial_test` for unavoidable globals).
 
 **REQUIRED**:
 - For async timing in tests, use `tokio::time::pause()` / `tokio::time::advance(Duration::from_secs(N))` — virtual time that the runtime under your control. Or use explicit synchronization (`tokio::sync::Notify`, `oneshot::channel`) signalled by the async work itself.
@@ -1066,7 +1096,7 @@ This spec targets **Rust edition 2024, MSRV ≥ 1.84**. Several rules above depe
 - **`rand` 0.8 / 0.9 split** — `thread_rng()` in 0.8 → `rng()` in 0.9. The `OsRng` recommendation in §B12 holds for both.
 - **`subtle` crate** for §B24 — stable, `subtle::ConstantTimeEq::ct_eq` is the canonical entry point.
 - **Strict-provenance API** (`ptr.with_addr`, `ptr.addr`, `ptr.expose_provenance`, `with_exposed_provenance`) per §B5 — stable since **Rust 1.84**.
-- **`tokio::task::coop::consume_budget`** per §B11 — stable since **tokio 1.39.1** (1.39.0 was yanked). The older `tokio::task::consume_budget` re-export is now `#[deprecated]`.
+- **`consume_budget`** per §B11 — the function is stable since **tokio 1.39.1** (1.39.0 was yanked) at `tokio::task::consume_budget`; it moved into the new `tokio::task::coop` module in **tokio 1.44.0** (old path `#[deprecated]` from 1.44.0). On a tokio MSRV below 1.44 use `tokio::task::consume_budget`; on 1.44+ use `tokio::task::coop::consume_budget`.
 - **Panic across `extern "C"`** per §B25 — pre-Rust 1.81 the behavior was UB; **since Rust 1.81** the default is process abort. The `extern "C-unwind"` ABI (also stabilized) opts into defined unwinding for callers that can handle it. Either way, `catch_unwind` at the boundary is the safe answer.
 
 ---

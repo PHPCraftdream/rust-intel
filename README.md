@@ -18,6 +18,8 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ## Status
 
+**v0.3.2 — accuracy patch (2026-05-29).** Same-day follow-up patches on top of v0.3.0's content release. v0.3.1 fixed five accuracy bugs (`mpsc::Sender::send` cancel-safety, the non-existent `cargo expand --type-sizes`, the `tokio::task::consume_budget` path, `subtle::Choice` vs `bool`, the C-DEREF citation) and extended seven categories with new BANNED/REQUIRED bullets. v0.3.2 fixes three bugs introduced in v0.3.1 (the `Notify` lost-wakeup pattern was missing its load-bearing `.enable()`; `tokio::task::coop::consume_budget` was pinned to the wrong tokio version; the `thiserror` `#[from]` bullet was both inaccurate and out-of-scope, now reframed as error-context erasure), catches the trigger table up to the v0.3.1 rules, and adds bullets for `tokio::time::interval` first-tick, atomic memory ordering, `broadcast` lag-is-data-loss, and blind-test antipatterns. Category count stays 41; slash commands unchanged. See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
+
 **v0.3.0 — scope reframe, accuracy pass, taxonomy expansion (2026-05-28).** Major content release. The spec is now explicitly scoped to bugs that compile and pass tests but still break — silent correctness bugs, design hazards, runtime data corruption, and performance pitfalls that `rustc` and `cargo test` cannot catch. Eight accuracy bugs from the v0.2.x text are fixed (cancel-safety of `write_buf`, `Box::new_uninit_slice` stable-since-1.82, `tokio::sync::Mutex` deadlock semantics, `#[repr(Rust)]` framing, `slice::align_to` as `unsafe`, stack-overflow threshold rationale, the `tokio::spawn(async_fn())` non-issue, `Vec::into_raw_parts` pinned to Rust 1.93). New categories cover equality/hashing contracts, `RefCell` runtime panics, manual `Send`/`Sync` impls, iterator invalidation through `RefCell`, serde field-presence vs null, `JoinHandle` semantics, async `Drop` non-existence, `select!` cancellation side effects, timing attacks on secrets, panic and ownership across `extern "C"` FFI, channel-runtime mismatch, `tracing` span leakage, workspace feature unification, `Deref` polymorphism antipattern, and a new Tier D for tests-that-pass-by-luck. `mem::uninitialized` / `mem::zeroed` are now in §B5's BANNED list. Tier A renumbered to close the gap left by the retired trait-bounds category. The skill activates the same way; slash commands `/rust-cc-{audit,fix,plan}` are unchanged. See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
 
 ## Layout
@@ -93,7 +95,7 @@ Only touches the paths the installer creates. Other skills and commands under th
 
 ### Verify
 
-Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§C11 unprompted. Try:
+Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§D2 unprompted. Try:
 
 ```
 /rust-cc-audit src/

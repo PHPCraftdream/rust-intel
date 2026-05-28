@@ -10,7 +10,56 @@ Patch = wording refinements, fixes, new sources.
 
 _No unreleased changes._
 
-See [`docs/roadmap.md`](docs/roadmap.md) for planned work: source-anchor IDs in `docs/sources.md`, repro snippets per BANNED formulation, and an `examples/` corpus for regression testing the `/rust-cc-audit` tool. Possible v0.4.0 work: dedicated category for `tokio::time::interval` first-tick semantics and timer ergonomics.
+See [`docs/roadmap.md`](docs/roadmap.md) for planned work, including the v0.4.0 batch of bullet-level additions (`env::var` non-UTF8, `Box::leak` vs `OnceLock`, `mem::forget`, `serde_json` numeric fidelity, `watch::Receiver` semantics, `FuturesUnordered` cap, `{:?}` on bytes, `Cell` vs `RefCell`), the trigger-table expansion, and a possible §B15 split.
+
+## [0.3.2] — 2026-05-29
+
+Same-day patch on top of v0.3.1. Fixes three bugs **introduced by v0.3.1 itself** (a third review pass caught them), corrects an internal category count, catches the trigger table up to the v0.3.1 rules, and adds four bullet-level pitfalls under the existing scope. **No new categories** — total stays at 41. **No renumber.** Re-run the installer; nothing else changes.
+
+### Changed (accuracy fixes — all regressions from v0.3.1)
+
+- **§B15 — the `Notify` lost-wakeup pattern was missing its load-bearing `.enable()`.** v0.3.1 added a bullet whose example (`let permit = notify.notified(); pin!(permit); if !condition() { permit.await; }`) registered the waker only at `.await` — *after* the condition check — leaving the exact race the bullet claimed to close. Per tokio's docs, a `Notified` future does not receive wakeups until it is polled or explicitly armed. The corrected pattern arms the waker with `notified.as_mut().enable();` between `pin!` and the check, so a `notify_one()` landing between check and await is not lost. Variable renamed `permit` → `notified` (it is a `Notified` future, not a semaphore permit).
+
+- **§B11 + Version pins — `tokio::task::coop::consume_budget` was pinned to the wrong version.** v0.3.1 claimed the `coop::` path was stable since tokio 1.39.1. In fact the *function* is stable since 1.39.1 at `tokio::task::consume_budget`; the `tokio::task::coop` module did not exist until **tokio 1.44.0**, which is also when the old path became `#[deprecated]`. Both §B11 and the Version-pins section now give the correct dual path keyed on MSRV (`tokio::task::consume_budget` below 1.44, `tokio::task::coop::consume_budget` on 1.44+).
+
+- **§C2 — the `thiserror` `#[from]` bullet was both inaccurate and out-of-scope; reframed.** v0.3.1 claimed two interconvertible `#[from]` variants make `?` "silently prefer" one impl. That is wrong: two `#[from]` on the same source type is a hard `E0119` compile error, not a silent preference — and a compile error is out of scope for this spec by design. The bullet is reframed onto a genuinely in-scope hazard: **reflexive `#[from]` erases call-site context** — `#[from] io::Error` collapses every `?` on an I/O operation into one variant, so production logs say "I/O error" with no indication of *which* operation failed. Compiles, tests pass, diagnostics rot. Fix: reserve `#[from]` for source types that already uniquely identify the failure; otherwise carry context with `#[source]` + explicit `.map_err(...)` per call site.
+
+### Changed (minor wording)
+
+- **§B8 — `tokio::sync::oneshot::Receiver` has no `.recv()` method.** The bullet's variable was named `recv`, falsely implying a `.recv()` call (which `mpsc::Receiver` has, but `oneshot::Receiver` does not — it *is* a `Future`, awaited directly). Renamed to `rx` and added a parenthetical noting the receiver is awaited directly.
+
+- **§B15 — `block_in_place` was loosely called a "sync-to-async bridge".** It is the opposite: it lets an async task run *blocking* code on the current worker without starving siblings; you still cannot `.await` inside it without a `Handle`. Reworded to distinguish it from `spawn_blocking` and from a sync→async bridge.
+
+- **§B-tier intro — "twenty-four categories" → "twenty-five".** §B1–§B25 is twenty-five categories; the prose count had not been updated when v0.3.0 added §B16–§B25.
+
+### Changed (trigger table caught up to v0.3.1)
+
+v0.3.1 added rules but no triggers for them, so the self-monitoring layer never surfaced them proactively. Added:
+
+- **Phrase triggers** (5): `interval`/periodic/timer → §B15; exit/bail-out → §B4; wait-for-signal/condition-variable → §B15 (`Notify`); log-this-struct/derive-Debug on secret-bearing types → §B12; compare-floats/approximately-equal → §D1.
+- **Code-pattern triggers** (8): `std::process::exit` below a live guard → §B4; `Arc::strong_count`/`Rc::strong_count` in a conditional → §B13; `assert_eq!` with an `f32`/`f64` operand → §D1; `notify.notified()` → §B15; `#[derive(Debug)]` on a struct with a `password`/`secret`/`token`/`key`/`seed` field → §B12; `impl Drop` whose body can panic → §B4; `tokio::time::interval(...)` → §B15; `oneshot::channel()` with the result discarded/`.unwrap()`-ed → §B8.
+
+### Added (bullet-level, no new categories)
+
+- **§B15 — `tokio::time::interval` first-tick semantics.** The first `.tick().await` returns immediately (at creation), not after one period; the default `MissedTickBehavior::Burst` fires missed ticks back-to-back to "catch up", producing a load spike. REQUIRED: discard the first tick or use `interval_at(Instant::now() + period, period)`, and set `MissedTickBehavior::Delay`/`Skip` explicitly.
+
+- **§B13 — atomic memory ordering.** `Ordering::Relaxed` on an atomic used to *publish* data establishes no happens-before edge — the reader can observe the flag before the payload writes, a data race that x86's strong model hides in tests but that breaks on ARM/AArch64. Use `Release`/`Acquire` (or `AcqRel`/`SeqCst` for RMW) when the atomic gates other memory; `Relaxed` only for standalone counters; don't blanket-`SeqCst`; model-check with `loom`.
+
+- **§B14 — `broadcast::RecvError::Lagged(n)` is data loss, not a transient error.** `Lagged(n)` means `n` messages are gone forever and the receiver has skipped to the oldest still-buffered one; a `match { Err(Lagged(_)) => continue }` loop recovers nothing and masks the loss. Log/metric the skipped count and decide explicitly whether dropping is acceptable.
+
+- **§D1 — tests against fiction.** Three blind-test antipatterns: a mock/fake that only ever returns success (proves behavior against fiction, never against the dependency's real failure modes); `#[ignore]` left on "temporarily" (invisible to `cargo test`, rots silently while CI stays green); tests sharing mutable global state (static cell, fixed-name temp file, hard-coded port) that pass only by run order and flake under `cargo test`'s default parallelism.
+
+### Tooling and documentation
+
+- **`README.md`** — Status block gains a v0.3.2 entry (the v0.3.0 entry is preserved below it for the scope-reframe context). The "Verify" section's category range corrected from `§A1–§C11` to `§A1–§D2` so Tier D is visible.
+- **`docs/roadmap.md`** — new "Deferred to v0.4.0" subsection listing the bullet-level additions surfaced by the third review pass (`env::var`, `Box::leak`, `mem::forget`, `serde_json` fidelity, `watch::Receiver`, `FuturesUnordered`, `{:?}`-on-bytes, `Cell` vs `RefCell`) plus structural notes (possible §B15 split, section-length rebalancing).
+- **`rust-intel.md`** — working-tree line endings renormalized to LF.
+
+### Migration
+
+Re-run the installer. The skill content changed (three corrections, two wording fixes, a count fix, twelve new trigger rows, four new bullets); slash commands and install/uninstall behavior are unchanged.
+
+If you copied the v0.3.1 §B15 `Notify` pattern into your code, re-copy it — the v0.3.1 version had a real lost-wakeup race (missing `.enable()`). If you pinned tokio between 1.39.1 and 1.43 and used the `tokio::task::coop::consume_budget` path the v0.3.1 text suggested, switch to `tokio::task::consume_budget` (the `coop` module only exists from 1.44).
 
 ## [0.3.1] — 2026-05-28
 
