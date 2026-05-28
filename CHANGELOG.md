@@ -10,7 +10,64 @@ Patch = wording refinements, fixes, new sources.
 
 _No unreleased changes._
 
-See [`docs/roadmap.md`](docs/roadmap.md) for planned work: source-anchor IDs in `docs/sources.md`, repro snippets per BANNED formulation, and an `examples/` corpus for regression testing the `/rust-cc-audit` tool.
+See [`docs/roadmap.md`](docs/roadmap.md) for planned work: source-anchor IDs in `docs/sources.md`, repro snippets per BANNED formulation, and an `examples/` corpus for regression testing the `/rust-cc-audit` tool. Possible v0.4.0 work: dedicated category for `tokio::time::interval` first-tick semantics and timer ergonomics.
+
+## [0.3.1] — 2026-05-28
+
+Same-day patch on top of v0.3.0. Five accuracy bugs in the v0.3.0 text fixed, seven existing categories extended with bullets covering pitfalls under the spec's stated scope (compiles + tests pass but still breaks). **No new categories** — total stays at 41. **No renumber.** Anyone running v0.3.0 re-runs the installer; nothing else changes.
+
+### Changed (accuracy fixes)
+
+- **§B23 — `tokio::sync::mpsc::Sender::send` is NOT cancel-safe in `select!`.** v0.3.0 text claimed it was; per tokio's own documentation, when `send` is cancelled in a `select!` arm, the message is **dropped and lost**. The two-step `Sender::reserve().await` → `Permit::send(value)` is the canonical cancel-safe pattern (reserve acquires capacity asynchronously and is cancel-safe; the synchronous `Permit::send` cannot fail at that point). Section rewritten to remove the false claim and document the correct pattern.
+
+- **§B25 — `cargo expand --type-sizes` does not exist.** v0.3.0 text recommended this fictional invocation for FFI layout verification. `cargo expand` is a third-party macro-expansion plugin with no such flag. Replaced with the real nightly tool `cargo +nightly rustc --lib -- -Zprint-type-sizes` plus a stable-toolchain fallback using `std::mem::size_of`, `std::mem::align_of`, and `std::mem::offset_of!` in a unit test asserted against expected C-side values.
+
+- **§B11 + Version pins — `tokio::task::consume_budget` path is deprecated.** The canonical location is `tokio::task::coop::consume_budget`; the older `tokio::task::consume_budget` re-export is now `#[deprecated]`. Spec text and version pins updated. Stable since **tokio 1.39.1** (1.39.0 was yanked).
+
+- **§B24 — `subtle::ConstantTimeEq::ct_eq` returns `Choice`, not `bool`.** v0.3.0 phrasing "`x.ct_eq(&y).into()` returns `bool`" was technically correct but invited readers to write `if x.ct_eq(&y) { ... }` (which does not compile). Reworded to be explicit: `ct_eq` returns `subtle::Choice` and must be converted via `bool::from(choice)` or `choice.into()`. Also flagged: never branch directly on `Choice` — the whole point is to keep the comparison branch-free until the explicit conversion.
+
+- **§C11 — C-DEREF citation made verbatim.** v0.3.0 paraphrased the API Guideline; the rest of the spec uses literal quotes. Now uses the verbatim form: *"Only smart pointers implement `Deref` and `DerefMut` (C-DEREF). The traits should be used only for that purpose."*
+
+### Changed (category extensions, no new categories)
+
+- **§B12 (Crypto) — Debug leakage, JWT `alg: none`, AEAD nonce width, key zeroization.** New BANNED bullets cover `#[derive(Debug)]` on structs with `password`/`secret`/`token`/`api_key`/`private_key`/`seed`/`mnemonic`/`cookie` fields (printed by `{:?}` in logs); JWT verification that accepts `alg: none` (always pin allowed algorithms explicitly); AEAD encryption with a nonce length other than the algorithm's specified width (96 bits / 12 bytes for AES-GCM and ChaCha20-Poly1305). New REQUIRED bullet covers `zeroize` discipline (`#[derive(Zeroize, ZeroizeOnDrop)]`) for key material.
+
+- **§C2 (Error handling) — `Box<dyn Error>` in libraries, ambiguous `#[from]`.** New BANNED bullets cover `Result<T, Box<dyn Error>>` as the return type of any `pub fn` in a published library crate (callers can't match), and `thiserror::Error` enums with two or more `#[from]` variants over interconvertible source types (the `?` operator's resolution becomes ambiguous).
+
+- **§D1 (Tests by luck) — floating-point exact equality.** New BANNED bullet: `assert_eq!` on computed `f32`/`f64` values flakes between debug/release, architectures, and compiler versions. Use `approx::assert_relative_eq!` / `assert_abs_diff_eq!` or manual epsilon comparison.
+
+- **§B4 (Drop and RAII) — `process::exit` skips Drop, panic-in-Drop.** New BANNED bullets: `std::process::exit(...)` from code paths with stack-local guards (transactions, file handles, lock guards) — `process::exit` does not unwind; `Drop::drop` body that can itself panic during a panic unwind (double-panic aborts the process). Cross-link added pointing to §B22 for the async cleanup constraint.
+
+- **§B8 (Silent task dropping) — `oneshot` channel drop cascades.** New BANNED bullets: `let _ = tx.send(value);` on a `tokio::sync::oneshot::Sender` (discarding the `Err(value)` when the receiver is gone makes the producer's work invisible), and `recv.await.unwrap()` on a `oneshot::Receiver` when the producer can fail or be dropped. Cross-link added pointing to §B21 for the work-runs-but-can't-be-observed case.
+
+- **§B15 (Advanced async) — `Notify` lost-wakeup, half-consumed `Stream`, `select! biased`.** Three new BANNED bullets: `notify.notified().await` without first checking the represented condition (the canonical fix is the `notified() → pin! → check → await` four-step); dropping a half-consumed `Stream` without explicit acknowledgement that buffered items are lost; `tokio::select! { ... }` without `biased;` when arm priority matters (default per-poll pseudo-random can starve a low-priority arm). One REQUIRED bullet: use `biased;` for deterministic left-to-right arm priority.
+
+- **§B13 (TOCTOU) — `Arc` count races, HashMap iter order.** New BANNED bullets: `if Arc::strong_count(&arc) == 1 { ... }` is a TOCTOU race — use `Arc::into_inner(arc)` (returns `Option<T>`) or `Arc::try_unwrap(arc)`. Restated that the same TOCTOU pattern via `HashMap::iter` + `HashMap::insert` is broken. New REQUIRED bullet: for ordered iteration, use `BTreeMap` or collect-then-sort — `HashMap::iter` order is randomized per-process and per-rehash, and tests that depend on it flake across machines.
+
+### Changed (cross-links between overlapping categories)
+
+- **§B17 ↔ §A2** — opening of §B17 now explicitly states it covers the single-threaded reentrant-borrow hazard, while §A2 covers the thread-safety dimension. Same `Rc<RefCell<T>>` symptom, different failure modes.
+- **§B21 ↔ §B8** — opening of §B21 now distinguishes "future never polled" (§B8) from "work ran but you can't cancel/observe" (§B21).
+- **§B22 ↔ §B4** — opening of §B22 now points to §B4 for sync RAII contracts and frames §B22 as "what is **not** possible with Drop in async".
+- **§B23 ↔ §B3** — opening of §B23 now states explicitly that it is the `select!`-specific application of §B3's general cancel-safety rule.
+
+### Changed (front-matter)
+
+- **`description` extended with hazard-area triggers.** Added a closing sentence: "Covers async, unsafe, FFI, concurrency, crypto, supply-chain, and tests-that-pass-by-luck hazards." This improves Claude Code's skill matching on user queries that name the hazard area rather than the failure mode.
+
+### Tooling and documentation
+
+- **`README.md` Layout** — `.gitattributes` and `.gitignore` now appear in the repository diagram with one-line descriptions. Both are functionally significant (line-ending discipline, project-local install target ignored) and were previously invisible from the docs.
+- **`docs/roadmap.md`** — Tier D (§D1, §D2) is now flagged `✅ shipped in v0.3.0`. The category-expansions section previously listed only `§B16`/`§B17`/`§C8`/`§C9` shipments and silently omitted the new tier.
+- **`commands/rust-intel-cc/fix.md`** — routing table extended with 15 new rows mapping symptoms for §B16–§B25, §C8–§C11, §D1, §D2. The table is still declared "non-exhaustive", but the most common symptoms now route correctly.
+- **`.gitattributes`** — deduplication pass. Removed seven explicit `text eol=lf` rules for `*.md`, `*.rs`, `*.toml`, `*.lock`, `*.json`, `*.yml`, `*.yaml` since they are already covered by `* text=auto eol=lf`. Kept the necessary overrides: `*.sh`/`*.bash` → LF; `*.ps1`/`*.bat`/`*.cmd` → CRLF. Binary-section comment block tightened.
+- **`rust-intel.md`** — working-tree line endings renormalized to LF (the v0.3.0 commit landed with `i/lf w/crlf`, which would have re-triggered the CRLF warning on the next edit). Now `i/lf w/crlf attr/text=auto eol=lf` — git no longer warns because the canonical eol is explicit.
+
+### Migration
+
+Re-run the installer. The skill content changed (eight new BANNED bullets, several technical corrections, extended description); slash commands and install/uninstall behavior are unchanged.
+
+If you have automation that hard-codes routing for `tokio::task::consume_budget`, `cargo expand --type-sizes`, or the v0.3.0 §B23 "send is cancel-safe" claim, update it: those are gone in v0.3.1.
 
 ## [0.3.0] — 2026-05-28
 

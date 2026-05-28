@@ -27,6 +27,8 @@ rust-intel/
 ├── rust-intel.md                       # The spec itself (Claude Code skill)
 ├── README.md                           # This file
 ├── CHANGELOG.md                        # Version history
+├── .gitattributes                      # Line-ending rules (LF for source, CRLF for .ps1/.bat)
+├── .gitignore                          # Ignores /.claude/ (project-local install target) and target/
 ├── rust-cc-install.sh / rust-cc-install.ps1 / rust-cc-install.bat       # One-command install (project-local by default; --user for global)
 ├── rust-cc-uninstall.sh / rust-cc-uninstall.ps1 / rust-cc-uninstall.bat # Inverse of install
 ├── commands/

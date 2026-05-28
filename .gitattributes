@@ -14,21 +14,9 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
-# Lockfiles and configs — normalised to LF on commit even if a Windows
-# editor saved CRLF.
-*.toml  text eol=lf
-*.lock  text eol=lf
-*.json  text eol=lf
-*.yml   text eol=lf
-*.yaml  text eol=lf
-*.md    text eol=lf
-*.rs    text eol=lf
-
-# Generated / minified web bundles — leave bytes alone.
+# Binary — no diff, no merge, no line-ending munging.
 *.min.js binary
 *.min.css binary
-
-# Binary fixtures, snapshots, certificates — never touch.
 *.png binary
 *.jpg binary
 *.pdf binary

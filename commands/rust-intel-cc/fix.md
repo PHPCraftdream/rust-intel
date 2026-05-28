@@ -49,6 +49,21 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | "Under load, `expensive_fetch` runs N times instead of 1" | §B13 (TOCTOU) |
    | "The message/request/write didn't happen but no error either" | §B8 (forgotten `.await`) |
    | Encrypt/decrypt works, but security review finds a vulnerability | §B12 |
+   | `HashMap::get` returns `None` but the value was inserted | §B16 (Eq/Hash contract mismatch) |
+   | panic `already borrowed: BorrowMutError` | §B17 (RefCell reentrant borrow) |
+   | `unsafe impl Send` / `unsafe impl Sync` without SAFETY justification | §B18 |
+   | `untagged` enum deserializes to wrong variant | §B20 (variant shape overlap) |
+   | Task started but no way to cancel or observe completion | §B21 (dropped JoinHandle) |
+   | "Resource didn't close" / connection pool exhausted | §B22 (async Drop is not real) |
+   | `tokio::select!` arm side effect lost on cancellation | §B23 |
+   | "Timing-based authentication vulnerability" / CVE-class | §B24 (constant-time comparison) |
+   | "Panic crossed extern \"C\" boundary" / "process aborted in FFI" | §B25 |
+   | "Channel kind wrong for runtime" / async-blocks-on-sync-channel | §C8 |
+   | Tracing span missing in spawned task logs | §C9 |
+   | Workspace member's feature unexpectedly enabled in release | §C10 |
+   | `Deref` chain produces unexpected type / inheritance-style API breaks | §C11 |
+   | Test passes locally, flakes on CI / `thread::sleep` in test | §D1 |
+   | Test in `tests/` cannot compile after refactor | §D2 |
    | Feature never activates, code is dead | §C7 (feature typo) |
 
    If the symptom maps to **multiple** categories, list them all and explain which is primary.

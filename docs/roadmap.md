@@ -65,6 +65,8 @@ Categories with observed patterns but insufficient empirical backing or sharp BA
 - **§C8 (draft) Workspace-level dependencies and feature unification.** ✅ shipped in v0.3.0 — now part of the main spec under workspace feature unification.
 - **§C9 (draft) `tracing` instrumentation patterns.** ✅ shipped in v0.3.0 — span leakage across `.await` and context loss in `tokio::spawn` now live in the main spec.
 
+**Tier D — Testing and CI gaps.** ✅ shipped in v0.3.0 as a new tier (§D1 tests that pass by luck, §D2 integration vs unit placement drift). Originally not in the roadmap; promoted directly because the empirical pattern was clear (LLM-generated tests routinely rely on `thread::sleep` and bare `#[should_panic]`).
+
 > Categories whose primary failure mode is a compile error (lifetime variance, GATs lifetime bounds, object safety from generic methods, cyclic workspace deps, `?`-in-`main`) are out of scope by design — the compiler is sufficient. They will not be added even with good wording.
 
 ## 3. Meta-layer refinements

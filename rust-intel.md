@@ -1,5 +1,5 @@
 ---
-description: Hard rules for writing Rust in code that already compiles and passes tests but is silently broken, slow, or semver-fragile. Load this BEFORE writing any Rust code. Targets bugs that survive rustc, clippy, and cargo test but fail in production or rot the codebase.
+description: Hard rules for writing Rust in code that already compiles and passes tests but is silently broken, slow, or semver-fragile. Load this BEFORE writing any Rust code. Targets bugs that survive rustc, clippy, and cargo test but fail in production or rot the codebase. Covers async, unsafe, FFI, concurrency, crypto, supply-chain, and tests-that-pass-by-luck hazards.
 ---
 
 # Rust Intel — Defense Against LLM Failure Modes
@@ -376,6 +376,12 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 - Read the version-specific `Drop` impl docs for the library being used. State the version you assumed in a comment.
 - Be aware that holding multiple drop-significant guards (file + DB tx + lock) creates an ordering problem: Rust drops in reverse declaration order, but the *correct* order depends on the semantics. State which order matters.
 
+**BANNED**:
+- `std::process::exit(...)` from any code path where stack-local guards (database transactions, file handles, lock guards, logger flushers) still need to run their `Drop`. `process::exit` **does not unwind** — none of those `Drop` impls execute. Return a `Result` from `main`, or call `drop(guard)` explicitly on every guard before `process::exit`.
+- A `Drop::drop` body that can itself panic while panicking is already in flight (the second panic aborts the process via `panic_in_drop`). If `drop` does anything fallible, isolate it in `catch_unwind` and downgrade the inner panic to a logged error.
+
+Async resources have an additional constraint that `Drop` cannot honor — see §B22 for the async-`Drop`-is-not-real problem.
+
 ## §B5. Unsafe that looks safe (high UB rate in small-N studies)
 
 **The trap**: code passes review and tests because UB doesn't manifest on typical inputs. In the small-N audit cited in [`docs/sources.md`](docs/sources.md), out of 40 LLM-generated `unsafe` blocks: 13 were UB on any input, 9 were UB on specific inputs (alignment, OOB, Stacked Borrows violations), 18 were correct — i.e. 22/40 (~55%) exhibited UB. The *exact rate* is directional (small sample, not stratified by model or domain), but the *pattern* — that LLM-generated `unsafe` is significantly more dangerous than LLM-generated safe code — is consistent across every published audit to date. Treat any LLM-generated `unsafe` block as high-risk until proven otherwise via miri + manual invariant audit.
@@ -441,12 +447,16 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 - Calling an async function and not using the result, with no `.await` or `tokio::spawn`.
 - `let _fut = async_fn();` followed by code that never `.await`s or spawns `_fut` — once the binding goes out of scope, the future is dropped without polling and the work never happens. Whether the type is `Pin<Box<dyn Future>>`, a chained adapter (`.map(...)`, `.then(...)`), or a plain `impl Future`, the rule is identical: a future that is dropped without polling does nothing.
 - An `impl Future`-returning function whose return value is bound to a variable inside a non-`async` function and never awaited there. The compiler warns via `#[must_use]` / `unused_must_use`, but the warning is silenced if the future type is wrapped (e.g., in a tuple, in `Result::Ok`, behind an adapter that does not itself carry `#[must_use]`).
+- `let (tx, rx) = tokio::sync::oneshot::channel();` followed by `let _ = tx.send(value);` (discarding the `Err(value)` returned when the receiver has been dropped) — the work that produced `value` is now invisible to the consumer side. Match the `Err` and either log it or propagate.
+- `recv.await.unwrap()` on a `tokio::sync::oneshot::Receiver` when the producer task can fail or be dropped — `RecvError` becomes a runtime panic at a distance. Handle it explicitly as a failure mode.
 
 **REQUIRED**:
 - Every async function call is followed by `.await`, OR wrapped in `tokio::spawn(async move { ... .await })` for fire-and-forget, OR explicitly stored in a `JoinHandle`/`FuturesUnordered` for later polling.
 - For fire-and-forget, **always** use `tokio::spawn` rather than letting the future drop silently.
 - Enable `#[warn(unused_must_use)]` at crate level. Verify the `#[must_use]` warning fires for ignored futures in clippy output.
 - For functions that return `impl Future`, ensure callers `.await` them — surface uncalled futures in the post-flight summary.
+
+A spawned task that *did* run but produced a result the caller never observes is a different failure mode — see §B21 (`JoinHandle` drop ≠ abort).
 
 ## §B9. Lock ordering and ABBA deadlock
 
@@ -508,7 +518,7 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 **REQUIRED**:
 - For genuinely CPU-bound work (compression, hashing, parsing large blobs, calling a sync C library, using a sync crate that has no async equivalent): wrap in `tokio::task::spawn_blocking(|| { ... }).await?`. This dispatches to a *separate* blocking-task thread pool, freeing the async worker thread for other tasks.
 - `tokio::task::yield_now().await` is **not** an alternative to `spawn_blocking` for CPU-bound work. `yield_now` only gives *other tasks already on the same worker thread* a chance to make progress; when your task resumes, the worker is still occupied by you. It does not solve "starving the executor" because the worker count is fixed (typically the CPU core count). Use `yield_now` only for cooperative fairness inside an IO-bound task that occasionally does a small CPU burst.
-- For modern tokio (1.x), `tokio::task::consume_budget().await` is the explicit *budget-aware* primitive: it yields *only when the task's coop budget is exhausted*, otherwise returns immediately. Prefer it to `yield_now` inside a tight async loop that wants to be cooperative without paying the unconditional re-schedule cost.
+- For modern tokio (1.x), `tokio::task::coop::consume_budget().await` is the explicit *budget-aware* primitive: it yields *only when the task's coop budget is exhausted*, otherwise returns immediately. Prefer it to `yield_now` inside a tight async loop that wants to be cooperative without paying the unconditional re-schedule cost. Note: the canonical path is `tokio::task::coop::consume_budget`; the older `tokio::task::consume_budget` re-export is `#[deprecated]` in recent tokio versions.
 - Verify with `tokio-console` or `tracing` spans that no task holds a worker thread longer than its budget.
 
 ## §B12. Cryptographic code (silent insecurity)
@@ -538,6 +548,12 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 - Using `SmallRng`, `StdRng`, or any seedable RNG for security-sensitive randomness — use `OsRng` (or `getrandom`) directly. The rule is "OS-backed entropy for keys, nonces, salts", not a literal call name: in `rand` 0.8.x the default RNG accessor is `thread_rng()`, in 0.9+ it is `rng()`. Both are CSPRNGs per the `rand` security guarantees, but `OsRng` is the safer default when seeding chains are part of the threat model. State the `rand` version assumed.
 - Storing crypto keys in source code, environment variables read at compile time, or anywhere they end up in the binary.
 - Comparing secret material (API tokens, MAC tags, password hashes, OTP codes) with `==` — this is a timing side channel. See §B24 for the rule and the `subtle::ConstantTimeEq` / `constant_time_eq` crates.
+- `#[derive(Debug)]` (or manual `impl Debug`) on a struct with fields named `password`, `secret`, `api_key`, `token`, `private_key`, `seed`, `mnemonic`, `cookie` — any secret material that ends up printed in a log/trace via `{:?}`. Wrap secrets in a newtype that implements `Debug` as `"<redacted>"`, or use the `secrecy` crate's `SecretBox<T>`.
+- JWT verification accepting the `none` algorithm. Always pin allowed algorithms (`HS256`, `RS256`, etc.) explicitly; `jsonwebtoken::Validation::new(Algorithm::HS256)` rather than the default which accepts whatever the token claims.
+- AEAD encryption with a nonce length other than the algorithm's specified width (96 bits / 12 bytes for AES-GCM and ChaCha20-Poly1305). LLM-generated `let nonce = [0u8; 16];` for AES-GCM compiles but rejects at runtime — or worse, silently truncates depending on the crate version.
+
+**Additional REQUIRED**:
+- For any type holding key material, implement `Drop` that zeroes the bytes (use the `zeroize` crate's `#[derive(Zeroize, ZeroizeOnDrop)]`). Plain `Drop` is not enough — the compiler may keep an optimized-away copy on the stack.
 
 ## §B13. Check-then-act races in concurrent collections (TOCTOU)
 
@@ -558,10 +574,11 @@ In a single-threaded test, this is correct. Under concurrent load, N threads sim
 **Prompt triggers**: "cache", "memoize", "lazy initialization", "ensure exactly one X", "deduplicate", "if not exists, create".
 
 **BANNED**:
-- `if !map.contains_key(k) { map.insert(k, v); }` and any variation where check and act are separate calls.
+- `if !map.contains_key(k) { map.insert(k, v); }` and any variation where check and act are separate calls — the same pattern via `HashMap::iter` + `HashMap::insert` is equally broken.
 - `if map.contains_key(k) { let v = map.get(k).unwrap(); ... }` — between the check and the get, another thread could remove the entry, and `.unwrap()` panics.
 - "Two-phase commit"-style patterns across separate operations on a concurrent collection.
 - `let x = *counter.lock().unwrap(); *counter.lock().unwrap() = x + 1;` — read and write are separate critical sections, a thread can interleave.
+- `if Arc::strong_count(&arc) == 1 { ... unique-owner logic ... }` — count can change between read and use under any concurrent code. Use `Arc::into_inner(arc)` (returns `Option<T>` if unique) or `Arc::try_unwrap(arc)` (returns `Result<T, Arc<T>>`); the atomic variant is the only check-and-act pattern that's race-free.
 
 **REQUIRED**:
 - For "insert if absent": `map.entry(key).or_insert_with(|| compute_value())`. The `entry` API holds the relevant bucket lock across the check and act.
@@ -573,6 +590,7 @@ In a single-threaded test, this is correct. Under concurrent load, N threads sim
   ```
 - For atomic counters: `AtomicUsize::fetch_add(1, Ordering::Relaxed)`, not lock-load-add-store.
 - For "compare and swap" patterns: `Atomic*::compare_exchange` or `Atomic*::fetch_update`.
+- For ordered iteration of map keys, use `BTreeMap` (sorted by key) or collect to `Vec` and `sort_by`. `HashMap::iter` order is randomized per-process and per-rehash; relying on it makes tests flake across machines.
 
 **Detection**: this is invisible to type checking and almost always invisible to tests. The defense is recognizing the pattern at write time. If a function does two consecutive operations on a shared collection, it is a candidate.
 
@@ -645,6 +663,14 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - For async iteration: `while let Some(x) = stream.next().await { ... }`, not `for x in stream`.
 - Choosing the extension trait matters: `tokio_stream::StreamExt::next` returns the same shape as `futures::StreamExt::next`, but `tokio_stream` adds tokio-specific combinators (`.timeout(...)`, `.chunks_timeout(...)`). Pick one per module and stick with it.
 
+**Additional BANNED**:
+- `notify.notified().await` without first checking the condition the notification represents — wakeups can race with `notify_one()` and be lost. The canonical pattern is: `let permit = notify.notified(); pin!(permit); if !condition() { permit.await; }` — register the wakeup *before* checking, so a notification between check and await is not lost.
+- Dropping a half-consumed `Stream` without explicit acknowledgement that the buffered items are lost. For `tokio::sync::mpsc::ReceiverStream`, dropping the stream signals the sender side; for `BroadcastStream`, in-flight items are gone. Document the drop semantics or wrap the stream in a `Drop` that drains.
+- `tokio::select! { ... }` without a `biased;` directive when arm-priority matters (e.g., shutdown signal must win over data-availability when both are ready). The default behavior is pseudo-random per poll, which surfaces as occasional starvation under load.
+
+**Additional REQUIRED**:
+- For arm-priority, use `tokio::select! { biased; _ = shutdown.notified() => ..., msg = rx.recv() => ..., }` — left-to-right priority is now deterministic.
+
 ## §B16. Equality and hashing contracts
 
 **The trap**: `derive`-ed `Eq`/`Hash` is correct by construction. The moment a manual `impl PartialEq` or manual `impl Hash` enters the type — to normalize case, ignore a field, hash-by-key-only — the `HashMap`/`HashSet` contract `a == b ⇒ hash(a) == hash(b)` can be quietly violated. Compiles, runs, passes a few unit tests, and silently *loses entries from the map* in production: insert returns `None` (saying "no previous"), get returns `None`, but `len()` keeps incrementing — duplicate keys living at different hash buckets. Mirror trap on the ordering side: manual `Ord` that is not a *total* order corrupts `BTreeMap` ordering and `<[T]>::sort` (the sort assumes total order; if the relation is not total, the sort can produce arbitrary output, and `BTreeMap` invariants silently rot).
@@ -662,6 +688,8 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Surface every manual `impl PartialEq` / `impl Hash` / `impl Ord` in the post-flight summary so the user can confirm the contract holds.
 
 ## §B17. `RefCell` / `Mutex` runtime borrow panics
+
+§A2 covers the thread-safety dimension of choosing smart pointers; this category covers the **single-threaded** reentrant-borrow hazard that `Rc<RefCell<T>>` introduces even when threading is not involved.
 
 **The trap**: `RefCell` enforces borrow rules at runtime via panics. The borrow check is dynamic, not static — and the LLM writes call patterns that *can* reach a second `borrow_mut()` while the first is still live, but the test inputs never exercise the path. Compiles; passes tests at low fanout; panics in production the moment a callback chain or trait dispatch reenters the cell. The async-runtime mirror: `tokio::sync::Mutex` does not panic on reentrance, it *deadlocks* — the second `.lock().await` waits forever for the first guard, which is held by the same task.
 
@@ -721,6 +749,8 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 
 ## §B21. `JoinHandle` semantics: drop ≠ abort
 
+§B8 covers the case where a future is never polled and the work does not happen; this category covers the case where the work *does* happen but the spawning code can't cancel or observe it.
+
 **The trap**: `tokio::task::JoinHandle::drop()` **does not abort the task**. The task keeps running in the background. LLM treats `JoinHandle` like a `std::thread::JoinHandle` from a sync mental model where "drop the handle" mostly means "detach" and the OS thread cleans itself up — but in tokio, the dropped handle leaks the task into the runtime's background pool, holding whatever resources it owns until it finishes. In tests this is invisible (short-running tasks complete before the test exits); in production this is a resource leak with the task continuing to consume connections, locks, file descriptors, and CPU.
 
 **BANNED**:
@@ -735,6 +765,8 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Surface every `tokio::spawn(...)` whose returned `JoinHandle` is dropped (not held, not awaited, not detached-by-design) in the post-flight summary.
 
 ## §B22. `async Drop` is not real (yet)
+
+§B4 covers synchronous RAII contracts (transactions, file handles, locks). This category covers what is **not** possible with `Drop` in async code — async cleanup must happen *before* the drop, not inside it.
 
 **The trap**: the LLM writes `impl Drop` for a database connection, file handle, network socket, or cache flusher and puts `tokio::spawn(async move { self.close().await })` or `block_on(async { ... })` inside the `drop` method. In tests the runtime stays alive long enough for the spawned task to run, or the test thread is not the runtime, and the resource closes by luck. In production the spawned task is fire-and-forget and may not complete before runtime shutdown; the `block_on` variant deadlocks or panics because it re-enters the runtime from a sync context held by the runtime. The result is silent: resource never closes, connection pool exhausts, log buffer never flushes.
 
@@ -752,11 +784,13 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 
 ## §B23. `select!` arm side effects under cancellation
 
+This category is the `select!`-specific application of §B3. The general rule (`every .await is a cancellation point; side effects must survive cancellation or stay outside`) becomes sharper inside a `select!` because *every* arm except one is cancelled at the same instant.
+
 **The trap**: a `tokio::select!` macro polls each arm concurrently and runs the body of *the first arm to become ready*; the other arms are **cancelled at their pending `.await` point**. If an arm contains a side effect (DB write, file flush, channel send, log emission) on the *losing* path — anywhere between the arm's first `.await` and the arm body — that side effect is broken by cancellation. The compiler is silent; tests pass when only one arm is ever ready in the test setup.
 
 **BANNED**:
 - `tokio::select!` arm that performs a side effect inside the arm's pending future (between the first `.await` and the future resolving) — at cancellation, the side effect is either half-done or not done, and there is no recovery hook.
-- Pattern: `select! { _ = ch.send(x) => ... }` without reading the channel's documented cancel-safety per-channel. `tokio::sync::mpsc::Sender::send` is cancel-safe (the value either ends up in the queue or it doesn't, exposed via the future's resolution), but for other channel libraries (`flume`, `async_channel`, custom) you must check.
+- Pattern: `select! { _ = ch.send(x) => ... }` is **not** cancel-safe even on `tokio::sync::mpsc::Sender::send`. Per tokio's documentation: if `send` is cancelled in a `select!` arm, the message is **dropped and lost**. The future's resolution distinguishes "sent" from "cancelled-and-lost", but the data is gone either way. For cancel-safe channel send inside `select!`, use the two-step pattern: `let permit = ch.reserve().await?;` (cancel-safe — only acquires capacity, transmits nothing), then `permit.send(x)` (synchronous, infallible at that point). Other channel libraries (`flume`, `async_channel`, custom) require their own per-API verification.
 - Side-effecting `async` helpers called from `select!` arms without a documented cancel-safety annotation per §B3.
 
 **REQUIRED**:
@@ -785,7 +819,7 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Rolling your own constant-time equality with a manual XOR loop *without* `std::hint::black_box` and a `#[inline(never)]` attribute — the compiler may optimize the early-exit back in.
 
 **REQUIRED**:
-- Use `subtle::ConstantTimeEq` (`x.ct_eq(&y).into()` returns `bool`) or the `constant_time_eq` crate (`constant_time_eq::constant_time_eq(a, b) -> bool`) for any secret comparison.
+- Use `subtle::ConstantTimeEq` — `x.ct_eq(&y)` returns `subtle::Choice` (a constant-time-friendly bool surrogate); convert to native `bool` via `bool::from(choice)` or `choice.into()`. **Never** branch on `Choice` directly; the entire point of `Choice` is to keep the comparison branch-free until the explicit conversion. The `constant_time_eq` crate is a smaller alternative — `constant_time_eq::constant_time_eq(a, b) -> bool` directly. Either is acceptable for any secret comparison.
 - For MAC verification specifically, prefer the crypto crate's built-in `verify` / `verify_slice` over manual `==` on the output. (`hmac::Mac::verify_slice` and `aes_gcm::Aes256Gcm::decrypt` both incorporate constant-time comparison; rolling your own is the bug.)
 - Surface every `==` / `!=` on `&[u8]`, `Vec<u8>`, or `String` in the same code path as a secret in the post-flight summary, with the recommendation to switch to a constant-time primitive.
 
@@ -805,7 +839,7 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Wrap every panic-capable Rust function callable from C with `std::panic::catch_unwind`; translate `Err(payload)` into a stable error code (a tagged union, a `-1` sentinel, an out-parameter for `*mut PanicInfo`) that the C side can match on. Document the encoding on the function's doc comment.
 - For every Rust-owned type `T` that crosses the boundary, ship a paired `extern "C" fn rust_drop_T(p: *mut T)` performing `unsafe { let _ = Box::from_raw(p); }`. Document the contract on both functions: caller owns the pointer until it calls `rust_drop_T`; the C side must not call `free()` on this pointer, ever.
 - For `Vec<T>` crossing the boundary, decompose with `ManuallyDrop<Vec<T>>` (MSRV-safe) or `Vec::into_raw_parts` (MSRV ≥ 1.93) and ship the tuple as three values, plus a paired free function. Document that the C side must pass *all three* back unchanged to release the buffer.
-- For every `#[repr(C)]` struct crossing the boundary, verify the layout against the C header with `cargo expand --type-sizes` (or `--print type-sizes`) and pin the bindgen output if you use it. Field order, padding, and alignment must match the C side byte-for-byte.
+- For every `#[repr(C)]` struct crossing the boundary, verify the layout against the C header. On nightly: `cargo +nightly rustc --lib -- -Zprint-type-sizes` prints field-by-field sizes and offsets for every type in the crate. On stable, write a unit test that asserts `std::mem::size_of::<MyStruct>()`, `std::mem::align_of::<MyStruct>()`, and `std::mem::offset_of!(MyStruct, field)` against the values expected by the C side. If you use `bindgen`, pin its output (commit the generated file) so changes show up in diff review. Field order, padding, and alignment must match the C side byte-for-byte.
 - Add miri to CI for every file containing `extern "C"` blocks, exactly as §B5 requires for any `unsafe`.
 
 ---
@@ -845,6 +879,8 @@ These are not bugs in the strict sense, but design choices the LLM makes that ar
 - `anyhow::Result<T>` in a `pub` API of a published library crate.
 - `.unwrap()` on `Mutex::lock()` in production code (the panic message is unhelpful; use `.expect("description")` minimum, or handle the poison case).
 - Silent `let _ = result;` to discard errors. If discarding is intentional, comment why.
+- `Result<T, Box<dyn Error>>` (or `Result<T, Box<dyn Error + Send + Sync>>`) as the return type of any `pub fn` in a published library crate. Callers cannot match on the error variant — every error becomes an opaque blob. For libraries, define a concrete error enum (typically via `thiserror`). Internal/workspace code may use `Box<dyn Error>` or `anyhow::Error` as a deliberate trade-off.
+- `thiserror::Error` enum with two or more `#[from]` variants whose source types are interconvertible (e.g., `#[from] io::Error` and `#[from] MyWrapperAroundIoError`). The `?` operator's type inference becomes ambiguous; one of the `From` impls will be silently preferred, surprising readers.
 
 ## §C3. Async runtime and ecosystem coherence
 
@@ -965,7 +1001,7 @@ These are not bugs in the strict sense, but design choices the LLM makes that ar
 
 ## §C11. `Deref` polymorphism antipattern
 
-**The trap**: `impl Deref<Target = Inner> for Wrapper` makes `wrapper.field_of_inner` and `wrapper.method_of_inner()` work transparently. The LLM uses this to fake inheritance — `struct UserAdmin(User); impl Deref<Target = User> for UserAdmin` — and the code compiles, runs, and looks elegant for a while. The breakdown comes when `UserAdmin` needs to participate in a trait `User` does not impl, or vice versa: the Rust API Guidelines explicitly call this out as **C-DEREF** ("`Deref` only for smart pointers"). Trait resolution does not look through `Deref` for trait bounds, only for method calls, so generic functions taking `User` will not accept `UserAdmin`, generic functions taking `UserAdmin` will not see `User`'s trait impls, and downstream code grows ad-hoc casts and `as_ref()` calls.
+**The trap**: `impl Deref<Target = Inner> for Wrapper` makes `wrapper.field_of_inner` and `wrapper.method_of_inner()` work transparently. The LLM uses this to fake inheritance — `struct UserAdmin(User); impl Deref<Target = User> for UserAdmin` — and the code compiles, runs, and looks elegant for a while. The breakdown comes when `UserAdmin` needs to participate in a trait `User` does not impl, or vice versa: the Rust API Guidelines explicitly call this out as **C-DEREF** ("Only smart pointers implement `Deref` and `DerefMut` (C-DEREF). ... The traits should be used only for that purpose."). Trait resolution does not look through `Deref` for trait bounds, only for method calls, so generic functions taking `User` will not accept `UserAdmin`, generic functions taking `UserAdmin` will not see `User`'s trait impls, and downstream code grows ad-hoc casts and `as_ref()` calls.
 
 **BANNED**:
 - `impl Deref<Target = Inner> for Wrapper` where `Wrapper` is not conceptually a *smart pointer to* `Inner`. Wrappers, newtypes for additional invariants, and "extension types" are not smart pointers.
@@ -975,7 +1011,7 @@ These are not bugs in the strict sense, but design choices the LLM makes that ar
 **REQUIRED**:
 - `Deref` is reserved for smart pointers: `Box`, `Rc`, `Arc`, `Cow`, `MutexGuard`, `RwLockReadGuard`, `String → str`, `Vec<T> → [T]`, custom guards (`MyHandle<'a, T>` where `T` is the pointee). The relationship must be *pointer-like* (the wrapper owns/references the pointee; the wrapper is morally transparent to the pointee).
 - For composition without inheritance, write explicit accessors: `impl UserAdmin { fn user(&self) -> &User { &self.0 } }`. This keeps the API surface of `UserAdmin` separate from `User` and makes the composition explicit at every call site.
-- Cite the Rust API Guidelines **C-DEREF** rule in code review when this pattern appears: *"do not implement Deref if the relationship is not pointer-like"*.
+- Cite the Rust API Guidelines **C-DEREF** rule in code review when this pattern appears: *"Only smart pointers implement `Deref` and `DerefMut` (C-DEREF). ... The traits should be used only for that purpose."*
 
 ---
 
@@ -992,6 +1028,7 @@ Code passes `cargo test` for two distinct reasons: (a) it is correct, (b) the te
 - `#[should_panic]` without `#[should_panic(expected = "specific message substring")]` — any panic, anywhere in the test, makes it green.
 - Tests that assert no postcondition: `let _ = do_thing(); assert!(true);` — proves only that `do_thing` returned without panicking, which is the weakest possible assertion.
 - Tests that compare two outputs derived from the same buggy intermediate (e.g., `assert_eq!(serialize(x), serialize(parse(serialize(x))))` does not prove `parse` is correct, only that it is idempotent on serialize output).
+- `assert_eq!(a, b)` where `a: f32` or `f64` and the values are computed (not literal). Floating-point exact equality flakes between debug/release builds, between architectures (SSE vs AVX vs NEON), and across compiler versions due to reassociation. Use `approx::assert_relative_eq!(a, b, epsilon = …)` or `assert_abs_diff_eq!`, or write the comparison manually as `(a - b).abs() < eps`.
 
 **REQUIRED**:
 - For async timing in tests, use `tokio::time::pause()` / `tokio::time::advance(Duration::from_secs(N))` — virtual time that the runtime under your control. Or use explicit synchronization (`tokio::sync::Notify`, `oneshot::channel`) signalled by the async work itself.
@@ -1029,7 +1066,7 @@ This spec targets **Rust edition 2024, MSRV ≥ 1.84**. Several rules above depe
 - **`rand` 0.8 / 0.9 split** — `thread_rng()` in 0.8 → `rng()` in 0.9. The `OsRng` recommendation in §B12 holds for both.
 - **`subtle` crate** for §B24 — stable, `subtle::ConstantTimeEq::ct_eq` is the canonical entry point.
 - **Strict-provenance API** (`ptr.with_addr`, `ptr.addr`, `ptr.expose_provenance`, `with_exposed_provenance`) per §B5 — stable since **Rust 1.84**.
-- **`tokio::task::consume_budget`** per §B11 — stable in tokio 1.x.
+- **`tokio::task::coop::consume_budget`** per §B11 — stable since **tokio 1.39.1** (1.39.0 was yanked). The older `tokio::task::consume_budget` re-export is now `#[deprecated]`.
 - **Panic across `extern "C"`** per §B25 — pre-Rust 1.81 the behavior was UB; **since Rust 1.81** the default is process abort. The `extern "C-unwind"` ABI (also stabilized) opts into defined unwinding for callers that can handle it. Either way, `catch_unwind` at the boundary is the safe answer.
 
 ---
