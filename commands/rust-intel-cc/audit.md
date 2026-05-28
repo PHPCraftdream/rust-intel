@@ -1,11 +1,11 @@
 ---
-description: Scan Rust code against the 26 categories from rust-intel and return a triaged report with concrete fixes.
+description: Scan Rust code against the categories from rust-intel and return a triaged report with concrete fixes.
 argument-hint: "[path]"
 ---
 
 # /rust-cc-audit
 
-Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes the developer's need to know all 26 categories — finds what a senior reviewer with that document in their head would catch.
+Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes the developer's need to know every category — finds what a senior reviewer with that document in their head would catch.
 
 ## Arguments
 
@@ -23,7 +23,7 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
    - If a directory: every `*.rs` recursively, excluding `target/`.
    - Skip generated code (`OUT_DIR`, `build.rs` output).
 
-4. **Walk every category in the skill.** Iterate §A1 through §C7 as enumerated in `rust-intel.md`. For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness.
+4. **Walk every category in the skill.** Iterate from §A1 through the final §C category as enumerated in the `rust-intel` skill. For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness.
 
 5. **For every finding, produce:**
    - **Category:** `§XN — name`
@@ -36,12 +36,12 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
 6. **Report grouping:**
    - By severity (critical → info).
    - Inside a severity, by tier (A → B → C).
-   - End with a Post-flight summary in the spec's canonical form (every `unsafe`, `unwrap`, `Arc<Mutex<_>>`, double lock, `.lock().unwrap()`, crypto call, new dependency, etc. — the list at the bottom of `rust-intel.md`).
+   - End with a Post-flight summary in the spec's canonical form (every `unsafe`, `unwrap`, `Arc<Mutex<_>>`, double lock, `.lock().unwrap()`, crypto call, new dependency, etc. — the list at the end of the `rust-intel` skill).
 
 ## Report format
 
 ```
-# rust-audit report
+# rust-cc-audit report
 
 **Scope:** <path>
 **Pinned versions:** tokio=X.Y, sqlx=A.B, ...

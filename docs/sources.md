@@ -18,7 +18,7 @@ Safety benchmark for Rust transpilation / generation.
 - **Key figures:**
   - E0277 + E0308 together account for **>18% of all errors** in LLM-generated Rust, up to **30%** for some models.
   - Tier A errors land in 18–30% of generations.
-- **Used in:** §A2 (trait bounds), Tier A intro.
+- **Used in:** Tier A intro (compile-failure context). An earlier draft's Tier A category for trait bounds / type mismatches was retired in v0.3.0 as out-of-scope — rustc catches these directly — but the empirical share is preserved here as motivation for the Tier A scope decision. (Note: the §A2 slot was renumbered after retirement; today's §A2 is "Smart pointer misuse" and is unrelated.)
 
 ### CRUST-Bench
 C→Rust translation benchmark with test coverage.
@@ -38,13 +38,13 @@ Benchmark of 500 real-world repository-level Rust issues from 34 popular crates.
   - 43.7% — failure to model project organization (E0433, E0432, E0425, E0412, E0405).
   - 32.6% — failure to respect type/trait semantics (E0599, E0308, E0277, E0407).
 - **Key figure (task resolution):** ReAct-style agents resolve up to 21.2% of issues; RustForger with Claude Sonnet 3.7 reaches 28.6% (34.9% over the strongest baseline).
-- **Used in:** justifies the §A1 / §A2 priority.
+- **Used in:** justifies the §A1 priority and the v0.3.0 decision to retire the (now-renumbered-away) trait-bounds Tier A category from the spec (compile-only — out of scope).
 
 ### AkiraRust
 LLM-aided Rust repair framework with a feedback-guided thinking switch (FSM-driven dual-mode reasoning).
 - **Source:** "AkiraRust: Re-thinking LLM-aided Rust Repair Using a Feedback-guided Thinking Switch", arXiv:2602.21681 — <https://arxiv.org/abs/2602.21681>
 - **Key figure:** GPT-5 alone reaches 75% pass rate on the benchmark; AkiraRust's repair loop reaches 100%, isolating the qualitative gap between raw LLM and feedback-guided repair on Rust ownership/lifetime/aliasing issues.
-- **Used in:** general taxonomy context; supports the "compile-fix loop is required" framing behind /rust-fix.
+- **Used in:** general taxonomy context; supports the "compile-fix loop is required" framing behind /rust-cc-fix.
 
 ## Field report (published)
 

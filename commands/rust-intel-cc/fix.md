@@ -26,13 +26,13 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    - For runtime symptoms — need `Cargo.toml` for versions and a repro scenario, if the category depends on either (§A1, §B4).
    - If context is insufficient, emit a blocking message in the spec's canonical form.
 
-4. **Map to a category.** Use the routing table below — it is **only a router** (symptom → category number). The actual rule wording, BANNED/REQUIRED bullets, and remediation guidance live in the skill, never duplicated here. Whenever a new category lands in `rust-intel.md`, extend this routing table accordingly. Table is non-exhaustive — when no row matches, read the spec's taxonomy directly.
+4. **Map to a category.** Use the routing table below — it is **only a router** (symptom → category number). The actual rule wording, BANNED/REQUIRED bullets, and remediation guidance live in the skill, never duplicated here. Whenever a new category lands in the `rust-intel` skill, extend this routing table accordingly. Table is non-exhaustive — when no row matches, read the spec's taxonomy directly.
 
    | Symptom | Category |
    |---|---|
    | E0433, E0432, E0425, E0412, E0405 | §A1 (project organization, API hallucination) |
-   | E0277, E0308, E0599, E0407 | §A2 (trait bounds / types) |
-   | E0277 with `Send` / `Sync` in the bound | §A2 + §B2/§B15 (context-dependent) |
+   | E0277, E0308, E0599, E0407 | out-of-scope (compile-only — rustc's message is sufficient). But scan the reflexive "fix" for §A2 (reflexive `Arc<Mutex<T>>`), §A3 (`pub` to silence E0603), §C5 (`.clone()` to silence borrows) residue. |
+   | E0277 with `Send` / `Sync` in the bound | §B2 / §B15 / §B18 — the missing-`Send` is usually a symptom of a guard held across `.await`, a Pin/RPITIT mismatch, or a manual `unsafe impl Send` that was wrong. |
    | E0596, E0594, E0502, E0499 | §C5 candidate (but check the ownership design first — don't slap `.clone()`) |
    | E0106, E0495, E0521 | §B1 (lifetime laundering / leaking) |
    | `clippy::await_holding_lock` | §B2 (but clippy catches ~30% — check hidden cases too) |

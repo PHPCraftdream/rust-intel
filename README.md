@@ -4,13 +4,21 @@ A living specification that defends against the systematic mistakes LLMs make wh
 
 ## What this is
 
-An empirically-grounded ruleset covering **26 categories of errors** that language models (Claude / GPT / Cursor / Codestral / DeepSeek) systematically produce in Rust as of 2026. Every category is backed by a specific study or production incident — see [`docs/sources.md`](docs/sources.md).
+An empirically-grounded ruleset for the Rust mistakes that **survive `cargo build` and `cargo test`** but still wreck things in production or rot the codebase over time. Every category is backed by a specific study, production incident, or systematically observed LLM output pattern — see [`docs/sources.md`](docs/sources.md).
 
-The core idea: Rust's compiler catches a large class of LLM mistakes (and a known empirical finding is that **76.3% of all compilation failures from LLM agents** fall into just two categories — project organization and type/trait semantics, per Rust-SWE-Bench). But the bugs that survive `cargo build` and `cargo test` and only surface in production — **silent correctness bugs** — are where most of the harm lives. This spec is structured around closing that gap.
+The premise: Rust's compiler catches a large class of LLM mistakes (a known empirical finding is that **76.3% of all compilation failures from LLM agents** fall into just two categories — project organization and type/trait semantics, per Rust-SWE-Bench). Categories where the failure mode is a compile error are *deliberately omitted* from this spec — the compiler is sufficient. What this spec covers is what's left after `rustc`, `clippy`, and `cargo test` have all said "fine":
+
+- **Silent correctness bugs** — `HashMap` corruption from inconsistent `Hash`/`Eq`, `tokio::sync::Mutex` held across `.await`, lost `JoinHandle`s, `RefCell` runtime panics under contention.
+- **Design hazards** — `Deref` used for inheritance, manual `unsafe impl Send` without invariant, reflexive `Arc<Mutex<HashMap>>` where a single owner exists.
+- **Runtime data corruption** — `serde` "absent" vs "null" conflation, `#[serde(untagged)]` overlap, `select!`-cancelled side effects.
+- **Performance and resource leaks** — async `Drop` that doesn't drop, blocking calls on async runtime, unbounded channels.
+- **Cryptographic and security pitfalls** — non-constant-time comparison, `OsRng` skipped for `thread_rng`, nonce reuse.
+
+The exact category count is given in the spec itself; the count is allowed to evolve.
 
 ## Status
 
-**v0.2.1 — slash-command rectification (2026-05-18).** The skill itself is unchanged from v0.1.2. What changed since v0.1.x: slash commands are now `/rust-cc-audit`, `/rust-cc-fix`, `/rust-cc-plan` (flat, prefixed — *no* colon namespace; v0.2.0's `/rust-intel-cc:*` was a misread of the request and is corrected here). Repo files stay organised under `commands/rust-intel-cc/` for readability; the installer flattens to `<target>/commands/rust-cc-*.md` on copy. Installers default to **project-local** `./.claude/` (`--user` / `-User` for user-global), `.bat` wrappers for `cmd.exe`. The installer sweeps every prior layout — v0.2.0 namespace, v0.1.x flat-no-prefix — automatically. See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.3.0 — scope reframe, accuracy pass, taxonomy expansion (2026-05-28).** Major content release. The spec is now explicitly scoped to bugs that compile and pass tests but still break — silent correctness bugs, design hazards, runtime data corruption, and performance pitfalls that `rustc` and `cargo test` cannot catch. Eight accuracy bugs from the v0.2.x text are fixed (cancel-safety of `write_buf`, `Box::new_uninit_slice` stable-since-1.82, `tokio::sync::Mutex` deadlock semantics, `#[repr(Rust)]` framing, `slice::align_to` as `unsafe`, stack-overflow threshold rationale, the `tokio::spawn(async_fn())` non-issue, `Vec::into_raw_parts` pinned to Rust 1.93). New categories cover equality/hashing contracts, `RefCell` runtime panics, manual `Send`/`Sync` impls, iterator invalidation through `RefCell`, serde field-presence vs null, `JoinHandle` semantics, async `Drop` non-existence, `select!` cancellation side effects, timing attacks on secrets, panic and ownership across `extern "C"` FFI, channel-runtime mismatch, `tracing` span leakage, workspace feature unification, `Deref` polymorphism antipattern, and a new Tier D for tests-that-pass-by-luck. `mem::uninitialized` / `mem::zeroed` are now in §B5's BANNED list. Tier A renumbered to close the gap left by the retired trait-bounds category. The skill activates the same way; slash commands `/rust-cc-{audit,fix,plan}` are unchanged. See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
 
 ## Layout
 
@@ -23,7 +31,7 @@ rust-intel/
 ├── rust-cc-uninstall.sh / rust-cc-uninstall.ps1 / rust-cc-uninstall.bat # Inverse of install
 ├── commands/
 │   ├── README.md
-│   └── rust-intel-cc/                  # Namespace dir → /rust-intel-cc:* commands
+│   └── rust-intel-cc/                  # Repo umbrella dir (installer flattens to /rust-cc-* commands)
 │       ├── audit.md                    # /rust-cc-audit  — scan existing code
 │       ├── fix.md                      # /rust-cc-fix    — diagnose an error
 │       └── plan.md                     # /rust-cc-plan   — pre-flight a new task
@@ -51,13 +59,15 @@ rust-intel/
 # Windows (cmd.exe)
 rust-cc-install.bat                   # project-local
 rust-cc-install.bat -User             # user-global
+
+# Note: --symlink is bash-only. PowerShell and cmd.exe installers always copy.
 ```
 
 `CLAUDE_CONFIG_DIR` env var overrides everything if set.
 
 The installer copies:
 - `rust-intel.md` → `<target>/skills/rust-intel/SKILL.md` (the skill — Claude Code activates it automatically on Rust tasks)
-- `commands/rust-intel-cc/{audit,fix,plan}.md` → `<target>/commands/rust-intel-cc/*.md` (the three slash commands)
+- `commands/rust-intel-cc/{audit,fix,plan}.md` → `<target>/commands/rust-cc-{audit,fix,plan}.md` (the three slash commands; installer flattens with a `rust-cc-` prefix on copy)
 
 It also sweeps any prior install at the same target — including the legacy v0.1.x flat layout (`commands/rust-audit.md`, `commands/rust-fix.md`, `commands/rust-plan.md`, and the very early `commands/rust-intel.md`) — so re-running it cleanly migrates from any older version.
 
@@ -81,7 +91,7 @@ Only touches the paths the installer creates. Other skills and commands under th
 
 ### Verify
 
-Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§C7 unprompted. Try:
+Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§C11 unprompted. Try:
 
 ```
 /rust-cc-audit src/
@@ -99,7 +109,7 @@ Three commands live under [`commands/rust-intel-cc/`](commands/rust-intel-cc/) a
 
 | Command | Trigger | Use case |
 |---|---|---|
-| [`audit`](commands/rust-intel-cc/audit.md) | `/rust-cc-audit [path]` | Scan existing Rust against all 26 categories, return a triaged report with concrete fixes. |
+| [`audit`](commands/rust-intel-cc/audit.md) | `/rust-cc-audit [path]` | Scan existing Rust against all categories from the spec, return a triaged report with concrete fixes. |
 | [`fix`](commands/rust-intel-cc/fix.md) | `/rust-cc-fix <error>` | Map a compiler / clippy / panic / runtime symptom onto a category, propose a root-cause fix. |
 | [`plan`](commands/rust-intel-cc/plan.md) | `/rust-cc-plan <task>` | Run a task description through the trigger table and Pre-flight checklist before any code is written. |
 
@@ -111,12 +121,15 @@ Three tiers plus a meta-layer:
 
 | Tier | Coverage | Categories |
 |---|---|---|
-| Self-monitoring | Prompt-trigger table → activates relevant categories | top of spec |
-| **Tier A** | Mass compilation failures, caught by `rustc` | §A1–§A4 |
-| **Tier B** | Silent correctness bugs, caught only in production | §B1–§B15 |
-| **Tier C** | Architecture and ergonomics, expensive to undo | §C1–§C7 |
+| Self-monitoring | Prompt-trigger table (phrase- *and* code-pattern-based) → activates relevant categories | top of spec |
+| **Tier A** | Compile-fix reflexes that leave silent residue — the LLM "fixes" the red squiggle in a way that compiles while leaving a real defect behind | §A1–§A3 |
+| **Tier B** | Silent correctness bugs, caught only in production | §B1–§B25 |
+| **Tier C** | Architecture and ergonomics, expensive to undo | §C1–§C11 |
+| **Tier D** | Testing and CI gaps — tests pass not because the code is correct but because the tests are blind | §D1, §D2 |
 
-Tier B is where the real value lives: 15 categories, each with measured frequency and/or documented production incidents.
+A Tier A category for trait bounds / type mismatches (E0277/E0308) was present in earlier drafts and retired in v0.3.0: compile-only failures are out of scope, the compiler is sufficient. The remaining Tier A categories were renumbered to close the gap.
+
+Tier B is the centre of the spec: silent correctness bugs that survive `rustc`, `clippy`, and `cargo test`. Each category cites a published study, production incident, or systematically observed LLM output pattern.
 
 ## Principles for evolving the spec
 

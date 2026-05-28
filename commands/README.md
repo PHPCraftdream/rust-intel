@@ -5,7 +5,7 @@ Thin commands built on top of the `rust-intel` skill. All of them rely on **one*
 ## Architectural principle
 
 ```
-rust-intel.md  ──  knowledge (26 categories, BANNED/REQUIRED, checklists)
+rust-intel.md  ──  knowledge (categories, BANNED/REQUIRED, checklists)
        ▲
        │ invoke skill
        │

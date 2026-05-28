@@ -10,7 +10,95 @@ Patch = wording refinements, fixes, new sources.
 
 _No unreleased changes._
 
-See [`docs/roadmap.md`](docs/roadmap.md) for planned work: §B16 `Send + Sync` on `dyn` async trait objects, §B17 `?Sized` mishandling, source-anchor IDs in `docs/sources.md`, and a possible hot-path / extended-reference split of the skill.
+See [`docs/roadmap.md`](docs/roadmap.md) for planned work: source-anchor IDs in `docs/sources.md`, repro snippets per BANNED formulation, and an `examples/` corpus for regression testing the `/rust-cc-audit` tool.
+
+## [0.3.0] — 2026-05-28
+
+First content release since v0.1.x. The skill itself (`rust-intel.md`) is **substantively rewritten**: scope is explicitly reframed, eight accuracy bugs from the v0.2.x text are fixed, and the category count grows from 26 to **41**. Slash commands, install/uninstall scripts, and the layout are unchanged. Anyone who already has v0.2.x installed re-runs the installer; no other migration needed.
+
+### Changed
+
+- **Scope, stated up front.** The spec is now explicitly scoped to bugs in code that **already compiles and passes tests**. Compile-only failure modes (lifetime variance, trait bound mismatch, GAT lifetime bound errors, object-safety from generic methods, cyclic workspace deps, `?`-in-`main`, HRTB depth, recursive macro limits, `no_std` reflexive `std::*`, self-referential structs, `From`/`Into` cycles, MSRV mismatch) are *deliberately omitted* — the compiler is sufficient, the LLM cannot ship them. This spec covers what survives `rustc`, `clippy`, and `cargo test` and still breaks. The opening section, the front-matter `description`, and the README "What this is" / "Spec architecture" sections all reflect the new scope.
+
+- **§B3 — `AsyncWriteExt::write_buf` cancel-safety corrected (technical error).** v0.2.x text listed `write_buf` as cancel-UNSAFE; per tokio's documented cancel-safety contract, `write_buf` is cancel-safe (single-shot). The actually-unsafe variant is `write_all_buf` (safe-with-caveat: the buffer may be partially advanced) and `write_all` (unsafe). Text now distinguishes all three.
+
+- **§B8 — `tokio::spawn(async_fn())` "future-of-future" claim removed (technical error).** v0.2.x text asserted that `tokio::spawn(async_fn())` creates a future-of-future and spawns the outer wrapper, dropping the inner. That is wrong: an `async fn` returns `impl Future` directly, and `tokio::spawn` polls it. The bullet is gone; replaced with the actual forgotten-await failure modes (a future bound to a variable but never awaited; a future-returning call in a non-async function).
+
+- **§B9 — `tokio::sync::Mutex` "detects deadlock under `tokio-console`" claim corrected (technical error).** `tokio-console` provides *visibility* (which task holds which lock, who is waiting), not detection. Deadlock detection is `parking_lot::deadlock::check_deadlock()` for sync sections or human review of documented lock-acquisition orders. Reworded accordingly.
+
+- **§B5 — `#[repr(Rust)]` framing corrected (technical error).** v0.2.x described `#[repr(Rust)]` as "unstable". The attribute itself is stable (it is the default repr); what is unspecified is the *layout* the default implies. Reworded; expanded list of pinned reprs (`repr(C)`, `repr(transparent)`, `repr(uN)`).
+
+- **§B5 — `slice::align_to` removed from "safe abstractions" list (technical error).** `<[T]>::align_to::<U>` is `unsafe fn`; v0.2.x had it in the safe-defaults list alongside `bytemuck::Pod` / `bytemuck::cast_slice`. Removed from the safe list and from the "use instead of raw pointer arithmetic" list; explicit note added that it requires the same `Pod`-style invariants as `transmute` and a `// SAFETY:` block.
+
+- **§B7 — `Box::new_uninit_slice` nightly tag removed (stale).** Stabilized in Rust 1.82 (October 2024); spec already targets Rust 1.84+. The method is now listed as a stable alternative to `vec![0u8; N].into_boxed_slice()` for zero-init-wasted scenarios, with `assume_init` flagged as `unsafe`.
+
+- **§B7 — stack-overflow threshold rationale clarified.** The v0.2.x `N * size_of::<T>() > 4096` line conflated page size with stack budget. Replaced with the real numbers — 8 MiB on Linux main thread, 2 MiB on `std::thread::spawn`, ~2 MiB on tokio tasks — and the ~64 KiB practical rule of thumb. The `Box::new([0u8; N])` placement trap (array built on stack *before* being moved to heap) is now called out explicitly.
+
+- **§B5 — `Vec::into_raw_parts` pinned to Rust 1.93.** Verified via the stdlib docs: stable since 1.93.0. The spec's MSRV is 1.84, so the `ManuallyDrop<Vec<T>>` + manual `(ptr, len, cap)` decomposition (stable since 1.0) is the default; the `Vec::into_raw_parts` convenience is opt-in on a bumped MSRV. The version pins section reflects this.
+
+- **§B5 — `mem::uninitialized` / `mem::zeroed` promoted to BANNED list.** Previously surfaced inside a REQUIRED bullet about `MaybeUninit` discipline; now each has its own BANNED line spelling out the UB conditions (`mem::uninitialized` deprecated since 1.39 and UB for any type with invariants; `mem::zeroed` UB for `bool`/`&T`/`Box<T>`/`NonZero*`/restricted-discriminant enums/`#[repr(transparent)]` wrappers over those). The compiler does not stop either call.
+
+- **§A1 — repositioned as "stale APIs and slopsquatting" (scope reframe).** Pure `E0599` hallucinations no longer qualify (compiler catches them). The category now covers stale-but-still-valid APIs, `#[deprecated]`-not-removed APIs, wrong-version-of-crate semantics drift, and supply-chain slopsquatting — exactly the cases where the code compiles and runs but is wrong (or malicious).
+
+- **§A3 — repositioned as "`pub` as a hammer for `E0603`" (scope reframe).** Now framed as "LLM reflexively makes things `pub` to silence E0603; code compiles and works; semver surface silently expanded" — a real silent residue, not generic visibility hygiene. (Section is at §A3 in the final v0.3.0 numbering; see "Removed" below for the gap-closing renumber.)
+
+- **§A2, §B5, §B11, §B12, §B15, §C1 — depth expansions.** §A2 (Smart pointer misuse) gains `Cow`, `Arc::make_mut`, `Rc::get_mut`/`Arc::get_mut`, `ArcSwap`. §B5 gains `MaybeUninit` discipline, strict provenance API rules (Rust 2024+), `slice::from_raw_parts` invariant list. §B11 gains `tokio::task::consume_budget`. §B12 cross-links to the new §B24 for constant-time comparison. §B15 gains `Stream` vs `Iterator` failure modes. §C1 gains `#[repr(transparent)]` zero-cost newtype guidance.
+
+- **Trigger table — extended and split.** Phrase-based triggers extended (singletons, retries, rate-limit, batching, secret comparison, JSON parsing, tracing instrumentation, graceful shutdown, workspace features, channels, shared mutable state, type wrappers, async cleanup). New code-pattern triggers section: `async fn` with `Mutex<...>`, `Rc<RefCell<>>`, `unsafe impl Send/Sync`, untracked `JoinHandle`, `impl Drop` with `.await`, `impl Deref` on non-pointer wrappers, `#[serde(untagged)]`, untagged TOCTOU patterns, raw-bytes comparisons in security contexts, `select!` with arm side effects, `tokio::spawn` under active spans, `mem::transmute`/`ptr::read`/`slice::from_raw_parts`, large stack arrays.
+
+- **Post-flight checklist — extended.** New surface-able items: manual `Send`/`Sync` impl (§B18), `#[serde(untagged)]` enums and string-keyed JSON (§B20), untracked `JoinHandle`s (§B21), `impl Drop` with async-looking work (§B22), `==` on secrets (§B24), every `extern "C" fn` and `Box::into_raw`/`Box::from_raw`/`Vec::into_raw_parts`/`Vec::from_raw_parts` pair (§B25), unbounded channels by runtime (§C8), spawn without `.in_current_span()` under instrumented contexts (§C9), default features that pull heavy deps (§C10), `impl Deref` on non-pointer wrappers (§C11), `thread::sleep` in tests (§D1), `#[should_panic]` without `expected` (§D1).
+
+- **Front-matter `description`.** Was: "Hard rules for writing Rust that LLMs systematically get wrong... Defends against the full known taxonomy of LLM failure modes in Rust as of 2026." Now: "Hard rules for writing Rust in code that already compiles and passes tests but is silently broken, slow, or semver-fragile. Load this BEFORE writing any Rust code. Targets bugs that survive rustc, clippy, and cargo test but fail in production or rot the codebase."
+
+### Added
+
+**Tier B — Silent correctness bugs.** Ten new categories.
+
+- **§B16. Equality and hashing contracts.** Manual `PartialEq` without matching `Hash`, manual `PartialOrd` without total-order `Ord`, `f64`/`f32` keys without `OrderedFloat`/`NotNan`. Failure mode: `HashMap` silently loses keys, `BTreeMap` behaves nondeterministically. Compiles, often passes thin tests, corrupts data at contention.
+- **§B17. `RefCell` / `Mutex` runtime borrow panics.** `Rc<RefCell<T>>` in callback/traversal chains, reentrant `borrow_mut()`, undocumented borrow-disjointness invariants. Compiles, tests pass at low concurrency, production panics. REQUIRED: `try_borrow_mut()` with `BorrowMutError` handling for tree traversals.
+- **§B18. Manual `unsafe impl Send` / `unsafe impl Sync`.** Reflexive `unsafe impl Send` to silence `tokio::spawn` bound errors. Now requires explicit `// SAFETY:` citing the synchronization invariant; impls without one are BANNED.
+- **§B19. Iterator invalidation through indirection.** Borrow checker catches `Vec` invalidation at compile time; it does *not* catch invalidation through `RefCell<Vec<T>>`, `unsafe`, or `for i in 0..vec.len()` loops that mutate `vec.len()` mid-loop. Now covered.
+- **§B20. `serde` field-presence vs null vs default.** `Option<T>` with `#[serde(default)]` conflates absent with null. `#[serde(untagged)]` enums silently match wrong variants on overlapping shapes. `#[serde(rename = "...")]` without round-trip test. Compiles, deserializes, drift downstream.
+- **§B21. `JoinHandle` semantics: drop ≠ abort.** Dropping a `tokio::task::JoinHandle` *detaches* the task; it does not abort it. Spawning fire-and-forget without explicit `// fire-and-forget: detached by design` annotation is now BANNED. `JoinSet` recommended for joinable fan-in.
+- **§B22. `async Drop` is not real.** `impl Drop` calling `tokio::spawn`-ing an async cleanup is fire-and-forget and may not run before runtime shutdown; `block_on` inside `Drop` re-enters the runtime and deadlocks. Resources requiring async cleanup must expose an explicit `async fn close(self)`.
+- **§B23. `select!` arm side effects under cancellation.** Side effects (DB writes, channel sends, file flushes) inside a `tokio::select!` arm may not be observed if another branch wins. Each arm must be cancel-safe or guarded; side effects belong after the `select!` returns on the winning branch.
+- **§B24. Timing attacks via `==` on secrets.** `if token == expected { ... }` for any secret comparison (API tokens, password-after-hash, MAC tags, OTP codes) leaks timing information. REQUIRED: `subtle::ConstantTimeEq` or `constant_time_eq` crate. Cross-linked from §B12.
+- **§B25. Panic and ownership across `extern "C"` ABI.** Panics escaping `extern "C"` boundaries (UB pre-1.81, process abort since), `Box`/`Vec`/`String`/`Rc`/`Arc` passed directly through FFI (no stable ABI), allocator-mismatched `Box::from_raw`, `cap`-mismatched `Vec::from_raw_parts`, missing paired free functions, gratuitous `#[no_mangle]`. REQUIRED: `catch_unwind` wrapping, paired `extern "C" fn rust_drop_T(p: *mut T)`, `ManuallyDrop<Vec<T>>` or `Vec::into_raw_parts` (≥ 1.93) with the full tuple documented, layout verification against C headers, miri in CI for every FFI file. Absorbs the previously-roadmapped §B17 (FFI Drop).
+
+**Tier C — Architecture and ergonomics.** Four new categories.
+
+- **§C8. Channel-and-runtime mismatch.** `std::sync::mpsc` in async (blocks executor), `tokio::sync::mpsc` for MPMC (only first receiver gets messages), `crossbeam::channel` in async (await around recv blocks the worker). Now mapped explicitly.
+- **§C9. `tracing` span leakage across `tokio::spawn`.** Spawning without `.in_current_span()` (requires `tracing::Instrument` in scope) loses span context. `spawn_blocking` requires explicit `span.enter()` inside the closure.
+- **§C10. Workspace feature unification surprises.** Default features pulling heavy deps for all workspace members, dev-dependency features leaking into release builds via cargo's feature unification. `cargo hack --feature-powerset --no-dev-deps` in CI now recommended.
+- **§C11. `Deref` polymorphism antipattern.** `impl Deref<Target = Inner> for Wrapper` for inheritance-style composition. Rust API Guidelines C-DEREF rule cited; explicit-accessor pattern (`fn user(&self) -> &User`) given as the right shape.
+
+**Tier D — Testing and CI gaps.** New tier. Two categories.
+
+- **§D1. Tests that pass by luck.** `thread::sleep` waiting for async work (flaky), `#[should_panic]` without `expected = "..."` (any panic passes including in test setup), tests asserting absence of panic instead of postconditions. REQUIRED: `tokio::time::pause`/`advance`, explicit `Notify`/`oneshot` synchronization, `expected` substring pinning.
+- **§D2. Integration vs unit test placement drift.** `#[cfg(test)] mod tests` referencing private items that are later split into siblings; integration tests in `tests/` depending on `pub(crate)`. Recommendation: unit tests for private items live next to the impl; integration tests use the public API only or a `#[cfg(feature = "test-support")]` gate.
+
+**Version pins section.** New section at the end of the spec listing the stability cutoffs assumed throughout: `Box::new_uninit_slice` (1.82), `Vec::into_raw_parts` (1.93 — `ManuallyDrop<Vec<T>>` is the MSRV-safe fallback), strict-provenance API (1.84), tokio cancel-safety contracts (1.x stable), `rand` 0.8 → 0.9 `thread_rng()` → `rng()` rename, Rust 1.80+ `unexpected_cfgs` auto-lint, AFIT (1.75), `consume_budget` (tokio 1.x), panic across `extern "C"` ABI (UB → process abort at Rust 1.81; `extern "C-unwind"` available).
+
+### Removed
+
+- **An earlier draft's Tier A category for trait bounds and type mismatches (E0277 / E0308).** Compile-only failure mode; rustc catches every case and the LLM cannot ship a binary with it. Out of scope for v0.3.0. Tier A numbering was tightened by renumbering the surviving categories: the former §A3 (Smart pointer misuse) is now §A2, and the former §A4 (`pub` as a hammer for E0603) is now §A3. The Tier A intro carries a short note about the historical retirement so older references resolve to context.
+- **Empty roadmap entries §B16 (serde), §B17 (FFI Drop), §C8 (workspace), §C9 (tracing).** All four graduated into the main spec (now §B20, §B25, §C10, §C9 respectively). §B18 (`no_std`) remains in roadmap as low-priority but is explicitly flagged as out-of-scope by the new framing.
+
+### Tooling and documentation
+
+- **`README.md` Status block, "What this is", install description, layout comment, and Spec architecture table** synced to v0.3.0. Tier D added to architecture table. The "26 categories" claim is removed in favor of "the categories from the spec" (count lives in the spec, not the README).
+- **`docs/roadmap.md`** fully refreshed: all `/rust-{audit,fix,plan}` references corrected to `/rust-cc-*`, broken relative paths to `commands/rust-{audit,fix,plan}.md` corrected to `commands/rust-intel-cc/{audit,fix,plan}.md`. Categories that shipped into the spec marked `✅ shipped in v0.3.0`. Out-of-scope note added.
+- **`docs/sources.md`** — the single `/rust-fix` reference corrected to `/rust-cc-fix`; SafeTrans and Rust-SWE-Bench entries updated to reflect the retirement of the historical §A2 category (the empirical figures are preserved as Tier A intro motivation) and the renumbering that followed.
+- **`commands/rust-intel-cc/{audit,fix,plan}.md`** — references to "`rust-intel.md`" reworded to "the `rust-intel` skill" (decouples command files from the on-disk filename, which is `SKILL.md` after install). `audit.md` example header updated from `rust-audit report` to `rust-cc-audit report`. `26 categories` references removed. `fix.md` routing table E0277/E0308 row updated to point at `out-of-scope (compile-only)` with a check for §A2/§A3/§C5 residue from the reflexive fix.
+- **`commands/README.md`** — "26 categories" wording dropped.
+- **Line endings.** `.bat` and `.ps1` files were stored in the working tree as LF despite `.gitattributes` declaring `eol=crlf`. Working tree now matches the attribute. (Index was correct; only the working copy needed renormalization.)
+- **Windows symlink note** added to README: `--symlink` is bash-only; PowerShell and cmd.exe installers always copy.
+
+### Migration
+
+Re-run the installer (`./rust-cc-install.sh`, `.\rust-cc-install.ps1`, or `rust-cc-install.bat` — add `--user` / `-User` if you previously installed user-global). The skill file is byte-different; the slash commands are not; no other migration is needed.
+
+If you have automation that hard-codes the category count or references Tier A by old number, update it: the historical §A2 category is gone, the surviving categories were renumbered (§A3 → §A2, §A4 → §A3), the total is now 41, and references to compile-only failure modes should be rerouted (the routing table in `/rust-cc-fix` already does this — E0277/E0308 etc. → `out-of-scope (compile-only)` with a check for reflexive-fix residue against §A2/§A3/§C5).
 
 ## [0.2.2] — 2026-05-18
 
