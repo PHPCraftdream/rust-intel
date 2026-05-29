@@ -42,7 +42,7 @@ rust-intel/
 │       ├── fix.md                      # /rust-cc-fix    — diagnose an error
 │       └── plan.md                     # /rust-cc-plan   — pre-flight a new task
 └── docs/
-    ├── roadmap.md                      # Planned commands and category expansions
+    ├── roadmap.md                      # Roadmap: open directions and structural notes
     └── sources.md                      # Empirical sources and citations
 ```
 

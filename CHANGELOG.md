@@ -8,7 +8,31 @@ Patch = wording refinements, fixes, new sources.
 
 ## [Unreleased]
 
-_No unreleased changes._
+Staged, not yet cut into a numbered release. A fifth review pass (empirical, against rustc 1.93 / tokio 1.52.3) found three fresh inaccuracies in the v0.4.0 text, one content gap (integer overflow) that survived the saturation sweep, and a command-file bug that survived all five rounds. Category count is unchanged at **44** — integer overflow was folded into §B26 rather than made a new category.
+
+### Changed (accuracy fixes — regressions from v0.4.0)
+
+- **§B15 — `watch::Receiver` `changed()` claim corrected.** v0.4.0 said `changed().await` "returns immediately the first time" on a fresh receiver. Verified false on tokio 1.52.3: the initial value is marked **seen** at receiver creation, so `changed().await` is *pending until the next `send`* — it does not fire for the initial value. `borrow()`-returns-initial is correct and kept; the loop example now uses `borrow_and_update()`.
+- **§B28 — `ß` case-mapping example was backwards.** The length-changing example `ß → ss` was attributed to the wrong direction: `ß` is unchanged by `to_lowercase()` and becomes `SS` under `to_uppercase()`. Corrected to `ß → SS` under `to_uppercase`; the Turkish `İ → i̇` example correctly illustrates `to_lowercase`.
+- **§B27 — `Instant::saturating_add` does not exist on stable.** The overflow bullet recommended it; `Instant` has `checked_add` and `saturating_duration_since` but no `saturating_add` (that is a `Duration` method). Reworded to split the two types.
+
+### Added (content — folded into existing categories, no new category, count stays 44)
+
+- **§B26 (renamed "Lossy numeric conversions and integer overflow") — integer overflow + div/rem-by-zero + index OOB.** The headline addition: bare integer `+`/`-`/`*`/`pow`/`sum` on untrusted or accumulating values **panics in debug but silently wraps in release** (`overflow-checks = false` is the release default), so `cargo test` (debug) stays green while the shipped release binary wraps a counter/offset/size through zero — the most dangerous debug-vs-release divergence in the language, caught by no default lint. Plus `a / b` / `a % b` panic on a zero divisor (debug *and* release), and `slice[i]`/`split_at` panic on an untrusted out-of-bounds index. REQUIRED: `checked_*`/`saturating_*`/`wrapping_*`, `overflow-checks = true` for prod release builds, `slice.get(..)`.
+- **§C4 — partial `Read`/`Write`.** A single `read`/`write` may transfer fewer bytes than requested even without EOF (sockets, pipes); use `read_exact`/`write_all`/`read_to_end` or loop.
+- **§C2 — `Path::join` with an absolute segment.** `base.join(untrusted)` silently discards `base` if the segment is absolute — a path-traversal hazard; validate with `Path::is_absolute` / reject `..` / canonicalize-and-check.
+
+### Changed (self-monitoring + checklist)
+
+- Trigger table extended (+4 phrase, +5 code-pattern) for integer overflow, div-by-zero, partial read/write, and `Path::join`. Post-flight checklist gains the matching surface-able items. Version-pins note added: integer-overflow behavior is not version-gated (`checked_*` etc. stable since 1.0).
+
+### Fixed (command files)
+
+- **`commands/rust-intel-cc/audit.md` — Tier D was invisible to `/rust-cc-audit`.** The category-walk said "iterate from §A1 through the final **§C** category" and grouped findings "by tier (A → B → **C**)", silently skipping Tier D (§D1, §D2), which has existed since v0.3.0. This is the audit-command analog of the README "§A1–§C11" bug fixed in v0.3.2 — it survived all five review rounds. Now walks through §D2 and groups A → B → C → D.
+- **`commands/rust-intel-cc/fix.md`** — routing table extended with rows for §B26 (overflow / lossy cast / div-by-zero), §B27 (duration looks wrong / `.elapsed().unwrap()` panic), §B28 (`byte index not a char boundary` panic / mid-character truncation).
+- **`README.md`** — stale Layout comment for `roadmap.md` ("Planned commands and category expansions" → "Roadmap: open directions and structural notes").
+
+_No version number assigned yet; these changes will be dated and versioned on the next release at the maintainer's instruction._
 
 The post-compilation taxonomy is now near-saturated under the spec's scope. See [`docs/roadmap.md`](docs/roadmap.md) for the remaining work, which is now mostly **infrastructure** rather than content: an `examples/` regression corpus (deliberately-broken Rust per category, run through `/rust-cc-audit`), CI markdown/link checking, and the still-open structural question of splitting the overloaded §B15.
 

@@ -58,6 +58,12 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | `tokio::select!` arm side effect lost on cancellation | §B23 |
    | "Timing-based authentication vulnerability" / CVE-class | §B24 (constant-time comparison) |
    | "Panic crossed extern \"C\" boundary" / "process aborted in FFI" | §B25 |
+   | `attempt to ... with overflow` panic (debug) / wrong result only in release | §B26 (integer overflow: debug-panic vs release-wrap) |
+   | Numeric value wrong after a cast / `as` (`len() as u32`, `u64 as u32`) | §B26 (lossy conversion) |
+   | `attempt to divide by zero` / `attempt to calculate the remainder with a divisor of zero` | §B26 (div/rem by zero) |
+   | Duration looks wrong / negative / jumps; `.elapsed().unwrap()` panic | §B27 (wall-clock vs monotonic time) |
+   | panic `byte index N is not a char boundary` | §B28 (UTF-8 string slicing) |
+   | "string truncated mid-character" / non-ASCII corrupted | §B28 (char boundaries) |
    | "Channel kind wrong for runtime" / async-blocks-on-sync-channel | §C8 |
    | Tracing span missing in spawned task logs | §C9 |
    | Workspace member's feature unexpectedly enabled in release | §C10 |

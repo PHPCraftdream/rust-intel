@@ -146,6 +146,10 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "read env var", "configuration from environment" | §C2 env::var | `.unwrap()` panics on missing/non-UTF8; use `var_os` |
 | "sort by", "order by", "multi-key sort" | §B16 sort stability | `sort_unstable` breaks secondary order |
 | "recursive parser", "walk the tree", "parse nested" | §B7 recursion depth | unbounded depth → stack overflow (DoS) |
+| "counter", "offset", "accumulate", "running total", "sum", "balance", "index arithmetic" | §B26 integer overflow | debug panics, release silently wraps; use `checked_*`/`saturating_*` |
+| "divide", "modulo", "percentage", "average", "ratio" | §B26 div-by-zero | `/ 0` and `% 0` panic; integer `%` truncates toward zero |
+| "read from socket", "read the stream", "write to connection", "read N bytes" | §C4 partial read/write | a single `read`/`write` may transfer fewer bytes; use `read_exact`/`write_all` |
+| "join paths", "build file path from input", "path from user", "config path" | §C2 Path::join absolute | absolute segment discards the base (path traversal) |
 
 **Triggered by code, not phrase** — when the user's input *contains code that matches any of these patterns*, the linked categories activate even if no English phrase fires:
 
@@ -184,6 +188,11 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `Vec::remove(0)` / `insert(0, _)` / `contains` in a loop | §C4 (O(n²)) |
 | `{:?}` on `&[u8]`/`Vec<u8>` | §C4 (decimal not hex) |
 | `sort_unstable*` where equal-element order matters | §B16 |
+| `a + b` / `a * b` / `.sum()` on integers from input or accumulating, without `checked_*`/`saturating_*` | §B26 (overflow: debug-panic vs release-wrap) |
+| `a / b` / `a % b` without a `b != 0` guard | §B26 (div/rem by zero panic) |
+| `slice[i]` / `&s[a..b]` / `split_at(i)` with an index from untrusted input | §B26 (index OOB) / §B28 (string boundary) |
+| a single `.read(&mut buf)` / `.write(data)` treated as complete | §C4 (partial transfer) |
+| `base.join(untrusted)` | §C2 (absolute segment discards base) |
 
 When two or more triggers fire in one request, treat it as a high-risk task and explicitly enumerate which categories I'm guarding against in my response.
 
@@ -717,7 +726,7 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Dropping a half-consumed `Stream` without explicit acknowledgement that the buffered items are lost. For `tokio::sync::mpsc::ReceiverStream`, dropping the stream signals the sender side; for `BroadcastStream`, in-flight items are gone. Document the drop semantics or wrap the stream in a `Drop` that drains.
 - `tokio::select! { ... }` without a `biased;` directive when arm-priority matters (e.g., shutdown signal must win over data-availability when both are ready). The default behavior is pseudo-random per poll, which surfaces as occasional starvation under load.
 - `tokio::time::interval(period)` used as `loop { iv.tick().await; do_work().await; }` assuming the first `do_work` runs after `period`. The **first** `.tick().await` returns **immediately** (at creation time), not after one period — so the loop body fires once right away. Worse, the default `MissedTickBehavior::Burst` makes a delayed interval fire all missed ticks back-to-back to "catch up", producing a load spike. Compiles, passes a single-iteration test, surprises in production.
-- `tokio::sync::watch::Receiver::borrow()` assuming it returns the latest *sent* value — a freshly created receiver's `borrow()` returns the **initial** value passed to `watch::channel(initial)` before any `send`, and `changed().await` then returns immediately the first time. Use `borrow_and_update()` after `changed().await` to avoid re-processing the same value in a loop.
+- `tokio::sync::watch::Receiver::borrow()` assuming it returns the latest *sent* value — a freshly created receiver's `borrow()` returns the **initial** value passed to `watch::channel(initial)` before any `send`. The initial value is marked **seen** at receiver creation, so `changed().await` on a fresh receiver is **pending until the next `send`** — it does *not* fire for the initial value. In a `while changed().await.is_ok() { let v = rx.borrow_and_update().clone(); ... }` loop, use `borrow_and_update()` (not bare `borrow()`) so each observed value is marked seen and you don't reprocess it.
 
 **Additional REQUIRED**:
 - For arm-priority, use `tokio::select! { biased; _ = shutdown.notified() => ..., msg = rx.recv() => ..., }` — left-to-right priority is now deterministic.
@@ -896,18 +905,24 @@ This category is the `select!`-specific application of §B3. The general rule (`
 - For every `#[repr(C)]` struct crossing the boundary, verify the layout against the C header. On nightly: `cargo +nightly rustc --lib -- -Zprint-type-sizes` prints field-by-field sizes and offsets for every type in the crate. On stable, write a unit test that asserts `std::mem::size_of::<MyStruct>()`, `std::mem::align_of::<MyStruct>()`, and `std::mem::offset_of!(MyStruct, field)` against the values expected by the C side. If you use `bindgen`, pin its output (commit the generated file) so changes show up in diff review. Field order, padding, and alignment must match the C side byte-for-byte.
 - Add miri to CI for every file containing `extern "C"` blocks, exactly as §B5 requires for any `unsafe`.
 
-## §B26. Lossy numeric conversions
+## §B26. Lossy numeric conversions and integer overflow
 
-**The trap**: `as`-casts between numeric types silently truncate, wrap, or saturate — no panic, no warning by default (`clippy::cast_possible_truncation` is pedantic, off by default, so the LLM never sees it). It compiles every time, tests on small numbers are green, and it breaks on large IDs/offsets/lengths in production.
+**The trap**: `as`-casts between numeric types silently truncate, wrap, or saturate — no panic, no warning by default (`clippy::cast_possible_truncation` is pedantic, off by default, so the LLM never sees it). It compiles every time, tests on small numbers are green, and it breaks on large IDs/offsets/lengths in production. The same blind spot covers plain integer arithmetic: a bare `+`/`-`/`*` that overflows **panics in debug but silently wraps in release** (`overflow-checks` is off by default in the release profile), so the profile you test in and the profile you ship in disagree — and a `/`/`%` by zero or an out-of-range index panics in both.
 
 **BANNED**:
 - `as` for narrowing or sign-changing integer casts without a proven range: `u64 as u32`, `i64 as i32`, `usize as u32`, `i32 as u8`, `value.len() as u32`. The high bits are silently dropped; on a `>4 GiB` / `>4 billion` collection, `len() as u32` yields garbage.
 - Assuming `usize as u64` or `u32 as usize` is always lossless — `usize` is 32-bit on wasm32 and other 32-bit targets, so `u64 as usize` truncates there.
 - Treating `f as iN` / `f as uN` as wrapping or UB. Since Rust 1.45 it is **saturating**: `300.0_f32 as u8 == 255`, `-1.0_f32 as u8 == 0`, `NaN as i32 == 0`, `1e30 as i32 == i32::MAX`. Code written against pre-1.45 / C semantics gets a silently saturated value instead of the expected wraparound or error.
+- Bare `+` / `-` / `*` / `pow` / `Iterator::sum` / `product` on integers that come from untrusted input, grow over time, or accumulate (counters, offsets, lengths, balances) without `checked_*` / `saturating_*` / `wrapping_*`. In **debug** an overflow panics (`attempt to add with overflow`); in **release** — where `overflow-checks = false` by default — it **silently wraps** (two's-complement). `cargo test` runs the debug profile and stays green; the release binary wraps a counter/offset/size through zero in production. This is the most dangerous debug-vs-release divergence in the language: the profile you test in and the profile you ship in disagree, and no lint catches it by default (`clippy::arithmetic_side_effects` is pedantic, off by default — same blind spot as the cast lint above).
+- `a / b` or `a % b` on integers without proving `b != 0` — both panic in **debug and release** on a zero divisor; with `b` from untrusted input this is a clean remote DoS panic. (Note also: integer `%` truncates toward zero, so `-7 % 3 == -1`, not `2` — a surprise if you expect Python-style modulo.)
+- `v[i]` / `&slice[a..b]` / `slice.split_at(i)` with an index derived from untrusted input — panics on out-of-bounds (the slice/integer mirror of §B28's string-boundary panic).
 
 **REQUIRED**:
 - For narrowing conversions, use `u32::try_from(x)?` (or `TryFrom` / `try_into`) and handle the range `Err`. Keep `as` only for widening (`u8 as u64`) or explicitly-truncating-by-design casts with a `// truncation intentional: <reason>` comment.
 - For float→int with range control, do an explicit check (`if x.is_finite() && x >= 0.0 && x <= u8::MAX as f32`) before the `as`; do not rely on saturation as your error handling.
+- For integer arithmetic that can overflow on real inputs: `checked_add`/`checked_mul`/… returning `Option` (handle `None` as a real error), `saturating_*` where clamping is the correct semantics, or `wrapping_*` **only** where wraparound is intended, with a `// wrapping intentional: <reason>` comment.
+- For a production binary that must not silently wrap, set `overflow-checks = true` in the release profile (`[profile.release]`) so debug and release agree — a small runtime cost that closes the divergence.
+- For division/indexing on untrusted input: `checked_div` / `checked_rem`, and `slice.get(i)` / `slice.get(a..b)` (returns `Option`) instead of the panicking `[]`.
 - The post-flight checklist already flags `as` casts between integer types of different signedness or width — this is the backing rule for that line.
 
 ## §B27. Wall-clock vs monotonic time
@@ -917,7 +932,7 @@ This category is the `select!`-specific application of §B3. The general rule (`
 **BANNED**:
 - `SystemTime::now()` / `chrono::Utc::now()` / `std::time::SystemTime` to measure intervals, durations, timeouts, or benchmarks. The wall-clock can jump backward or forward between two readings.
 - `.elapsed().unwrap()` or `.duration_since(earlier).unwrap()` on a `SystemTime` — both return a `Result` precisely because the clock can go backward; `.unwrap()` panics in production on an NTP step.
-- `Duration` / `Instant` arithmetic that can overflow (`instant + very_large_duration`, `d1 + d2` on untrusted inputs) without `checked_add` / `saturating_add`.
+- `Duration` / `Instant` arithmetic that can overflow (`instant + very_large_duration`, `d1 + d2` on untrusted inputs) without a guarded variant. `Duration` has both `checked_add` and `saturating_add`; `Instant` has `checked_add` and `saturating_duration_since` (but **no** `saturating_add` on stable) — use those rather than bare `+`.
 
 **REQUIRED**:
 - `Instant::now()` for every duration, deadline, timeout, and benchmark — it is monotonic by contract. Use `SystemTime` only for absolute wall-clock stamps (logs, "created at") that must be serialized or displayed.
@@ -930,7 +945,7 @@ This category is the `select!`-specific application of §B3. The general rule (`
 **BANNED**:
 - `&s[a..b]` with computed indices without checking `s.is_char_boundary(_)` — it panics if an index lands inside a multi-byte UTF-8 character (`&"café"[0..4]` panics: 4 bytes, but the boundary is inside `é`).
 - Conflating `s.len()` (a count of **bytes**) with a count of characters: `s.len()` for "take the first N characters", for display width, or for limits. `"café".len() == 5`, not 4.
-- `to_lowercase()` / `to_uppercase()` for comparing protocol/ASCII tokens — these are full Unicode transformations (and can change length: `ß` → `ss`, Turkish `İ`). For ASCII protocols use `eq_ignore_ascii_case` / `to_ascii_lowercase`.
+- `to_lowercase()` / `to_uppercase()` for comparing protocol/ASCII tokens — these are full Unicode transformations and can change length (`ß` → `SS` under `to_uppercase`; Turkish `İ` → `i̇` under `to_lowercase`). For ASCII protocols use `eq_ignore_ascii_case` / `to_ascii_lowercase`.
 
 **REQUIRED**:
 - `s.get(a..b)` (returns `Option<&str>`, never panics) instead of `&s[a..b]` for computed bounds; `char_indices()` for iteration with byte positions; `chars().take(n)` for "the first N characters".
@@ -977,6 +992,7 @@ These are not bugs in the strict sense, but design choices the LLM makes that ar
 - `Result<T, Box<dyn Error>>` (or `Result<T, Box<dyn Error + Send + Sync>>`) as the return type of any `pub fn` in a published library crate. Callers cannot match on the error variant — every error becomes an opaque blob. For libraries, define a concrete error enum (typically via `thiserror`). Internal/workspace code may use `Box<dyn Error>` or `anyhow::Error` as a deliberate trade-off.
 - Reflexive `#[from]` on every error variant. `#[from] io::Error` makes every `?` on an I/O operation collapse into one variant — the resulting error can no longer say *which* operation failed (the config read? the socket write? the temp-file flush?). It compiles, tests pass, and production logs become "I/O error" with no call-site context. Use `#[from]` only where the source type already uniquely identifies the failure; otherwise carry context with `#[source]` plus an explicit `.map_err(|e| MyError::ConfigRead(e))` at each call site, or use `anyhow::Context::context` in binary code.
 - `std::env::var("X").unwrap()` / `.expect(...)` — panics at startup both when the variable is *missing* and when its value is *not valid UTF-8* (common for paths on Windows / non-UTF8 locales). For values that may be non-UTF8 use `std::env::var_os`; for missing-but-optional config, handle the `Err(VarError::NotPresent)` with a default instead of panicking.
+- `base.join(user_segment)` where `user_segment` may be absolute. `Path::join` with an absolute argument (`/etc/passwd`, `C:\…`, or a leading `/`) **discards `base` entirely** and returns the absolute path — a path-traversal / write-to-wrong-place hazard when any segment is attacker-controlled. It compiles, tests on relative names pass, and production reads/writes outside the intended directory. Validate with `Path::is_absolute` (and reject `..` components) before joining untrusted segments, or canonicalize and check the result is still under `base`.
 
 ## §C3. Async runtime and ecosystem coherence
 
@@ -1003,6 +1019,7 @@ These are not bugs in the strict sense, but design choices the LLM makes that ar
 **BANNED**:
 - `Vec::remove(0)` / `Vec::insert(0, _)` in a loop (each is O(n) — it shifts the whole tail), turning an O(n) pass into O(n²); likewise `Vec::contains` inside a loop is O(n²). Tests on small N pass; production degrades to seconds/minutes at scale. Use `VecDeque` for FIFO (O(1) front ops), `swap_remove` when order doesn't matter, or a `HashSet` / `retain` instead of repeated `contains`.
 - `{:?}` (Debug) on `&[u8]` / `Vec<u8>` for hashes, checksums, IDs, or wire frames — it prints a decimal array `[222, 173, 190, 239]`, not hex. Use `hex::encode` (or a `LowerHex` newtype) for byte diagnostics. (For *secret* bytes, see §B12 — don't log them at all.)
+- Treating a single `io::Read::read(&mut buf)` as if it fills `buf`, or a single `Write::write(data)` as if it writes all of `data`. Both may return `Ok(n)` with `n < len` even without EOF (sockets, pipes, large buffers). The code compiles, tests pass on small local buffers where one call happens to transfer everything, and production truncates or splices messages under load / over the network. Use `read_exact` / `write_all` / `read_to_end`, or loop until the count is satisfied; reserve bare `read`/`write` for code that genuinely handles short transfers.
 
 ## §C5. Reflexive `.clone()` as a borrow-checker silencer
 
@@ -1173,6 +1190,7 @@ This spec targets **Rust edition 2024, MSRV ≥ 1.84**. Several rules above depe
 - **`consume_budget`** per §B11 — the function is stable since **tokio 1.39.1** (1.39.0 was yanked) at `tokio::task::consume_budget`; it moved into the new `tokio::task::coop` module in **tokio 1.44.0** (old path `#[deprecated]` from 1.44.0). On a tokio MSRV below 1.44 use `tokio::task::consume_budget`; on 1.44+ use `tokio::task::coop::consume_budget`.
 - **Panic across `extern "C"`** per §B25 — pre-Rust 1.81 the behavior was UB; **since Rust 1.81** the default is process abort. The `extern "C-unwind"` ABI (also stabilized) opts into defined unwinding for callers that can handle it. Either way, `catch_unwind` at the boundary is the safe answer.
 - **Float→int saturating cast** per §B26 — `300.0_f32 as u8 == 255`, `NaN as i32 == 0` etc. became defined (saturating) in **Rust 1.45**; before that the out-of-range cast was UB. Code adapted from pre-1.45 / C examples silently saturates instead of wrapping or erroring. The other §B26/§B27/§B28 APIs (`try_from`, `is_char_boundary`, `Instant`) are long-stable std and need no pin.
+- **Integer overflow behavior** per §B26 is **not** version-gated: debug builds panic, release builds wrap (`overflow-checks = false` is the release default) on every supported toolchain. `checked_*`/`saturating_*`/`wrapping_*` are stable since 1.0.
 - **`LazyLock`** per §A2 — stable since **Rust 1.80** (July 2024), alongside `OnceLock` (stable 1.70). Both are the recommended replacement for `Box::leak`-as-global and for `lazy_static!` / `once_cell::sync::Lazy`.
 
 ---
@@ -1262,6 +1280,10 @@ For any of the following found in the generated code, surface it explicitly to t
 - every `thread::sleep` or real `tokio::time::sleep` inside a test (§D1) — replace with virtual time or explicit synchronization
 - every test in `tests/` reaching for `pub(crate)` items (§D2) — flag placement drift
 - every narrowing `as` cast (`u64 as u32`, `len() as u32`, `f as iN`) (§B26) — verify the range fits or switch to `try_from`
+- every bare integer `+`/`-`/`*`/`pow`/`sum` on untrusted or accumulating values (§B26) — wrap in `checked_*`/`saturating_*` or set `overflow-checks = true` for release
+- every `/` and `%` without a proven non-zero divisor, and every `[]` index from external input (§B26)
+- every single `read`/`write` treated as complete (§C4) — use `read_exact`/`write_all`
+- every `Path::join` with a possibly-absolute untrusted segment (§C2)
 - every `SystemTime`/`Utc::now()` used for a duration, and every `.elapsed().unwrap()` (§B27) — switch to `Instant`, handle the `Result`
 - every `&s[..]` with computed indices and every `s.len()`-as-char-count (§B28) — use `get`/`char_indices`
 - every `Box::leak` (§A2), `mem::forget` (§B4), and unbounded `FuturesUnordered` (§B14)
