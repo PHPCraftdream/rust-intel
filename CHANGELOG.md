@@ -6,9 +6,51 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
-## [Unreleased]
+## [0.3.0] — 2026-05-29
 
-Staged, not yet cut into a numbered release. Five batches of work sit here: a fifth-pass accuracy/content batch, a sixth-pass **usability refactor**, a seventh-pass **final consistency/usability fix pass**, an eighth-pass **corrective pass** (external review — one verified bug, a 🔴-propagation gap, three undisclosed-precondition gaps, meta-layer recalibration), and a **Tier E content batch** that opens a new top-level axis (systemic cost / performance) alongside the correctness tiers. The first four batches left the category count unchanged at **44** (no categories added, cut, merged, or renumbered); the Tier E batch raises it to **50** (§E1–§E6) and the tier count from **four** to **five**. All edits are documented under the spec's `[Unreleased]` staging; no version has been assigned yet.
+Release 0.3.0 — the first tagged release since 0.2.2, collapsing all interim work (drafted under provisional 0.3.x / 0.4.0 labels and an `[Unreleased]` staging area, none of which were ever tagged on GitHub) into a single version. Net effect since 0.2.2: the taxonomy grew from **26 to 51 categories** across **five tiers (A–E)**. Work batches in this release: a fifth-pass accuracy/content batch, a sixth-pass **usability refactor**, a seventh-pass **final consistency/usability fix pass**, an eighth-pass **corrective pass** (external review — one verified bug, a 🔴-propagation gap, three undisclosed-precondition gaps, meta-layer recalibration), a **Tier E content batch** that opens a new top-level axis (systemic cost / performance) alongside the correctness tiers, and a **discipline-hardening batch** of within-category bullets (vacuous-test ban §D1, workspace version-unification + crate-boundary timing §C10, benchmark-as-regression-guard §E6). The first four batches left the category count unchanged at **44** (no categories added, cut, merged, or renumbered); the Tier E batch raises it to **50** (§E1–§E6) and the tier count from **four** to **five**; the discipline-hardening batch adds bullets only and keeps the count at **50**; the latest **review-driven pass** (external multi-agent review) adds one category (§B29) to bring it to **51**, alongside accuracy fixes, within-category completeness bullets, and anti-dogmatism calibration. Full per-iteration detail is preserved in the sub-sections below.
+
+---
+
+### Review-driven pass — accuracy fixes, completeness (§B29), calibration (external multi-agent review)
+
+An external multi-agent review (technical accuracy, completeness/currency, anti-dogmatism, internal consistency, evidence-base fact-check) drove this batch. One new category (§B29) raises the count **50 → 51**; everything else is within-category bullets, accuracy fixes, and calibration. Shipped as part of release 0.3.0.
+
+#### Added
+
+- **§B29 — Iterator and slice adapter traps** (new Tier B category; count 50 → 51). `zip` truncates to the shorter side (silent data loss); `Vec::dedup` removes only *consecutive* duplicates (not a set); `chunks(0)`/`windows(0)`/`step_by(0)` panic; `collect` into a `HashMap`/`HashSet` silently overwrites duplicate keys (last wins). The highest-frequency LLM surface, previously under-covered.
+- **§A1 — build-time supply-chain vector.** A dependency's `build.rs` and proc-macros execute arbitrary code at `cargo build` (before any runtime guard), reading credentials/keys/CI secrets; plus `-`↔`_` typosquats and dependency confusion. Defenses: pin + commit `Cargo.lock`, audit `build.rs`/proc-macro deps, `cargo-deny`/`cargo-audit`, `--locked`/vendored builds.
+- **Within-category bullets:** §B4a (edition-2024 `impl Trait` lifetime capture / `+ use<>`), §B16 (`partial_cmp().unwrap()` NaN-panic in float sort → `total_cmp`; inconsistent comparator now panics), §B19 (`mem::take`/`replace`/`Option::take` leave a `Default` on early-return/`?`/panic), §B26 (`debug_assert!`/`dbg!` compiled out in release), §C4 (`BufWriter`/`BufReader` drop-flush discards `io::Result`), §C9 (log/ANSI/control-char injection from untrusted input), §B14 (long sync step inside `FuturesUnordered`/`buffer_unordered` buries siblings → spurious timeout / semaphore self-deadlock).
+
+#### Changed (triggers, counts, calibration)
+
+- Both trigger tables gain a §B29 row (phrase + code-pattern). Counts propagated: "fifty" → "fifty-one", "all 50" → "all 51", "twenty-eight" (Tier B) → "twenty-nine", `(§B1–§B28)` → `(§B1–§B29)`. README spec range `§A1–§D2` → `§A1–§E6` (Tier E was uncovered).
+- **Calibration (anti-dogmatism):** §A2/§B2 `Rc`/`RefCell` "forbidden" narrowed (legitimate under `spawn_local`/`LocalSet` and in synchronous single-threaded code; cross-thread misuse is already a compiler error); §B24 trigger narrowed to *secret* operands (no longer flags `algo == "HS256"`) plus a scope note; Post-flight drops the noisy `clippy::expect_used` and annotates `unwrap_used` as hand-triaged; §B26 overflow-checks flagged as a binary-crate lever (libraries use per-site `checked_*`) with softened tone; §B5 strict-provenance scoped to genuine address↔integer round-trips (not a blanket cast replacement); §B3 title `THE BIG ONE` → `invisible in signatures`; §B10 OOM phrasing softened.
+
+#### Fixed (accuracy / evidence base)
+
+- **§C2** — corrected the UNC-path claim: `\\server\share` parses as `[Component::Prefix, Component::RootDir]` (so `has_root()` / `is_absolute()` are `true`, not `false`); the first-component `Prefix`/`RootDir` guard is unchanged and correct.
+- **Evidence base (spec intro, §B12, §A1 + `docs/sources.md`):** removed the unverifiable "~57% / CodeQL / crypto-Rust" SafeGenBench figure (the benchmark is multi-language, Semgrep-class, with no Rust track); corrected the Faros "+242.7%" framing (org-level incidents-to-PR at low→high adoption, not AI-vs-human PRs); removed the fabricated Rust-specific scope from the Lightrun "very confident" figure (it concerns AI-generated code in general); `rust_decimal` downloads `~3.5M` → `~100M` (the 3.5M figure was the repo's GitHub star count); supply-chain "~130%" → directional "~70–75% ecosystem-wide, with no crates.io-specific figure published".
+
+_Shipped as part of release 0.3.0 (2026-05-29)._
+
+---
+
+### Discipline hardening — vacuous-test ban, workspace boundaries, benchmark-as-guard (bullets within existing categories; count stays 50)
+
+A small follow-on pass integrating three pieces of engineering wisdom *into existing categories* rather than as new ones — keeping the taxonomy at 50 and avoiding bloat. The set was deliberately filtered ("not everything, the important parts, wisely placed"): project-hygiene items such as "keep a changelog" were judged out of scope for a silent-failure spec, "create a `crates/` folder up front / extract everything" was reframed (premature extraction is itself a hazard), and "benchmark everything" was reframed to fit §E6's measure-first discipline rather than contradict it.
+
+#### Added (bullets inside existing categories — count stays 50)
+
+- **§D1 — vacuous tests / coverage theater.** A test asserting a value against its own definition (`assert_eq!(MAX_RETRIES, 3)`), re-checking what the compiler / `std` / a `#[derive]` already guarantees, or exercising a dependency's behavior — inflates coverage and confidence while being structurally unable to fail. The silent twin of the happy-path mock. **Exception:** contract pins (FFI layout/size §B25, wire-protocol constants, serialized golden snapshots §B20) are *not* vacuous — changing them is a breaking change worth catching.
+- **§C10 — workspace version unification + crate-boundary timing.** Declare shared deps once in `[workspace.dependencies]` (drifting per-member versions link multiple incompatible copies into one binary); and extract a crate *late, not early* — a premature boundary freezes an unproven API (§C1) and forces the very feature/version coordination §C10 is about, while copy-paste drift across members signals extraction is overdue.
+- **§E6 — benchmark as regression-guard.** Lock a measured win with a `criterion` CI benchmark that fails on regression; bench only the paths actually optimized (benching cold/trivial code is its own coverage theater, §D1) — consistent with §E6's measure-first discipline, not "benchmark everything".
+
+#### Changed (triggers)
+
+- Phrase table gains rows → §D1 ("add tests / increase coverage" → test behavior/contracts, not tautologies), §C10 ("extract a crate / new workspace member"), §E6 ("benchmark this / lock in the speedup"). Code-pattern table gains a §D1 row (`assert_eq!(CONST, <literal>)` / `assert!(true)` / setter-then-getter).
+
+_Shipped as part of release 0.3.0 (2026-05-29)._
 
 ---
 
@@ -35,9 +77,9 @@ A new top-level tier — **TIER E — Systemic cost: correct in the small, wrong
 - **`commands/rust-intel-cc/fix.md`** — routing table gains performance rows (slow/high-latency-at-scale, sequential `.await`s, allocation churn, quadratic-at-scale, lock contention, "faster HashMap", `Regex`-in-loop / unbuffered I/O) mapping the symptom shape onto the right §E law, all under §E6 (measure first).
 - **`docs/roadmap.md`** and **`docs/sources.md`** — Tier E logged as shipped content; normative performance sources added under §E* (see the sources.md entry in this batch).
 
-This is a **MINOR** change by SemVer (new categories), but per `[Unreleased]` policy no version number is assigned yet.
+This is a **MINOR** change by SemVer (new categories) — shipped in 0.3.0.
 
-_No version number assigned yet; these changes will be dated and versioned on the next release at the maintainer's instruction._
+_Shipped as part of release 0.3.0 (2026-05-29)._
 
 ---
 
@@ -86,7 +128,7 @@ The eighth pass was opened in response to an external review of the frozen spec 
 
 - `commands/rust-intel-cc/audit.md`, `commands/rust-intel-cc/fix.md`, `README.md`, `docs/roadmap.md` — see above.
 
-_No version number assigned yet; these changes will be dated and versioned on the next release at the maintainer's instruction._
+_Shipped as part of release 0.3.0 (2026-05-29)._
 
 ---
 
@@ -183,11 +225,11 @@ A fifth review pass (empirical, against rustc 1.93 / tokio 1.52.3) found three f
 - **`commands/rust-intel-cc/fix.md`** — routing table extended with rows for §B26 (overflow / lossy cast / div-by-zero), §B27 (duration looks wrong / `.elapsed().unwrap()` panic), §B28 (`byte index not a char boundary` panic / mid-character truncation).
 - **`README.md`** — stale Layout comment for `roadmap.md` ("Planned commands and category expansions" → "Roadmap: open directions and structural notes").
 
-_No version number assigned yet; these changes will be dated and versioned on the next release at the maintainer's instruction._
+_Shipped as part of release 0.3.0 (2026-05-29)._
 
 The post-compilation taxonomy is now near-saturated under the spec's scope. See [`docs/roadmap.md`](docs/roadmap.md) for the remaining work, which is now mostly **infrastructure** rather than content: an `examples/` regression corpus (deliberately-broken Rust per category, run through `/rust-cc-audit`), CI markdown/link checking, and the still-open structural question of splitting the overloaded §B15.
 
-## [0.4.0] — 2026-05-29
+### Iteration: std-primitives coverage (drafted as 0.4.0)
 
 Content release. Closes the last systematically-missed gap under the spec's scope — everyday **`std` primitives that compile, pass ASCII/small-number tests, and break in production** — with three new Tier B categories plus a batch of bullet-level additions to existing ones. A fourth review pass found v0.3.2 itself clean (zero regressions — the first patch in the project's history to introduce no new bugs), so this release is purely additive. **Category count 41 → 44.** No renumber of existing categories; slash commands and install/uninstall behavior unchanged. Re-run the installer.
 
@@ -235,7 +277,7 @@ The eight items previously parked in the roadmap's v0.4.0 backlog, plus four med
 
 Re-run the installer. The skill grew by three categories and ~a dozen bullets; nothing was renumbered or removed, so any reference to §A1–§D2 or §B1–§B25 remains valid (§B26–§B28 are new). Slash commands and scripts are unchanged.
 
-## [0.3.2] — 2026-05-29
+### Iteration: accuracy patch (drafted as 0.3.2)
 
 Same-day patch on top of v0.3.1. Fixes three bugs **introduced by v0.3.1 itself** (a third review pass caught them), corrects an internal category count, catches the trigger table up to the v0.3.1 rules, and adds four bullet-level pitfalls under the existing scope. **No new categories** — total stays at 41. **No renumber.** Re-run the installer; nothing else changes.
 
@@ -284,7 +326,7 @@ Re-run the installer. The skill content changed (three corrections, two wording 
 
 If you copied the v0.3.1 §B15 `Notify` pattern into your code, re-copy it — the v0.3.1 version had a real lost-wakeup race (missing `.enable()`). If you pinned tokio between 1.39.1 and 1.43 and used the `tokio::task::coop::consume_budget` path the v0.3.1 text suggested, switch to `tokio::task::consume_budget` (the `coop` module only exists from 1.44).
 
-## [0.3.1] — 2026-05-28
+### Iteration: accuracy patch + category extensions (drafted as 0.3.1)
 
 Same-day patch on top of v0.3.0. Five accuracy bugs in the v0.3.0 text fixed, seven existing categories extended with bullets covering pitfalls under the spec's stated scope (compiles + tests pass but still breaks). **No new categories** — total stays at 41. **No renumber.** Anyone running v0.3.0 re-runs the installer; nothing else changes.
 
@@ -341,7 +383,7 @@ Re-run the installer. The skill content changed (eight new BANNED bullets, sever
 
 If you have automation that hard-codes routing for `tokio::task::consume_budget`, `cargo expand --type-sizes`, or the v0.3.0 §B23 "send is cancel-safe" claim, update it: those are gone in v0.3.1.
 
-## [0.3.0] — 2026-05-28
+### Iteration: scope reframe + taxonomy expansion (drafted as 0.3.0)
 
 First content release since v0.1.x. The skill itself (`rust-intel.md`) is **substantively rewritten**: scope is explicitly reframed, eight accuracy bugs from the v0.2.x text are fixed, and the category count grows from 26 to **41**. Slash commands, install/uninstall scripts, and the layout are unchanged. Anyone who already has v0.2.x installed re-runs the installer; no other migration needed.
 

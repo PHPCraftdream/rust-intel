@@ -28,7 +28,7 @@ C→Rust translation benchmark with test coverage.
 ### SafeGenBench
 Safety benchmark for generated code, including crypto.
 - **Source:** arXiv:2506.05692 — <https://arxiv.org/abs/2506.05692>
-- **Key figure:** **~57% of vulnerabilities** in LLM-generated crypto Rust that compiles are missed by static analyzers (CodeQL and similar).
+- **Key figure (corrected):** SafeGenBench reports that a large share of security vulnerabilities in LLM-generated code that compiles go undetected by static analyzers. **Caveat:** the benchmark is multi-language (Rust is not a separate track) and uses Semgrep-class tooling rather than CodeQL; the previously-cited "~57%, crypto-Rust, CodeQL" figure could not be verified against the paper and has been removed. Treat as directional support for "compiles ≠ secure", not a Rust-specific number.
 - **Used in:** §B12 (crypto silent insecurity), Tier B intro.
 
 ### Rust-SWE-Bench
@@ -64,11 +64,11 @@ Key findings used in the spec:
 
 ### Faros AI (2026)
 - **Source:** <https://www.faros.ai/blog/ai-acceleration-whiplash-takeaways>
-- **Key figure:** AI-generated PRs have a **+242.7% incident rate** relative to human-authored ones.
+- **Key figure:** the incidents-to-PR ratio rises **+242.7%** as an organization moves from low to high AI adoption — an org-level adoption signal, *not* a direct AI-PR-vs-human-PR comparison. Earlier phrasing that read it as "AI-generated PRs vs human-authored" overstated the metric.
 
 ### Lightrun — State of AI-Powered Engineering 2026
 - **Source:** <https://lightrun.com/ebooks/state-of-ai-powered-engineering-2026/>
-- **Key figure:** **43%** of AI-generated PRs require post-merge debugging. Among surveyed senior engineers — **zero** rated themselves "very confident" in AI-generated Rust.
+- **Key figures:** **43%** of AI-generated code changes require debugging in production; among surveyed engineering leaders, **zero** rated themselves "very confident" that AI-generated code behaves correctly once deployed. **Note:** these figures concern AI-generated code in general — the report does not single out Rust or any language. Earlier phrasing ("very confident in AI-generated Rust") fabricated a Rust-specific scope and has been corrected.
 
 ### Codestral / DeepSeek-Coder studies
 Method-existence hallucination rates in major code-generation models.
@@ -89,7 +89,7 @@ Method-existence hallucination rates in major code-generation models.
 ## Documented incidents
 
 ### CrateDepression (2022)
-Malicious crate `rustdecimal` — typosquat of the legitimate `rust_decimal` (~3.5M downloads). Targeted CI pipelines.
+Malicious crate `rustdecimal` — typosquat of the legitimate `rust_decimal` (~100M all-time downloads; the earlier "~3.5M" appears to have been the repo's GitHub star count, not downloads). Targeted CI pipelines.
 - **Source:** Rust Security Response WG advisory, 2022-05-10 — <https://blog.rust-lang.org/2022/05/10/malicious-crate-rustdecimal/>
 - **Used in:** §A1.
 
@@ -99,7 +99,7 @@ Malicious crates that scan for and exfiltrate Solana/Ethereum private keys. Reac
 - **Used in:** §A1.
 
 ### Supply-chain trend in the Rust ecosystem (2025)
-- **Observation:** attacks against crates.io rose materially in 2025 — beyond the two named incidents above, several smaller malicious-crate takedowns occurred. Order-of-magnitude estimates from industry reports range around +100–130% year-over-year; treat as directional.
+- **Observation:** attacks against crates.io rose materially in 2025 — beyond the two named incidents above, several smaller malicious-crate takedowns occurred. Published year-over-year estimates cluster around **+70–75% ecosystem-wide** (npm-dominated); no crates.io-specific percentage is published. The earlier "+100–130%" was not corroborated — treat as directional.
 - **Used in:** §A1 (slopsquatting context).
 
 ### Cargo issue #2524

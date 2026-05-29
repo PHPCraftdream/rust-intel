@@ -18,11 +18,7 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ## Status
 
-**v0.4.0 — std-primitives coverage (2026-05-29).** Closes the last systematically-missed gap under the spec's scope: everyday `std` primitives that compile, pass ASCII/small-number tests, and break in production. Three new Tier B categories — **§B26 Lossy numeric conversions** (`as`-cast truncation, float→int saturating), **§B27 Wall-clock vs monotonic time** (`SystemTime` for durations, `.elapsed().unwrap()`), **§B28 UTF-8 and string-boundary hazards** (`&s[..]` panics on a char boundary, `len()`-as-char-count) — plus bullet-level additions to existing categories for `Box::leak` vs `OnceLock`/`LazyLock`, `mem::forget`, `FuturesUnordered` caps, `serde_json` numeric fidelity, `env::var` panics, `Vec` O(n²) front-mutation, `{:?}`-on-bytes, recursion-depth DoS, `sort_unstable` order, and PII logging. Category count 41 → 44; slash commands unchanged. With the post-compilation taxonomy now near-saturated, future work shifts toward infrastructure (an `examples/` regression corpus, CI link-checking). A corrective eighth review pass has since landed accuracy fixes and clarifications under `[Unreleased]`, followed by a new top-level **Tier E — Systemic cost (§E1–§E6)**: a separate axis covering performance/scale cost (latency, allocation, complexity, contention) that survives `rustc`/`clippy`/tests and bites under load, enforced 🟡/🟢 and never 🔴 (category count now 44 → 50). See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
-
-**v0.3.2 — accuracy patch (2026-05-29).** Same-day follow-up patches on top of v0.3.0's content release. v0.3.1 fixed five accuracy bugs (`mpsc::Sender::send` cancel-safety, the non-existent `cargo expand --type-sizes`, the `tokio::task::consume_budget` path, `subtle::Choice` vs `bool`, the C-DEREF citation) and extended seven categories with new BANNED/REQUIRED bullets. v0.3.2 fixes three bugs introduced in v0.3.1 (the `Notify` lost-wakeup pattern was missing its load-bearing `.enable()`; `tokio::task::coop::consume_budget` was pinned to the wrong tokio version; the `thiserror` `#[from]` bullet was both inaccurate and out-of-scope, now reframed as error-context erasure), catches the trigger table up to the v0.3.1 rules, and adds bullets for `tokio::time::interval` first-tick, atomic memory ordering, `broadcast` lag-is-data-loss, and blind-test antipatterns. Category count stays 41; slash commands unchanged. See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
-
-**v0.3.0 — scope reframe, accuracy pass, taxonomy expansion (2026-05-28).** Major content release: the spec was explicitly reframed to cover only bugs that compile and pass tests but still break, eight accuracy bugs were fixed, and the count grew from 26 to 41. Full details — including the scope reframe rationale — in [`CHANGELOG.md`](CHANGELOG.md).
+**v0.3.0 — content release (2026-05-29).** The first tagged release since 0.2.2 — it collapses all interim work (drafted under provisional 0.3.x / 0.4.0 labels, never tagged) into one version. The spec was reframed to cover only bugs that compile and pass tests but still break, then grown from **26 to 51 categories** across **five tiers (A–E)**: silent correctness bugs (async cancellation, `Mutex`-across-`.await`, UB, TOCTOU, crypto, FFI, lossy numeric/`as`-casts, wall-clock vs monotonic, UTF-8 boundaries, iterator/slice adapter traps), architecture/ergonomics, testing/CI gaps, and a top-level **Tier E — Systemic cost** (latency, allocation, complexity, contention; enforced 🟡/🟢, never 🔴). Includes an external multi-agent review pass — evidence-base accuracy fixes, build-time supply-chain coverage (§A1), and anti-dogmatism calibration. Slash commands unchanged. See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
 
 ## Layout
 
@@ -97,7 +93,7 @@ Only touches the paths the installer creates. Other skills and commands under th
 
 ### Verify
 
-Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§D2 unprompted. Try:
+Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§E6 unprompted. Try:
 
 ```
 /rust-cc-audit src/
@@ -153,6 +149,6 @@ See [`docs/roadmap.md`](docs/roadmap.md) for open directions. A new category is 
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+Dual-licensed under either **MIT** ([`LICENSE-MIT`](LICENSE-MIT)) or **Apache License 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE)), at your option — the standard Rust-ecosystem convention. SPDX-License-Identifier: `MIT OR Apache-2.0`.
 
-The repository is prose-first (a specification, three command files, and documentation). MIT is sufficient. If executable Rust code is added later (e.g., the planned `examples/` corpus), the project may move to MIT/Apache-2.0 dual licensing — the standard Rust-ecosystem convention — at that point.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual-licensed as above, without any additional terms or conditions.
