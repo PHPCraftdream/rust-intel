@@ -8,7 +8,68 @@ Patch = wording refinements, fixes, new sources.
 
 ## [0.3.0] — 2026-05-29
 
-Release 0.3.0 — the first tagged release since 0.2.2, collapsing all interim work (drafted under provisional 0.3.x / 0.4.0 labels and an `[Unreleased]` staging area, none of which were ever tagged on GitHub) into a single version. Net effect since 0.2.2: the taxonomy grew from **26 to 51 categories** across **five tiers (A–E)**. Work batches in this release: a fifth-pass accuracy/content batch, a sixth-pass **usability refactor**, a seventh-pass **final consistency/usability fix pass**, an eighth-pass **corrective pass** (external review — one verified bug, a 🔴-propagation gap, three undisclosed-precondition gaps, meta-layer recalibration), a **Tier E content batch** that opens a new top-level axis (systemic cost / performance) alongside the correctness tiers, and a **discipline-hardening batch** of within-category bullets (vacuous-test ban §D1, workspace version-unification + crate-boundary timing §C10, benchmark-as-regression-guard §E6). The first four batches left the category count unchanged at **44** (no categories added, cut, merged, or renumbered); the Tier E batch raises it to **50** (§E1–§E6) and the tier count from **four** to **five**; the discipline-hardening batch adds bullets only and keeps the count at **50**; the latest **review-driven pass** (external multi-agent review) adds one category (§B29) to bring it to **51**, alongside accuracy fixes, within-category completeness bullets, and anti-dogmatism calibration. Full per-iteration detail is preserved in the sub-sections below.
+Release 0.3.0 — the first tagged release since 0.2.2, collapsing all interim work (drafted under provisional 0.3.x / 0.4.0 labels and an `[Unreleased]` staging area, none of which were ever tagged on GitHub) into a single version. Net effect since 0.2.2: the taxonomy grew from **26 to 51 categories** across **five tiers (A–E)**. Work batches in this release: a fifth-pass accuracy/content batch, a sixth-pass **usability refactor**, a seventh-pass **final consistency/usability fix pass**, an eighth-pass **corrective pass** (external review — one verified bug, a 🔴-propagation gap, three undisclosed-precondition gaps, meta-layer recalibration), a **Tier E content batch** that opens a new top-level axis (systemic cost / performance) alongside the correctness tiers, and a **discipline-hardening batch** of within-category bullets (vacuous-test ban §D1, workspace version-unification + crate-boundary timing §C10, benchmark-as-regression-guard §E6). The first four batches left the category count unchanged at **44** (no categories added, cut, merged, or renumbered); the Tier E batch raises it to **50** (§E1–§E6) and the tier count from **four** to **five**; the discipline-hardening batch adds bullets only and keeps the count at **50**; the latest **review-driven pass** (external multi-agent review) adds one category (§B29) to bring it to **51**, alongside accuracy fixes, within-category completeness bullets, and anti-dogmatism calibration. Two subsequent verification passes — a second- and a third-review correction batch — fix residual defects, recalibrate a few rules, and add within-category security bullets (OS-command and SQL injection, allocation-size DoS, a Miri/FFI caveat, `cargo-vet`); both keep the count at **51**. Full per-iteration detail is preserved in the sub-sections below.
+
+---
+
+### Iteration: third-review corrections + security bullets
+
+A six-lens internal agent review (correctness, internal consistency, signal-density, fix-precision, anti-zealotry, anti-stupidity) over the 0.3.0 content, cross-checked against three further external reviews (which contributed the SQL-injection, Miri/FFI, and `cargo-vet` items). Every edit is within-category — the count stays at **51**.
+
+#### Fixed (factual)
+
+- **§B17** — `Arc<RefCell<T>>` no longer described as "does not compile": it is `!Send`+`!Sync` (fine single-threaded), so it fails to compile only when *sent across threads* — now matching §A2's correct phrasing.
+- **§B18** — `NonNull<T>` removed as a phantom `Send`/`Sync` remedy (it is `!Send`/`!Sync` like the raw pointer and closes no race); the real fix (`Arc<Mutex<RawHandle>>`, or a cited happens-before via `join`) is now the only one offered.
+- **§B16** — inconsistent-comparator sort softened from "**panics**" to "**may** panic; in any case yields an unspecified order, never UB" (the std contract); `f64::to_bits` "conflates −0.0/+0.0" corrected to "splits them into two distinct keys" (the verb was backwards — the parenthetical was already right).
+- **§B5** — `mem::uninitialized` deprecation date corrected October → November 2019.
+
+#### Fixed (fix-precision)
+
+- **§B4** — panic-in-`Drop` now names `std::thread::panicking()` as the primary guard (skip the fallible work while already unwinding); `catch_unwind` demoted to the secondary, non-panicking-path guard.
+- **§C9** — the `spawn_blocking` span-restore fix now notes that `tokio::task_local!` values do **not** cross the `spawn_blocking` boundary, so request context (tenant/auth/request-id) must be captured explicitly before the call — otherwise the closure reads whatever last touched that pool thread.
+- **§B13** — the "insert if absent" remedy split into a sync form (`entry` + `&mut`-borrow on `std::HashMap` — the false "bucket lock" claim removed — or a `DashMap` shard lock) and an async form (`OnceCell`-per-key), the latter now primary for the lazy-cache example the category opens with.
+- **§B16** — the BANNED manual-`PartialEq`-without-`Hash` bullet scoped to types that actually implement/derive `Hash` or are used as keys (a never-hashed manual `PartialEq` is sound).
+- **§B7** — `Box::<[u8]>::new_uninit_slice` flagged as UB on the partial-read pattern (a `read` returning `n < N` leaves an uninit tail that must never be sliced); `vec![0u8; N]` remains the safe form for partial-read buffers.
+- **§C2** — the `Path::join` traversal guard rewritten as a sequence (reject a leading `Prefix`/`RootDir` **and** any `..`; join; then `canonicalize` + `starts_with(base)` only on the read path, to defeat symlink escape) rather than "reject `..` *or* canonicalize".
+
+#### Changed (calibration)
+
+- **§B2** — "note each `.lock().unwrap()` inline" relaxed to a codebase-level poison policy, flagged inline only where a cascade is a live concern (the idiom is too common to annotate per call — it was contradicting the inline-flag policy).
+- **§B12** — the secret-field-name `Debug` trigger scoped by *role*: a lexer `Token`, a map/cache `key`, a deterministic-PRNG `seed` are not secrets — require a second crypto/auth signal before redacting (mirrors the §B24 `"HS256"` carve-out).
+- **§B11** — the "CPU > ~100µs → `spawn_blocking`" line reframed as a judgment (a rough floor, not a trigger to offload every burst); short/frequent bursts → `consume_budget`/`yield_now`, data-parallel → `rayon`.
+- **§B13 / 🔴 list** — the 🔴 entry rescoped to the `Relaxed`-publish data race only; the broader check-then-act/TOCTOU body is 🟡 (write-time), now stated in both the 🔴 list and the §B13 Detection note.
+- **trigger table / version pins** — the "trait object" row now reads §B15a AFIT/RPITIT with the "not `dyn`-compatible without `async-trait`" risk; the "fifty-one" headline gained a note that §B1/§B4/§B15 split into individually-referenced lettered sub-sections; `Vec::into_raw_parts` (1.93) and match-guard let-chains (1.95) hedged "verify against your pinned toolchain".
+
+#### Added (within-category security bullets — count unchanged)
+
+- **§C2** — **OS command / argument injection**: `Command::new("sh").arg("-c").arg(format!(…))` (RCE) and leading-`-` argument injection; spawn the program directly, insert `--` before positional input, allowlist the executable. Plus phrase + code-pattern triggers.
+- **§C2** — **SQL injection**: `sqlx::query(&format!(…))` / `diesel::sql_query(format!(…))`; bind parameters (`$1` + `.bind` / `sqlx::query!` / `QueryBuilder`), allowlist dynamic column/table identifiers. Plus phrase + code-pattern triggers.
+- **§B7** — **attacker-controlled allocation size**: `Vec::with_capacity(attacker_n)` / `vec![_; n]` → OOM/abort DoS; clamp before allocating and prefer `Read::take(limit)`. Plus phrase + code-pattern triggers.
+- **§B25** — Miri caveat: it interprets Rust, not native code, so a real `extern "C"` call aborts ("can't call foreign function"); point Miri at the Rust side and isolate the foreign call behind `#[cfg(not(miri))]`.
+- **§A1** — `cargo-vet` (human-audit attestations) added to the supply-chain defenses alongside `cargo-deny`/`cargo-audit`.
+
+_Shipped as part of release 0.3.0 (2026-05-29)._
+
+---
+
+### Iteration: second-review corrections
+
+A second external multi-agent review (max-model, over the 0.3.0 content) verified the prior edits and surfaced a few defects to fix before tagging.
+
+#### Fixed
+
+- **§B26** — `dbg!` removed from the "compiled out in release" list: `debug_assert!`/`debug_assert_eq!` are stripped, but `dbg!` evaluates and prints in release too (a forgotten `dbg!` leaks to stderr) — now noted as the converse trap.
+- **§B19** — `mem::replace` corrected: it leaves the *passed-in* value, not a `Default` (only `mem::take`/`Option::take` leave a `Default`); the data-loss hazard is unchanged.
+- **README** — spec-architecture table Tier B range `§B1–§B28` → `§B1–§B29` (missed when §B29 landed).
+
+#### Changed (calibration)
+
+- **§A1 build-time** — the "audit any dependency that ships a `build.rs`/proc-macro" mandate narrowed to a *newly-added, non-well-known direct* dependency (the transitive graph is covered by `cargo-deny`/`cargo-audit`/committed `Cargo.lock`/`--locked`, not by hand); the "code you are about to run" aphorism dropped.
+- **§B29** — the `Vec::dedup` BANNED bullet reframed from "on an unsorted collection" (hard to prove locally) to "no `sort`/grouping visibly preceding it"; the chunk-size trigger now notes literal sizes are fine.
+- **§B16** — the float-sort bullet gained a provably-non-`NaN` exception (`NotNan`/`OrderedFloat`/`Duration`/validated).
+- **§C9** — log-injection scoped to plain-text/terminal sinks (a structured/JSON sink is largely immune).
+
+_Shipped as part of release 0.3.0 (2026-05-29)._
 
 ---
 

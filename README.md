@@ -125,7 +125,7 @@ Five tiers plus a meta-layer:
 |---|---|---|
 | Self-monitoring | Prompt-trigger table (phrase- *and* code-pattern-based) → activates relevant categories | top of spec |
 | **Tier A** | Compile-fix reflexes that leave silent residue — the LLM "fixes" the red squiggle in a way that compiles while leaving a real defect behind | §A1–§A3 |
-| **Tier B** | Silent correctness bugs, caught only in production | §B1–§B28 |
+| **Tier B** | Silent correctness bugs, caught only in production | §B1–§B29 |
 | **Tier C** | Architecture and ergonomics, expensive to undo | §C1–§C11 |
 | **Tier D** | Testing and CI gaps — tests pass not because the code is correct but because the tests are blind | §D1, §D2 |
 | **Tier E** | Systemic cost (performance / scale / contention) — correct in the small, wrong at scale — cost that survives correctness; enforced 🟡/🟢, never 🔴 | §E1–§E6 |
