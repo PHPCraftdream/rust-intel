@@ -81,9 +81,9 @@ The bullet-level items below were observed during the v0.3.x review passes and b
 
 Three further gaps surfaced during the pass were large enough to ship as **new Tier B categories** (they were not in the original backlog): **§B26 Lossy numeric conversions** (`as`-cast truncation, float→int saturating), **§B27 Wall-clock vs monotonic time** (`SystemTime` for durations, `.elapsed().unwrap()`), and **§B28 UTF-8 and string-boundary hazards** (byte-indexing panics on a non-char-boundary, `len()`-as-char-count) ✅. Category count 41 → 44.
 
-**Still open — structural (form, not content).** Splitting the overloaded §B15 (AFIT/RPITIT vs Pin/Waker) into §B15a–e and deduping repeated rows is the in-flight structural pass; rebalancing section length toward high-frequency categories (§C4/§C5) and away from low-frequency depth (§B5/§B25 are large relative to how often unsafe/FFI actually appears) still trails it. Order: land the link-checker and `examples/` corpus ([§4](#4-infrastructure--highest-value-next)) first so the restructure is verifiable.
+**Structural (form, not content).** Splitting the overloaded §B15 (AFIT/RPITIT vs Pin/Waker) into §B15a–e is ✅ shipped (sixth pass) — the spec now carries §B15a (AFIT), §B15b (Pin/Waker), §B15c (sync↔async bridging), §B15d (`Stream` vs `Iterator`), and §B15e (tokio sync/timing), with references to bare `§B15` covering all five. **Still open:** deduping repeated trigger-table rows and rebalancing section length toward high-frequency categories (§C4/§C5) and away from low-frequency depth (§B5/§B25 are large relative to how often unsafe/FFI actually appears). Order: land the link-checker and `examples/` corpus ([§4](#4-infrastructure--highest-value-next)) first so the remaining dedup/rebalance is verifiable.
 
-With the bullet-level backlog now drained and three new categories shipped, the post-compilation content taxonomy is close to saturation. The next center of gravity is infrastructure rather than new rules — the `examples/` regression corpus and CI link-checking in [§4 below](#4-infrastructure--highest-value-next).
+With the bullet-level backlog now drained and three new categories shipped, the post-compilation *correctness* content taxonomy is close to saturation. A corrective eighth review pass has since landed accuracy fixes and clarifications under `[Unreleased]` without touching the category count. The taxonomy has since been extended along a new, orthogonal axis: a top-level **Tier E — Systemic cost (§E1–§E6)** ✅ shipped, covering performance/scale cost (latency, allocation, complexity, contention) that survives `rustc`/`clippy`/tests — enforced 🟡/🟢, never 🔴 (category count 44 → 50). The next center of gravity remains infrastructure rather than new correctness rules — the `examples/` regression corpus and CI link-checking in [§4 below](#4-infrastructure--highest-value-next).
 
 > Categories whose primary failure mode is a compile error (lifetime variance, GATs lifetime bounds, object safety from generic methods, cyclic workspace deps, `?`-in-`main`) are out of scope by design — the compiler is sufficient. They will not be added even with good wording.
 
@@ -101,12 +101,12 @@ These were drafted but will **not** be promoted. Recorded here (rather than left
 
 ## 4. Infrastructure — highest value next
 
-This is now the top of the value-per-cost order. The two items below are also **prerequisites for the structural pass** (the §B15a–e split and dedup): a broken-link checker has to be in place *before* sections are renumbered and cross-references move, and the `examples/` corpus is what makes any restructuring verifiable rather than vibes.
+This is now the top of the value-per-cost order. The two items below are also **prerequisites for the remaining structural work** (the §B15a–e split itself is already shipped; what's left is dedup of repeated rows and section-length rebalance): a broken-link checker has to be in place *before* sections are renumbered and cross-references move, and the `examples/` corpus is what makes any restructuring verifiable rather than vibes.
 
 - Public repository — ✅ shipped in v0.1+.
-- **CI: broken-internal-link checks** (plus markdown linting). Highest value — must land *before* the §B15 split / dedup so renumbering can't silently rot cross-references.
+- **CI: broken-internal-link checks** (plus markdown linting). Highest value — must land *before* the remaining dedup / section-length rebalance so renumbering can't silently rot cross-references.
 - **Test corpus: `examples/`** with deliberately broken Rust per category, to run through `/rust-cc-audit` as a regression suite. Needed as the safety net for structural edits and for the §1 repro-snippet work.
-- **§B15a–e split + dedup** — structural pass, in flight (see [§2 "Still open — structural"](#2-shipped-expansions-archive)). Sequence it *after* the link-checker and corpus above so the change is verifiable.
+- **Dedup + section-length rebalance** — the structural work still open (the §B15a–e split is ✅ shipped; see [§2 "Structural"](#2-shipped-expansions-archive)). Sequence it *after* the link-checker and corpus above so the change is verifiable.
 
 ## Open questions
 

@@ -8,7 +8,121 @@ Patch = wording refinements, fixes, new sources.
 
 ## [Unreleased]
 
-Staged, not yet cut into a numbered release. Two batches of work sit here: a fifth-pass accuracy/content batch, and a sixth-pass **usability refactor**. Category count is unchanged at **44** throughout (no categories added, cut, merged, or renumbered). All edits are documented under the spec's `[Unreleased]` staging; no version has been assigned yet.
+Staged, not yet cut into a numbered release. Five batches of work sit here: a fifth-pass accuracy/content batch, a sixth-pass **usability refactor**, a seventh-pass **final consistency/usability fix pass**, an eighth-pass **corrective pass** (external review — one verified bug, a 🔴-propagation gap, three undisclosed-precondition gaps, meta-layer recalibration), and a **Tier E content batch** that opens a new top-level axis (systemic cost / performance) alongside the correctness tiers. The first four batches left the category count unchanged at **44** (no categories added, cut, merged, or renumbered); the Tier E batch raises it to **50** (§E1–§E6) and the tier count from **four** to **five**. All edits are documented under the spec's `[Unreleased]` staging; no version has been assigned yet.
+
+---
+
+### Tier E — Systemic-cost performance block (new content; 44 → 50 categories; four → five tiers)
+
+A new top-level tier — **TIER E — Systemic cost: correct in the small, wrong at scale** (§E1–§E6) — opens a *different axis* from the correctness tiers A–D. This is a reframing of the frontier of failure: as the safe, locally-correct code in a system accumulates, the system breaks **as a whole** — latency, allocation pressure, accidental complexity, lock contention — even though no single line is "wrong". The cost is paid only under load, *outlives* correctness (a passing test on a small input proves nothing about it), and is invisible to `rustc` / `clippy` / `cargo test` exactly the way the Tier B/C/D bugs are. Tier E therefore does not use the BANNED/REQUIRED grammar of the correctness tiers; each law is framed as **where the cost hides / the cheap move / when not to touch it**. Nothing in Tier E is **🔴** (it is entirely 🟡/🟢) — a systemic-cost finding is never a hard blocker — and §E6 (measure-first) is built in specifically to keep the tier from degenerating into over-flagging: only accidental-O(n²) (§E3) and `clippy::perf`-obvious wins are proactive; everything else is profile-gated.
+
+#### Added
+
+- **New tier — TIER E (Systemic cost), §E1–§E6.** Sixth conceptual axis after the meta-layer and A/B/C/D; 🟡/🟢 only; profile-disciplined via §E6.
+- **§E1 — Serialism that need not exist.** Independent `.await`s run sequentially → `join!` / `try_join!` / `buffer_unordered` / `JoinSet`; CPU-bound work on the async runtime → `spawn_blocking` / `rayon`.
+- **§E2 — Allocation that need not happen.** Reflexive `clone` / `collect` / `format!`; `Vec::with_capacity` for known sizes; `Cow` / `&str` over owned `String`; reuse buffers; `bytes` for shared/zero-copy slices.
+- **§E3 — Complexity that compounds.** Accidental O(n²) (the one always-fix case); the wrong container (`HashSet` / `VecDeque` / `SmallVec` / `BTreeMap` / `phf` chosen by access pattern).
+- **§E4 — Contention that serializes.** `Arc<Mutex<_>>` on a hot path → atomic / `ArcSwap` / sharding / channel-ownership; shrink the critical section; pick the hasher by trust boundary (fast `FxHashMap` / `foldhash` / `ahash` for trusted keys, DoS-resistant default for untrusted — see §B16); false sharing → `CachePadded`.
+- **§E5 — Work already done.** `Regex::new` / parsing repeated per call → `LazyLock` / `OnceLock`; unbuffered I/O → `BufReader` / `BufWriter`; reuse scratch buffers; lazy `tracing` evaluation; `dyn` dispatch in a hot path → generics / enum.
+- **§E6 — Measure before you spend.** Profile-first discipline: `cargo flamegraph` / `perf`, `dhat` / `heaptrack`, `tokio-console`, `criterion`. §E3 and the `clippy::perf`-obvious wins are proactive; the rest is profile-gated — do not optimize on a guess.
+
+#### Changed (structural propagation)
+
+- **Category count 44 → 50** and **"four tiers" → "five"** propagated across every place either number is stated: the spec opening ("forty-four categories" and "The categories split into four tiers…" + tier list gains a Tier E line), the Enforcement-tiers preamble ("all 44 categories"), and the README's spec-architecture table (new Tier E row, count to 50).
+- **Front-matter `description`** extended so the skill matches performance/scale queries (systemic-cost / latency / allocation / contention), without disturbing the existing correctness-hazard list.
+- **Both trigger tables** route performance symptoms to §E*: the phrase table (slow at scale, two sequential `.await`s, too many allocations, lock contention, "faster HashMap", recompiles `Regex`) and the code-pattern table map onto §E1–§E6, with the hasher row split by trust boundary (§E4 + §B16).
+- **`commands/rust-intel-cc/audit.md`** — the category walk now iterates §A1 → … → **§E6** and groups findings A → B → C → D → **E**, with an explicit note that Tier E is a different axis (systemic cost, never 🔴) and so never enters the 🔴-only Post-flight summary.
+- **`commands/rust-intel-cc/fix.md`** — routing table gains performance rows (slow/high-latency-at-scale, sequential `.await`s, allocation churn, quadratic-at-scale, lock contention, "faster HashMap", `Regex`-in-loop / unbuffered I/O) mapping the symptom shape onto the right §E law, all under §E6 (measure first).
+- **`docs/roadmap.md`** and **`docs/sources.md`** — Tier E logged as shipped content; normative performance sources added under §E* (see the sources.md entry in this batch).
+
+This is a **MINOR** change by SemVer (new categories), but per `[Unreleased]` policy no version number is assigned yet.
+
+_No version number assigned yet; these changes will be dated and versioned on the next release at the maintainer's instruction._
+
+---
+
+### Corrective pass (eighth review pass — external review: one verified bug, a 🔴-propagation gap, three undisclosed-precondition gaps, meta-layer recalibration)
+
+The eighth pass was opened in response to an external review of the frozen spec — so the seventh pass's **"frozen"** verdict is hereby **superseded** (the freeze held for content saturation, not for correctness or for gaps the review surfaced from outside the loop). It found and closed one verified factual error (§C2's path-traversal guard), one propagation gap in the 🔴 list (§B13 lived in the tiers but never reached the operating-mode / audit / fix surfaces that consume it), and three in-scope gaps that were **unstated preconditions of the spec's own remedies** (`catch_unwind` × `panic = "abort"`, `thread_local!` × `.await`, `block_in_place` on a current-thread runtime — each a case where following an existing recommendation silently does nothing or panics unless the precondition is known). It also recalibrated several meta-rituals so that strictness is proportional. No category was added, cut, or renumbered — the count stays **44**; the seventh-pass block below is left intact as a historical record.
+
+#### Fixed (correctness / consistency)
+
+- **§C2 — verified factual error.** The path-traversal guard for `Path::join` was `has_root()`, which lets a bare `\\server\share` through (on Windows that is a `Component::Prefix` with no `RootDir` → `has_root() == false`), even though `join` discards the base anyway. The primary guard is now: reject a leading `Component::Prefix`/`RootDir` component.
+- **§B3 — `write_all_buf` reclassified** from "cancel-safe-with-caveat" to cancel-safe (on cancellation the buffer is partially advanced — resume from the remainder).
+- **🔴 list de-duplicated and propagated.** §B13 (`Relaxed`-publish) had lived only in "Enforcement tiers": Operating mode step 7 now **references** the canonical list instead of re-listing it; `commands/rust-intel-cc/audit.md` (step 6 and the summary header) likewise reference the canon; the Post-flight summary template in `audit.md` gained a §B13 line; `commands/rust-intel-cc/fix.md` gained a routing row for the atomic-ordering (ARM) symptom → §B13.
+- **§B13 trigger-gap closed** — new row in the code-pattern table for `Ordering::Relaxed`-publication.
+- **Operating mode step 1 ↔ Blocking protocol** — contradiction over unknown versions resolved ("ask" → "proceed with stated assumptions, ask to confirm"), aligning step 1 with the sixth-pass Blocking protocol.
+- **Version pins** — `extern "C-unwind"` marked stable 1.71 (distinct from 1.81 = abort-by-default for plain `extern "C"`); `clippy::await_holding_lock` marked warn-by-default (`suspicious` group, since 1.45) — a manual `-W` is redundant.
+- **`README.md`** — "Three tiers plus a meta-layer" → "Four" (a relic from before Tier D). **`docs/roadmap.md`** — the §B15a–e split marked ✅ shipped (sixth pass), the remaining dedup/rebalance separated out. **`CHANGELOG.md`** — removed the duplicated sixth-pass header (this same entry).
+
+#### Added (bullets inside existing categories — count stays 44)
+
+- **§B4 + §B25** — `catch_unwind` is inert under `panic = "abort"` (it catches nothing, and the guard code behind it never runs) and requires `UnwindSafe`; this was an unstated precondition of the spec's own recommendations.
+- **§C9** — a `thread_local!` read after `.await` reads another worker's value or the default on a multi-thread runtime (the task can migrate between threads) → use `tokio::task_local!`.
+- **§B11** — `spawn_blocking` pool starvation (default 512).
+- **§B15c** — `block_in_place` panics on a current-thread runtime.
+- **§B16** — HashDoS: for keys from untrusted input, do **not** swap the default `RandomState` for a fixed-seed `FxHashMap`/`fnv`/`ahash`.
+- **§B20** — `#[serde(flatten)]` silently disables `deny_unknown_fields` and breaks `u128` / non-string map keys.
+- **§B21** — a panic in a detached task (dropped `JoinHandle`) is silently swallowed.
+- **§B26** — `saturating_sub` on `usize` (lengths / cursors) masks a logic bug.
+- **§B5** — strict-provenance list extended (`map_addr` / `dangling` / `without_provenance`, stable 1.84); `Vec::into_raw_parts` preferred on ≥ 1.93.
+- **§B4a** — let-chains have spread to `if let` match-guards (stable 1.95); the one silent-runtime never-type-fallback case is deny-by-default (edition 2024 / 1.92) and out of focus.
+- **Version pins** — recent tokio APIs: `biased` in `join!` / `try_join!` (1.46), `SetOnce` (1.47), the coop module (1.44).
+
+#### Changed (calibration / usability — strictness made proportional, no rule removed)
+
+- The "Principle" section was condensed (~13 → 4 lines).
+- Operating mode step 3 (text-first for traits) scoped to the public API of a published library.
+- Operating mode step 5 (`/// cancel-safe:`) narrowed to functions actually in a cancellation context.
+- Enforcement tiers: narrowing `as` stays 🟢 but with a trust-boundary caveat; the canonical "inline-flag policy" is stated once, in 🟡.
+- **§A2** — "`Box<T>` for a small `Sized` is almost always wrong" softened (recursion / `Pin` / `dyn` are exceptions).
+- **§B7** — the 64 KiB stack threshold moved from BANNED to a guideline (escalate on recursion / deep chains / a reduced stack); "2 MiB on tokio tasks" → "worker thread".
+- **§B12** — "mandatory human cryptographer review" reserved for custom / protocol-level crypto.
+- **§B16** — the inline flag for a manual `PartialEq`/`Ord` narrowed to non-trivial contracts.
+- **§C4** — algorithmic O(n²) (always fix) separated from micro-allocations (profile-gated).
+- Trigger table: three duplicated phrase rows merged. Tier A intro: the residual compile-only list collapsed to a pointer.
+
+#### Tooling/docs
+
+- `commands/rust-intel-cc/audit.md`, `commands/rust-intel-cc/fix.md`, `README.md`, `docs/roadmap.md` — see above.
+
+_No version number assigned yet; these changes will be dated and versioned on the next release at the maintainer's instruction._
+
+---
+
+### Final fix pass (seventh review pass — resolve refactor seams, close one currency gap, then freeze content)
+
+The seventh pass found the content saturated but the sixth-pass refactor had left a few seams (the rebuilt post-flight contradicted leftover "surface every X" tails in category bodies; the closing manifesto still said "every rule is a HARD constraint" against the new tiers; §B26 had been *over*-softened into under-flagging). It also surfaced one genuinely new coverage gap (edition-2024 drop-order changes) and verdict'd that the review loop has hit diminishing returns — this is the last content pass; further signal should come from *using* the spec, not another audit.
+
+#### Fixed (contradictions and one regression)
+
+- **§B26 under-flagging regression.** The refactor had made `overflow-checks = true` the primary defense and gated manual `checked_*` to (a) untrusted boundaries and (b) typed-error-on-wraparound — leaving an ordinary long-lived counter in a project that doesn't set the global flag (the default) and isn't from a trust boundary protected by *nothing* in release. Restored a third case: `checked_*` covers any monotonically accumulating value when `overflow-checks = true` is not guaranteed in the build profile. Routine bounded `i + 1` / `(lo + hi) / 2` remain explicitly out (no return to over-flagging).
+- **Post-flight ↔ category bodies contradiction.** The refactor rebuilt the post-flight checklist as "surface ONLY the 🔴 tier", but nine non-🔴 category bodies (§A3, §B1b, §B2, §B8, §B9, §B15a, §B16, §B20, §C5) still ended with "Surface every X **in the post-flight summary**" — pointing into a list that now excludes them. Those nine now say "flag inline (at write time)"; the rule stays, the contradiction is gone. Operating mode step 7 likewise rewritten to "surface the 🔴-tier (canonical list in Enforcement tiers), note the rest inline." The five remaining "in the post-flight summary" mentions are all 🔴 categories, where the reference is correct.
+- **Closing manifesto vs Enforcement tiers.** The final "When this command is loaded" section still said "Treat every rule above as a HARD constraint … surface violations as blocking" — a direct contradiction of the just-added tier model. Reworded to: 🔴 are hard constraints (surface always, block per the Blocking protocol); 🟡 applied while writing without per-occurrence reporting; 🟢 owned by clippy.
+- **§C5 "surface every clone".** Narrowed to: a `.clone()` introduced *to silence a borrow error* gets an inline one-line justification; routine / `Arc::clone` / `Copy`-type clones are 🟢 (clippy) / 🟡 (write-time), not surfaced — consistent with the tiers.
+
+#### Added (one currency gap; a subsection, not a new category — count stays 44)
+
+- **§B4a — Edition-2024 temporary-scope drop-order changes** (subsection of §B4, like §B1a/§B1b). The spec targets edition 2024 but had not covered edition 2024's own *silent* behavior changes. Two are genuine "compiles, tests green, drop order silently shifted" hazards: the `if let … {} else {}` scrutinee temporary now drops before the `else` block (`if_let_rescope`; the canonical case is an `RwLock` deadlock that 2021 has and 2024 silently fixes — or code relying on the extended temporary lifetime that now drops early), and tail-expression temporaries now drop before the block's locals (`tail_expr_drop_order`, advisory lint with **no autofix**). Pairs with let-chains (1.88). Plus a phrase trigger, a code-pattern trigger, and a version-pins note. (RPIT `use<>` capture, `unsafe extern`, `gen` blocks, static-mut `&raw`, never-type fallback were all evaluated and correctly left out — each is compile-only or deny-by-default, not a silent post-compilation bug.)
+
+#### Changed (usability / dedup)
+
+- **🔴 list de-duplicated.** The ~11-item 🔴 set lived identically in both "Enforcement tiers" and the post-flight checklist. Enforcement tiers is now the single canonical list; the post-flight references it and keeps only the toolchain commands (clippy/miri/test) and optional tools. Removes the fifth duplication surface the refactor had inadvertently created.
+- **§C1 blanket-impl 🔴 scoped to published libraries.** Marked 🔴 only for a *published* library's public API (a semver hazard); for bin/internal crates it is not a 🔴 concern.
+- **§B13 atomic `Relaxed`-publish promoted to 🔴.** A `Relaxed` store/load used to publish data to another thread is a data race invisible to tooling and to tests on x86 (the dev machine's strong memory model hides it) that breaks on ARM — it fits the 🔴 criteria (invisible to tooling, not caught by tests, silent corruption) better than some items already there.
+
+#### Minor
+
+- **§A2/§B2** — note that a `LazyLock`/`OnceLock` init closure that panics poisons the cell (every later access panics, not just the first); don't panic in lazy init.
+- **§B3** — the `/// cancel-safe:` annotation requirement aligned with the softened Operating mode step 5 ("every *non-trivial* async fn").
+- **§B8** — `async ||` closures (stable 1.85) added to the list of future-producing forms that are inert until polled.
+- **§C1** — fixed a dangling "§B5/T4" cross-reference to "§B5".
+- **`commands/rust-intel-cc/audit.md`** — the report-format example aligned to the 🔴-only post-flight (it had still listed `unwrap`/`Arc<Mutex<_>>`/`.lock().unwrap()` counts as mandatory summary lines).
+- **`docs/sources.md`** — added the USENIX Security 2025 package-hallucination study (19.7% non-existent packages, 58% repeatable across runs) as a quantified slopsquatting anchor, with an explicit PyPI/npm-not-crates.io caveat.
+
+The trigger table's risk column was reviewed for consolidation but left intact — on inspection each entry carries disambiguation or a memorable code signature rather than a verbatim restatement, so collapsing it would cost navigation nuance for little gain.
+
+With these seams closed, the post-compilation content taxonomy is treated as **frozen**; the next signal comes from running the spec on real code, not from further review passes.
 
 ---
 

@@ -23,7 +23,7 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
    - If a directory: every `*.rs` recursively, excluding `target/`.
    - Skip generated code (`OUT_DIR`, `build.rs` output).
 
-4. **Walk every category in the skill.** Iterate from §A1 through the final §D category as enumerated in the `rust-intel` skill. For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness.
+4. **Walk every category in the skill.** Iterate from §A1 through the final §E category (§E6) as enumerated in the `rust-intel` skill. For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness. Note that Tier E is a different axis — systemic cost (performance), not correctness — and is entirely 🟡/🟢, never 🔴.
 
 5. **For every finding, produce:**
    - **Category:** `§XN — name`
@@ -35,8 +35,8 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
 
 6. **Report grouping:**
    - By severity (critical → info).
-   - Inside a severity, by tier (A → B → C → D).
-   - End with a Post-flight summary in the spec's canonical form (every `unsafe`, `unwrap`, `Arc<Mutex<_>>`, double lock, `.lock().unwrap()`, crypto call, new dependency, etc. — the list at the end of the `rust-intel` skill).
+   - Inside a severity, by tier (A → B → C → D → E).
+   - End with a Post-flight summary in the spec's canonical form: surface **only** the 🔴-tier occurrences — see the `rust-intel` skill's *Enforcement tiers* for the canonical list (it is the single source; do not duplicate it here). Do not enumerate 🟢-tier items (`unwrap`/`expect`, `clone_on_copy`, narrowing `as` casts, etc.) — those are left to clippy. Non-🔴 antipatterns surfaced as individual findings above stay there; they are not re-aggregated into the summary. Tier E (systemic cost / perf) is entirely 🟡/🟢, so it never surfaces in the Post-flight summary either — perf findings appear as ordinary findings above, like any other non-🔴 antipattern.
 
 ## Report format
 
@@ -79,14 +79,20 @@ some_async_op(value).await
 
 ## Post-flight summary
 
-- `unsafe`: 0
-- `unwrap`/`expect`: 4 (src/parse.rs:12, src/parse.rs:34, ...)
-- `Arc<Mutex<_>>`: 2 (src/state.rs:8, src/cache.rs:22)
-- Double locks in one function: 1 (src/handler.rs:91 — order undocumented, §B9 risk)
-- `.lock().unwrap()`: 5 (consider explicit poisoning handling, §B2)
-- Crypto calls: none
-- New dependencies: none
-- `unbounded_channel`: 1 (src/events.rs:14 — unjustified, §B14)
+Surface **only** the 🔴-tier occurrences — see the `rust-intel` skill's *Enforcement tiers* for the canonical list (it is the single source). 🟢-tier items (`unwrap`/`expect`, `clone_on_copy`, narrowing `as` casts) are left to clippy and are not listed here. The lines below are an illustrative shape, not the authoritative inventory.
+
+- `unsafe` / `transmute` / `mem::uninitialized`/`zeroed` (§B5): none
+- Crypto calls — library / primitive / params (§B12): none
+- New `Cargo.toml` dependencies — name + version + justification (§A1): none
+- Manual `unsafe impl Send`/`Sync` (§B18): none
+- `unbounded_channel` / unbounded `FuturesUnordered` (§B14): 1 (src/events.rs:14 — unjustified)
+- atomic `Relaxed`-publish to another thread (§B13): none
+- `tokio::spawn` whose `JoinHandle` is dropped (§B21): none
+- `impl Drop` doing async work (§B22): none
+- `==`/`!=` on secret material (§B24): none
+- `extern "C"` / `Box::from_raw` / `from_raw_parts` (§B25): none
+- `Pin::new_unchecked` (§B15b): none
+- Blanket impl in a public API (§C1): none
 ```
 
 ## Behavioral principles

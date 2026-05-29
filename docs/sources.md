@@ -80,6 +80,12 @@ Method-existence hallucination rates in major code-generation models.
 - **Key figure:** crate-name hallucination rate in Rust reported as **elevated relative to other major-language ecosystems** in published slopsquatting research; primary citation is the Lanyado/Spracklen-style "Hallucinated Package Imports" line of work — verify the specific Rust figure against the source paper before quoting precisely.
 - **Used in:** §A1 (slopsquatting defense).
 
+### Package-hallucination rate (USENIX Security 2025)
+- **Source:** "We Have a Package for You! A Comprehensive Analysis of Package Hallucinations by Code Generating LLMs", USENIX Security 2025 (UT San Antonio / Virginia Tech / Univ. of Oklahoma).
+- **Key figures:** across 16 LLMs and ~576k generated code samples, **19.7%** of recommended packages did not exist (≈5.2% for commercial models, ≈21.7% for open models); **58% of hallucinated package names recurred** across runs (which is what makes them squat-able); breakdown ≈51% fabricated / 38% name-confusion / 13% typo.
+- **Caveat:** the study measured **PyPI / npm**, not crates.io — the mechanism (repeatable hallucinated names an attacker can pre-register) transfers, but the precise Rust crate-name figure is not from this study. The term "slopsquatting" was coined by Seth Larson (April 2025).
+- **Used in:** §A1 (slopsquatting / supply-chain defense) — strengthens the "hallucinated dependency runs malicious code" rationale with a quantified, repeatable-hallucination anchor.
+
 ## Documented incidents
 
 ### CrateDepression (2022)
@@ -115,6 +121,17 @@ Known gotcha: `features = [...]` inside `[target.'cfg(...)'.dependencies]` activ
 - **`loom`** — model checking for multi-lock code. §B9.
 - **`tokio-console`** — runtime visibility for §B9, §B11.
 - **`cargo-hack` + `--feature-powerset`** — §C7.
+
+### Performance (Tier E — systemic cost)
+
+Normative basis for the Tier E laws. These are qualitative/normative sources (mechanism and recommended primitive), not numeric benchmarks — Tier E is gated on *measuring your own workload* (§E6), so no figures are quoted from them.
+
+- **Tokio docs — structured concurrency primitives.** `join!` / `try_join!` poll a fixed set of futures concurrently on one task; `tokio::task::spawn_blocking` runs blocking/CPU-bound work on the dedicated blocking pool so it does not stall the runtime; `JoinSet` and `StreamExt::buffer_unordered` bound and drive many in-flight futures. The documented contracts are why independent `.await`s should be joined rather than serialized. <https://docs.rs/tokio/latest/tokio/macro.join.html>, <https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html>. §E1.
+- **`rayon` docs — data-parallelism.** `par_iter` and the work-stealing pool are the idiomatic answer for CPU-bound parallelism (as opposed to async I/O concurrency); use it for the compute that should not sit on the async runtime, and confirm the win by profiling. <https://docs.rs/rayon/latest/rayon/>. §E1 / §E6.
+- **Fast hashers — `rustc-hash` (`FxHasher`), `ahash`, `foldhash`.** Faster non-cryptographic hashers for `HashMap`/`HashSet` on hot paths. **Not DoS-resistant under a fixed seed:** a `FxHashMap`/`ahash`/`foldhash` map keyed on attacker-controlled input is collision-floodable. Choose by trust boundary — fast hasher for trusted keys; for untrusted keys keep a DoS-resistant default per **§B16** (std `RandomState`/SipHash; the SipHash HashDoS warning is already cited in the §B16 entry below). <https://docs.rs/rustc-hash/latest/rustc_hash/>, <https://docs.rs/ahash/latest/ahash/>, <https://docs.rs/foldhash/latest/foldhash/>. §E4 (with §B16).
+- **std `BufReader` / `BufWriter` and `Vec::with_capacity`.** `std::io::BufReader`/`BufWriter` amortize syscalls over a buffer (unbuffered per-byte/per-line I/O is the documented anti-pattern they exist to fix); `Vec::with_capacity` (and `String::with_capacity`) pre-allocates to avoid repeated grow-and-copy when the size is known. <https://doc.rust-lang.org/std/io/struct.BufReader.html>, <https://doc.rust-lang.org/std/io/struct.BufWriter.html>, <https://doc.rust-lang.org/std/vec/struct.Vec.html#method.with_capacity>. §E2 / §E5.
+- **`regex` docs — compile once.** `Regex::new` compiles the pattern (a non-trivial cost); the crate explicitly warns against recompiling in a loop and recommends compiling once and reusing (e.g. behind `LazyLock`/`OnceLock`). <https://docs.rs/regex/latest/regex/#example-avoid-compiling-the-same-regex-in-a-loop>. §E5.
+- **Profiling toolchain (measure-first).** `criterion` for statistically-rigorous microbenchmarks; `dhat` (Rust feature) / `heaptrack` for allocation/heap profiling; `cargo-flamegraph` / `perf` for CPU flamegraphs; `tokio-console` for async task/latency/contention visibility. These are the instruments §E6 mandates *before* spending effort on §E1/§E2/§E4/§E5. <https://docs.rs/criterion/latest/criterion/>, <https://docs.rs/dhat/latest/dhat/>, <https://github.com/flamegraph-rs/flamegraph>. §E6.
 
 ## How to add a source
 

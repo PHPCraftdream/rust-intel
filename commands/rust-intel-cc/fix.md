@@ -47,6 +47,7 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | Steady-state RAM growth, OOM after days | §B10 (cycles) or §B14 (unbounded queue) |
    | Latency spike under load, executor starvation | §B11 (blocking executor) |
    | "Under load, `expensive_fetch` runs N times instead of 1" | §B13 (TOCTOU) |
+   | "Compiles and works on x86/dev, but garbage/race on ARM/AArch64; data published via an atomic is visible before the payload write" | §B13 (`Relaxed`-publish — use `Release`/`Acquire`, or `AcqRel`/`SeqCst` for RMW; model-check with `loom`) |
    | "The message/request/write didn't happen but no error either" | §B8 (forgotten `.await`) |
    | Encrypt/decrypt works, but security review finds a vulnerability | §B12 |
    | `HashMap::get` returns `None` but the value was inserted | §B16 (Eq/Hash contract mismatch) |
@@ -71,6 +72,13 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | Test passes locally, flakes on CI / `thread::sleep` in test | §D1 |
    | Test in `tests/` cannot compile after refactor | §D2 |
    | Feature never activates, code is dead | §C7 (feature typo) |
+   | Slow / high latency under load / high CPU / throughput collapses at scale | §E (systemic cost) — pick the law by shape: serial work → §E1, allocation → §E2, complexity/O(n²) → §E3, lock contention → §E4, recompute/Regex-in-loop → §E5; all under §E6 (measure first) |
+   | Two sequential `.await`s / not parallel / CPU-bound stalls the runtime | §E1 (`join!`/`buffer_unordered`/`JoinSet`; `spawn_blocking`/`rayon` for CPU-bound) |
+   | Too many allocations / high RSS / GC-like churn | §E2 (drop needless `clone`/`collect`/`format`; `with_capacity`, `Cow`/`&str`, reuse buffers) |
+   | Works fast on small input, quadratic at scale | §E3 (accidental O(n²); wrong container) |
+   | Lock contention / scales poorly across cores / `Mutex` hot | §E4 (atomics / `ArcSwap` / sharding) |
+   | "Need a faster HashMap" | §E4 (hasher choice) + §B16 — pick by trust boundary: fast hasher for trusted input, DoS-resistant for untrusted |
+   | Recompiles `Regex` / reparses every call / unbuffered I/O | §E5 (`LazyLock`; buffer I/O; reuse; lazy logging) |
 
    If the symptom maps to **multiple** categories, list them all and explain which is primary.
 

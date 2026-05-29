@@ -18,7 +18,7 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ## Status
 
-**v0.4.0 — std-primitives coverage (2026-05-29).** Closes the last systematically-missed gap under the spec's scope: everyday `std` primitives that compile, pass ASCII/small-number tests, and break in production. Three new Tier B categories — **§B26 Lossy numeric conversions** (`as`-cast truncation, float→int saturating), **§B27 Wall-clock vs monotonic time** (`SystemTime` for durations, `.elapsed().unwrap()`), **§B28 UTF-8 and string-boundary hazards** (`&s[..]` panics on a char boundary, `len()`-as-char-count) — plus bullet-level additions to existing categories for `Box::leak` vs `OnceLock`/`LazyLock`, `mem::forget`, `FuturesUnordered` caps, `serde_json` numeric fidelity, `env::var` panics, `Vec` O(n²) front-mutation, `{:?}`-on-bytes, recursion-depth DoS, `sort_unstable` order, and PII logging. Category count 41 → 44; slash commands unchanged. With the post-compilation taxonomy now near-saturated, future work shifts toward infrastructure (an `examples/` regression corpus, CI link-checking). See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
+**v0.4.0 — std-primitives coverage (2026-05-29).** Closes the last systematically-missed gap under the spec's scope: everyday `std` primitives that compile, pass ASCII/small-number tests, and break in production. Three new Tier B categories — **§B26 Lossy numeric conversions** (`as`-cast truncation, float→int saturating), **§B27 Wall-clock vs monotonic time** (`SystemTime` for durations, `.elapsed().unwrap()`), **§B28 UTF-8 and string-boundary hazards** (`&s[..]` panics on a char boundary, `len()`-as-char-count) — plus bullet-level additions to existing categories for `Box::leak` vs `OnceLock`/`LazyLock`, `mem::forget`, `FuturesUnordered` caps, `serde_json` numeric fidelity, `env::var` panics, `Vec` O(n²) front-mutation, `{:?}`-on-bytes, recursion-depth DoS, `sort_unstable` order, and PII logging. Category count 41 → 44; slash commands unchanged. With the post-compilation taxonomy now near-saturated, future work shifts toward infrastructure (an `examples/` regression corpus, CI link-checking). A corrective eighth review pass has since landed accuracy fixes and clarifications under `[Unreleased]`, followed by a new top-level **Tier E — Systemic cost (§E1–§E6)**: a separate axis covering performance/scale cost (latency, allocation, complexity, contention) that survives `rustc`/`clippy`/tests and bites under load, enforced 🟡/🟢 and never 🔴 (category count now 44 → 50). See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
 
 **v0.3.2 — accuracy patch (2026-05-29).** Same-day follow-up patches on top of v0.3.0's content release. v0.3.1 fixed five accuracy bugs (`mpsc::Sender::send` cancel-safety, the non-existent `cargo expand --type-sizes`, the `tokio::task::consume_budget` path, `subtle::Choice` vs `bool`, the C-DEREF citation) and extended seven categories with new BANNED/REQUIRED bullets. v0.3.2 fixes three bugs introduced in v0.3.1 (the `Notify` lost-wakeup pattern was missing its load-bearing `.enable()`; `tokio::task::coop::consume_budget` was pinned to the wrong tokio version; the `thiserror` `#[from]` bullet was both inaccurate and out-of-scope, now reframed as error-context erasure), catches the trigger table up to the v0.3.1 rules, and adds bullets for `tokio::time::interval` first-tick, atomic memory ordering, `broadcast` lag-is-data-loss, and blind-test antipatterns. Category count stays 41; slash commands unchanged. See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
 
@@ -123,7 +123,7 @@ Details: [`commands/README.md`](commands/README.md).
 
 ## Spec architecture
 
-Three tiers plus a meta-layer:
+Five tiers plus a meta-layer:
 
 | Tier | Coverage | Categories |
 |---|---|---|
@@ -132,6 +132,7 @@ Three tiers plus a meta-layer:
 | **Tier B** | Silent correctness bugs, caught only in production | §B1–§B28 |
 | **Tier C** | Architecture and ergonomics, expensive to undo | §C1–§C11 |
 | **Tier D** | Testing and CI gaps — tests pass not because the code is correct but because the tests are blind | §D1, §D2 |
+| **Tier E** | Systemic cost (performance / scale / contention) — correct in the small, wrong at scale — cost that survives correctness; enforced 🟡/🟢, never 🔴 | §E1–§E6 |
 
 The A/B/C/D tiers classify *what kind* of bug a category targets. Orthogonally, the spec's **Enforcement tiers** (🔴 surface-always / may block · 🟡 apply silently while writing · 🟢 delegate to clippy) say *how strictly* to act on each — so a post-flight summary stays short and every line is worth acting on, instead of flagging every cast and clone. See the "Enforcement tiers" section in the spec.
 
