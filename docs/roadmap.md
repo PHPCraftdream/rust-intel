@@ -55,13 +55,12 @@ See [`../commands/rust-intel-cc/fix.md`](../commands/rust-intel-cc/fix.md).
 
 See [`../commands/rust-intel-cc/plan.md`](../commands/rust-intel-cc/plan.md).
 
-## 2. Category expansions
+## 2. Shipped expansions (archive)
 
-Categories with observed patterns but insufficient empirical backing or sharp BANNED/REQUIRED wording. They move into the main spec as data accumulates.
+Categories that were drafted here with observed patterns and have since moved into the main spec. Kept as an archive of how the taxonomy grew, not as an active backlog. (The one draft that was *rejected* rather than shipped is recorded under [Rejected — out of scope by design](#rejected--out-of-scope-by-design).)
 
 - **§B16 (draft) `serde` (de)serialization edge cases.** ✅ shipped in v0.3.0 — field-presence vs null and `#[serde(untagged)]` overlap now live in the main spec.
 - **§B17 (draft) FFI and `Drop` across the ABI boundary.** ✅ shipped in v0.3.0 as §B25 ("Panic and ownership across `extern \"C\"` ABI"): panic-across-boundary, `catch_unwind` discipline, `Box::into_raw`/`Box::from_raw` allocator pairing, `Vec::into_raw_parts`/`Vec::from_raw_parts` `cap` matching, paired `rust_drop_T` free functions, `#[repr(C)]` layout verification. The async-`Drop` side is also covered by the new §B22.
-- **§B18 (draft) `#[no_std]` and `alloc`.** Remains in roadmap as low-priority. Under the v0.3 scope reframe this category does not qualify — its primary failure mode is a compile error (`std::*` paths missing in `no_std`), which the compiler catches. Kept here for visibility, not for promotion.
 - **§C8 (draft) Workspace-level dependencies and feature unification.** ✅ shipped in v0.3.0 — now part of the main spec under workspace feature unification.
 - **§C9 (draft) `tracing` instrumentation patterns.** ✅ shipped in v0.3.0 — span leakage across `.await` and context loss in `tokio::spawn` now live in the main spec.
 
@@ -82,26 +81,35 @@ The bullet-level items below were observed during the v0.3.x review passes and b
 
 Three further gaps surfaced during the pass were large enough to ship as **new Tier B categories** (they were not in the original backlog): **§B26 Lossy numeric conversions** (`as`-cast truncation, float→int saturating), **§B27 Wall-clock vs monotonic time** (`SystemTime` for durations, `.elapsed().unwrap()`), and **§B28 UTF-8 and string-boundary hazards** (byte-indexing panics on a non-char-boundary, `len()`-as-char-count) ✅. Category count 41 → 44.
 
-**Still open — structural (form, not content).** Not done in v0.4.0: splitting the overloaded §B15 (AFIT/RPITIT vs Pin/Waker) into two, and rebalancing section length toward high-frequency categories (§C4/§C5) and away from low-frequency depth (§B5/§B25 are large relative to how often unsafe/FFI actually appears). Deferred to a future structural pass.
+**Still open — structural (form, not content).** Splitting the overloaded §B15 (AFIT/RPITIT vs Pin/Waker) into §B15a–e and deduping repeated rows is the in-flight structural pass; rebalancing section length toward high-frequency categories (§C4/§C5) and away from low-frequency depth (§B5/§B25 are large relative to how often unsafe/FFI actually appears) still trails it. Order: land the link-checker and `examples/` corpus ([§4](#4-infrastructure--highest-value-next)) first so the restructure is verifiable.
 
-With the bullet-level backlog now drained and three new categories shipped, the post-compilation content taxonomy is close to saturation. The next center of gravity is infrastructure rather than new rules — the `examples/` regression corpus and CI link-checking in [§4 below](#4-infrastructure).
+With the bullet-level backlog now drained and three new categories shipped, the post-compilation content taxonomy is close to saturation. The next center of gravity is infrastructure rather than new rules — the `examples/` regression corpus and CI link-checking in [§4 below](#4-infrastructure--highest-value-next).
 
 > Categories whose primary failure mode is a compile error (lifetime variance, GATs lifetime bounds, object safety from generic methods, cyclic workspace deps, `?`-in-`main`) are out of scope by design — the compiler is sufficient. They will not be added even with good wording.
 
+### Rejected — out of scope by design
+
+These were drafted but will **not** be promoted. Recorded here (rather than left in the backlog above) so they stop reading as "someday" items.
+
+- **§B18 (draft) `#[no_std]` and `alloc`.** Rejected under the v0.3 scope reframe: its primary failure mode is a compile error (`std::*` paths missing in `no_std`), which the compiler catches — the same reason as the compile-only blockquote above. Not a silent post-compilation bug, so it does not qualify for the spec.
+
 ## 3. Meta-layer refinements
 
-- **Trigger table:** cover ~5 more prompt patterns observed in real user requests.
+- **Trigger table:** consolidate, not grow — the table is now a source of duplication. Collapse the risk column into pointers (`→ §Bx`) and merge duplicate phrase/code rows rather than adding more.
 - **Calibrated uncertainty:** add a self-assessment scale for cases where LLMs are prone to overconfidence (§B3 already flagged as one such case).
 - **Repro snippets:** for each BANNED formulation, attach a minimal compilable example (needed as the test corpus for §1 tooling).
 
-## 4. Infrastructure
+## 4. Infrastructure — highest value next
+
+This is now the top of the value-per-cost order. The two items below are also **prerequisites for the structural pass** (the §B15a–e split and dedup): a broken-link checker has to be in place *before* sections are renumbered and cross-references move, and the `examples/` corpus is what makes any restructuring verifiable rather than vibes.
 
 - Public repository — ✅ shipped in v0.1+.
-- CI: markdown linting, broken-internal-link checks.
-- Test corpus: `examples/` with deliberately broken Rust per category, to run through `/rust-cc-audit` as a regression suite.
+- **CI: broken-internal-link checks** (plus markdown linting). Highest value — must land *before* the §B15 split / dedup so renumbering can't silently rot cross-references.
+- **Test corpus: `examples/`** with deliberately broken Rust per category, to run through `/rust-cc-audit` as a regression suite. Needed as the safety net for structural edits and for the §1 repro-snippet work.
+- **§B15a–e split + dedup** — structural pass, in flight (see [§2 "Still open — structural"](#2-shipped-expansions-archive)). Sequence it *after* the link-checker and corpus above so the change is verifiable.
 
 ## Open questions
 
-- Should `rust-intel.md` be split into per-tier files, or is the current density still net-positive?
+- ~~Should `rust-intel.md` be split into per-tier files, or is the current density still net-positive?~~ **Resolved: one `SKILL.md`.** Claude Code's install mechanism copies a single file, so per-tier splitting is off the table. The answer to density is *internal* consolidation — dedup duplicate rows and the §B15a–e sub-sections — not more files.
 - Do human-readable artifacts (README, CHANGELOG, roadmap) need a Russian translation, or is English enough alongside the English spec?
 - What's the right versioning granularity: each new category = minor, or batch them?

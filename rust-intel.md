@@ -6,7 +6,7 @@ description: Hard rules for writing Rust in code that already compiles and passe
 
 **Scope, stated up front.** This spec assumes your code already compiles. It assumes `cargo test` is green. That is not enough. The categories below cover the failure modes that survive `rustc`, `clippy`, and the test suite, and only manifest as production incidents, semver breakage, performance collapse under load, or silent data corruption. Compilation-only failures (lifetime variance, trait bound mismatch, GAT lifetime bound errors, object-safety violations through generic methods, cyclic workspace deps, `?` in `main`, HRTB depth, recursive macro limits, self-referential structs in safe Rust, `no_std` reflexive `std::*` imports, `From`/`Into` cycles) are deliberately omitted — `rustc` already catches them and the LLM cannot ship them. This spec covers what ships anyway.
 
-Based on (a) a published 6-month field report on LLM-generated Rust in production (~80k LOC, tokio + sqlx + unsafe hot paths, May 2026 — see [`docs/sources.md`](docs/sources.md)), (b) academic benchmarks RustEvo², SafeTrans, CRUST-Bench, SafeGenBench, Rust-SWE-Bench, AkiraRust, and (c) the empirical error distribution observed across Claude/GPT/Cursor through 2025–2026, plus real supply-chain incidents (CrateDepression 2022, `faster_log`/`async_println` 2025). The rules below cover **forty-four categories** of post-compilation bugs ranging from stale-but-still-valid APIs and slopsquatting (compiles and runs, then exfiltrates secrets) to subtle runtime failures under load — including cancel-safety, drop ordering, UB in `unsafe`, lock-order hazards, supply-chain attacks, cryptographic insecurity, check-then-act races, backpressure leaks, advanced async pitfalls (AFIT, Pin, Waker, `block_on`), equality/hash contracts, runtime borrow panics, manual `Send`/`Sync`, iterator invalidation, `serde` field-presence semantics, `JoinHandle` drop semantics, the non-existence of async `Drop`, `select!` arm side-effect cancellation, timing-attack-prone equality on secrets, panic and ownership across `extern "C"` FFI, channel-and-runtime mismatch, `tracing` span leakage, workspace feature unification, `Deref` polymorphism, and tests that pass by luck. Citations and URLs for every empirical claim live in [`docs/sources.md`](docs/sources.md). They are non-negotiable for any Rust I write.
+The **forty-four categories** below rest on an empirical base — a published 6-month field report on ~80k LOC of production LLM-generated Rust, academic benchmarks (RustEvo², SafeTrans, CRUST-Bench, SafeGenBench, Rust-SWE-Bench, AkiraRust), the error distribution observed across Claude/GPT/Cursor through 2025–2026, and real supply-chain incidents (CrateDepression 2022, `faster_log`/`async_println` 2025). Citations, URLs, sample sizes, and every percentage live in [`docs/sources.md`](docs/sources.md); load it alongside this file when a figure is load-bearing. The category titles in the tier sections below are the index — they are not re-enumerated here.
 
 Industry signal: per Faros AI and Lightrun studies (2026), AI-generated PRs show +242.7% incident rate and 43% require post-merge debugging. Zero surveyed senior engineers rated themselves "very confident" in AI-generated Rust. This is the empirical context this document defends against.
 
@@ -25,7 +25,7 @@ When writing Rust under this command, my role is a **verifying engineer, not a c
 
 - I generate code I can justify, not code that looks plausible.
 - When I'm uncertain about an API, a lifetime, a trait bound, a Drop contract — I say so and ask, rather than producing something that compiles by luck.
-- When the context is insufficient to prove correctness, I refuse to generate code and explicitly block (see "Blocking protocol" below).
+- When the context is insufficient to prove correctness, I either block (for the three security-critical cases) or proceed with explicitly stated assumptions (everything else) — see "Blocking protocol" below.
 - "Compiles" and "tests pass" are necessary but never sufficient. The bugs in this document specifically exist in the gap between those signals and actual correctness.
 
 This principle is what activates every rule below. Without it, the rules become a checklist to game; with it, they become a method for catching mistakes I would otherwise make confidently.
@@ -46,15 +46,14 @@ NEEDED:
   - <specific item 3, e.g. "expected behavior on commit failure: retry, propagate, or rollback to checkpoint?">
 ```
 
-Cases where I block rather than guess:
-- Crate versions are unknown for any dependency I'd need to call API on (§A1).
-- Trait definitions are missing for a trait I'm asked to implement against (§C1).
-- I would need to design a new trait hierarchy from scratch (operating mode rule 3).
-- Drop semantics matter for the task and I don't know the library version (§B4).
-- Cancel-safety is required and I cannot determine the cancellation context (§B3).
-- The user asks for `unsafe` code but the invariants the caller will uphold are unstated (§B5).
+Cases where I **hard-block** rather than guess (the irreversible / security-critical three):
+- The user asks for cryptographic code and the threat model is unstated (§B12) — getting this wrong is silent, catastrophic, and not caught by tests.
+- The user asks for `unsafe` code but the invariants the caller will uphold are unstated (§B5) — guessing produces UB.
+- I would need to add a dependency the user did not name and whose existence I have not verified (§A1) — guessing a crate name is a supply-chain attack vector.
 
-A blocking message is not failure. Generating code that compiles, passes tests, and leaks resources in production *is* failure. Blocking is how that failure is prevented.
+For every other gap — unknown crate versions, a missing trait definition, drop semantics I'm unsure of, or an unclear cancellation context — I do **not** block. I **proceed with explicitly stated assumptions**: I generate the code, record each assumption in a comment block at the top of the response (e.g. `// ASSUMES: tokio 1.x mpsc tuple shape; commit failure propagates as Err`), and ask the user to confirm. Blocking the whole response on these would be more friction than it buys.
+
+A blocking message is not failure. Generating crypto/`unsafe`/supply-chain code on a guess *is* failure. Blocking is how that specific failure is prevented; stated assumptions handle the rest.
 
 ---
 
@@ -70,11 +69,40 @@ Whenever this command is loaded, before generating any Rust code I will:
 
 4. **Refuse `unsafe` without `// SAFETY:`.** Every `unsafe` block must be preceded by a `// SAFETY:` comment naming every invariant the operation relies on. No exceptions, including "obvious" cases.
 
-5. **Annotate every `async fn` with cancel-safety.** See §B3. A doc comment line is mandatory: `/// cancel-safe: yes` or `/// cancel-safe: NO — <reason>`.
+5. **Annotate cancel-safety where it can bite.** See §B3. A `/// cancel-safe: yes` / `/// cancel-safe: NO — <reason>` doc line is mandatory for any `async fn` that (a) has more than one side-effecting `.await`, or (b) is documented to run under `select!` / `timeout`. A trivial `async fn` (zero or one `.await`, no side effect on a losing path) does not need the annotation.
 
-6. **Show the caller for non-trivial lifetimes.** Any function returning `&T` derived from inputs requires at least one example call site in a comment or test — two consecutive calls with disjoint inputs — before the signature is final. See §B1.
+6. **Show the caller for genuinely multi-lifetime returns.** A function whose returned reference is tied to **more than one** input lifetime (the §B1a laundering shape) requires at least one example call site in a comment or test — two consecutive calls with disjoint inputs — before the signature is final. A plain `&T` derived from a single input does not. See §B1.
 
 7. **Surface everything risky in the summary.** When work is complete, list every occurrence of: `unsafe`, `unwrap`, `expect`, `transmute`, `Arc<Mutex<_>>`, manual `Send`/`Sync` impl, blanket impl, `panic!`, `unimplemented!`, `todo!`. Line numbers and justification each.
+
+---
+
+# Enforcement tiers — not every rule is equal
+
+Treating all 44 categories as equally critical produces noise that buries the few findings that matter. Apply rules at one of three tiers:
+
+**🔴 Surface-always / may block.** High blast-radius, often irreversible, invisible to tooling. Always list every occurrence in the summary; for crypto and unsafe-with-unstated-invariants, block and ask rather than guess (see Blocking protocol). These are:
+- §A1 adding an unverified / unnamed dependency (slopsquatting — runs malicious code)
+- §B5 `unsafe`, `transmute`, `mem::uninitialized`/`zeroed`
+- §B12 any cryptographic operation
+- §B14 `unbounded_channel` / unbounded `FuturesUnordered`
+- §B18 manual `unsafe impl Send`/`Sync`
+- §B21 a `tokio::spawn` whose `JoinHandle` is dropped
+- §B22 `impl Drop` doing async work
+- §B24 `==` on secret material
+- §B25 `extern "C"` boundary / `Box::from_raw` / `from_raw_parts`
+- §B15b `Pin::new_unchecked`
+- §C1 blanket impl in a public API
+
+**🟢 Delegate to clippy — do not hand-check or re-surface.** The toolchain already catches these; just run the linter (see Post-flight) and trust it:
+- narrowing `as` casts → `clippy::cast_possible_truncation` (pedantic)
+- redundant / `Copy` clones → `clippy::clone_on_copy`, `clippy::redundant_clone`
+- typo'd `cfg(feature = …)` → the automatic `unexpected_cfgs` lint (Rust 1.80+)
+(Integer overflow is the exception: `clippy::arithmetic_side_effects` is `restriction`, off even under `pedantic` — see §B26.)
+
+**🟡 Apply while writing — don't spam the summary.** Everything else. Write the code correctly the first time per the category, but do not list every `+`, `clone`, cast, or `sort_unstable` as a "finding" — that is the noise this tier exists to prevent. Surface one of these only when it is genuinely load-bearing or you are unsure.
+
+The goal: a summary a human can read in ten seconds, where every line is worth acting on.
 
 ---
 
@@ -104,10 +132,10 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "public API", "library", "publish to crates.io", "what should the signature be" | §B1 lifetime leaking; §C1 blanket impls | `'a` in public signatures, semver hazards |
 | "lazy cache", "memoize", "compute if absent", "deduplicate concurrent requests", "ensure only once" | §B13 TOCTOU | `contains_key` + `insert` race; should be `entry().or_insert_with` |
 | "background worker", "event queue", "log pipeline", "broadcast to subscribers", "producer-consumer" | §B14 unbounded queue | `unbounded_channel` instead of bounded + backpressure policy |
-| "trait with async method", "trait Foo { async fn ... }", "trait object" | §B15 AFIT | Missing `+ Send` bound, not spawn-able |
-| "implement Future manually", "custom Poll", "wake the task" | §B15 Waker | `Poll::Pending` without registering waker → hang forever |
-| "block_on this from a helper", "synchronous wrapper for async" | §B15 nested runtime | `block_on` inside async context → panic |
-| "Pin this", "self-referential struct", "Pin::new_unchecked" | §B15 Pin misuse | Unsafe Pin without proving non-movement |
+| "trait with async method", "trait Foo { async fn ... }", "trait object" | §B15a AFIT | Missing `+ Send` bound, not spawn-able |
+| "implement Future manually", "custom Poll", "wake the task" | §B15b Waker | `Poll::Pending` without registering waker → hang forever |
+| "block_on this from a helper", "synchronous wrapper for async" | §B15c nested runtime | `block_on` inside async context → panic |
+| "Pin this", "self-referential struct", "Pin::new_unchecked" | §B15b Pin misuse | Unsafe Pin without proving non-movement |
 | "procedural macro", "derive macro", "proc-macro2", "syn"/"quote" | §C6 macro hygiene | Bare `Option`/`Result` paths, `panic!` in macro errors |
 | "feature flag", "conditional compilation", "cfg attribute" | §C7 feature hygiene | Typo'd feature names silently become dead code |
 | "singleton", "global state", "OnceLock", "lazy_static", "once_cell" | §B13 TOCTOU; §B17 reentrant borrow | Init race; reentrant `borrow_mut` panic |
@@ -127,15 +155,15 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "hash this", "use as a map key", "deduplicate by", "compare structurally" | §B16 Eq/Hash contract | Manual `PartialEq` without matching `Hash`; `f64` as key |
 | "BFS", "DFS", "tree traversal", "walk the graph", "iterate and modify" | §B19 iterator invalidation | Mutating through `RefCell`/indices while iterating |
 | "untagged enum", "polymorphic JSON", "shape-dispatch" | §B20 serde untagged | Overlapping variant shapes; silent mis-match |
-| "Stream", "futures::Stream", "async iterator", "while let next" | §B15 Stream vs Iterator | `for x in stream` doesn't compile; missing `StreamExt` |
+| "Stream", "futures::Stream", "async iterator", "while let next" | §B15d Stream vs Iterator | `for x in stream` doesn't compile; missing `StreamExt` |
 | "select!", "race two futures", "first one wins" | §B3 cancel safety; §B23 select arm side effects | Side effect on losing arm broken by cancellation |
 | "deadline", "wall clock timeout" | §D1 tests by luck; §B3 cancel safety | `thread::sleep` in tests; cancellation between deadline arms |
 | "test that this panics", "should_panic", "expected panic" | §D1 tests by luck | `#[should_panic]` without `expected` catches any panic |
 | "MaybeUninit", "uninitialized memory", "zero-init buffer" | §B5 unsafe; §B7 large stack | `mem::uninitialized` is UB; `Box::new([0;N])` is on stack |
 | "FFI", "bindgen", "C library", "extern C", "native bindings", "wrap a C API" | §B25 FFI ABI; §B5 unsafe | Panic across `extern "C"`; allocator mismatch on `Box::from_raw`; `cap`-mismatched `Vec::from_raw_parts` |
-| "every N seconds", "periodically", "on a timer", "scheduled tick" | §B15 interval first-tick | First `.tick()` fires immediately, not after the period; Burst catch-up under lag |
+| "every N seconds", "periodically", "on a timer", "scheduled tick" | §B15e interval first-tick | First `.tick()` fires immediately, not after the period; Burst catch-up under lag |
 | "exit the program", "bail out", "exit with code", "abort on error" | §B4 process::exit skips Drop | Stack guards (transactions, files, locks) never run their Drop |
-| "wait for signal", "wait until ready", "condition variable", "notify the worker" | §B15 Notify lost-wakeup | Wakeup races with `notify_one` unless armed via `enable()` before the check |
+| "wait for signal", "wait until ready", "condition variable", "notify the worker" | §B15e Notify lost-wakeup | Wakeup races with `notify_one` unless armed via `enable()` before the check |
 | "log this struct", "add debug logging", "derive Debug" (on types holding secrets) | §B12 crypto Debug-leak | `{:?}` prints `password`/`token`/`key` fields into logs |
 | "compare floats", "approximately equal", "assert the result is ~X" | §D1 tests by luck | `assert_eq!` on computed `f32`/`f64` flakes across builds/arches |
 | "cast", "convert to u32/i64", "as usize", "truncate to" | §B26 lossy numeric | `as` silently truncates/saturates; use `try_from` |
@@ -173,10 +201,10 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `std::process::exit(...)` / `process::exit(...)` below a live RAII guard | §B4 (Drop skipped) |
 | `Arc::strong_count(...)` / `Rc::strong_count(...)` used in a conditional | §B13 (count TOCTOU — use `into_inner`/`try_unwrap`) |
 | `assert_eq!(...)` / `assert_ne!(...)` with an `f32`/`f64` operand | §D1 (float exact-equality) |
-| `notify.notified()` / `Notify` | §B15 (lost wakeup — arm with `enable()` before check) |
+| `notify.notified()` / `Notify` | §B15e (lost wakeup — arm with `enable()` before check) |
 | `#[derive(Debug)]` on a struct with a `password`/`secret`/`token`/`key`/`seed` field | §B12 (Debug-leak of secrets) |
 | `impl Drop` whose body can `panic!`/`.unwrap()`/`.expect()` | §B4 (panic-in-Drop double-abort) |
-| `tokio::time::interval(...)` | §B15 (first tick is immediate; pick `MissedTickBehavior`) |
+| `tokio::time::interval(...)` | §B15e (first tick is immediate; pick `MissedTickBehavior`) |
 | `oneshot::channel()` with the result discarded or `.unwrap()`-ed | §B8 (drop cascade / `RecvError` panic) |
 | `as` cast narrowing an integer (`x as u32`, `len() as u32`) or `f as iN`/`uN` | §B26 (lossy numeric) |
 | `SystemTime::now()` / `Utc::now()` used to measure a duration; `.elapsed().unwrap()` | §B27 (wall-clock vs monotonic) |
@@ -184,7 +212,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `Box::leak(...)` | §A2 (use `OnceLock`/`LazyLock`) |
 | `mem::forget(...)` / `ManuallyDrop` without manual drop | §B4 (RAII disabled) |
 | `FuturesUnordered` pushed unbounded or polled while empty in `select!` | §B14 (busy-loop / unbounded growth) |
-| `watch::channel(...)` / `Receiver::borrow()` | §B15 (initial-value semantics) |
+| `watch::channel(...)` / `Receiver::borrow()` | §B15e (initial-value semantics) |
 | `Vec::remove(0)` / `insert(0, _)` / `contains` in a loop | §C4 (O(n²)) |
 | `{:?}` on `&[u8]`/`Vec<u8>` | §C4 (decimal not hex) |
 | `sort_unstable*` where equal-element order matters | §B16 |
@@ -202,7 +230,7 @@ When two or more triggers fire in one request, treat it as a high-risk task and 
 
 Tier A is not "bugs the compiler catches and stops". The compiler does its job — the bugs that matter here are the *next move*: the LLM sees a red squiggle and reaches for the cheapest fix that compiles, and the cheapest fix compiles **while leaving a real defect behind**. Stale-but-still-valid APIs, deprecated-not-removed APIs, wrong-version-of-crate behaviors, hallucinated crate names that someone else registered as malware, reflexive `Arc<Mutex<T>>`, and `pub` as a hammer for `E0603` are the canonical examples. The compiler is your friend; this tier is about the moments when you ignore that friend's structural signal and silence the symptom.
 
-*Categories whose primary failure mode is a compile error and which leave no silent residue — lifetime variance, trait bound mismatch (E0277/E0308), GAT lifetime bound errors, object-safety violations through generic methods, cyclic workspace deps, `?` in `main`, `From`/`Into` cycles, recursive macro limits, HRTB depth, no_std reflexive `std::*`, self-referential structs in safe Rust, and MSRV mismatches — are deliberately omitted from this spec. The compiler already catches them. An earlier draft of this spec included a Tier A category for trait bounds and type mismatches; it was retired in v0.3.0 on the same scope grounds, and the remaining Tier A categories were renumbered to close the gap.*
+*Categories whose primary failure mode is a compile error and which leave no silent residue are deliberately omitted from this spec (the full list is in "Scope, stated up front" above — trait bound mismatches, GAT/HRTB errors, object-safety violations, cyclic deps, MSRV mismatches, etc.); the compiler already catches them. An earlier draft of this spec included a Tier A category for trait bounds and type mismatches; it was retired in v0.3.0 on the same scope grounds, and the remaining Tier A categories were renumbered to close the gap.*
 
 ## §A1. Stale APIs, deprecated-not-removed APIs, and slopsquatting
 
@@ -276,7 +304,7 @@ Concrete defenses:
 
 # TIER B — Silent correctness bugs
 
-These pass `cargo build`, often pass `cargo test`, and fail in production. The twenty-eight categories below are the ones that hurt — and this is where the spec's real value lives. *We assume your code already compiles. We assume your tests pass. That's not enough.*
+These pass `cargo build`, often pass `cargo test`, and fail in production. The twenty-eight categories below are the ones that hurt — and this is where the spec's real value lives.
 
 **Why this tier exists**: high compilation rate is not correctness. The published 2026 field report on ~80k LOC of LLM-generated tokio/sqlx code (see [`docs/sources.md`](docs/sources.md)) shows that **§B2 alone (`Mutex` across `.await`) was responsible for failure in roughly half of async tasks** before defensive prompting cut it sharply; SafeGenBench shows static analyzers miss **~57% of vulnerabilities** in LLM-generated crypto Rust that *does* compile (§B12). The category list below is structured around this gap between `cargo test` green and actual correctness — see [`docs/sources.md`](docs/sources.md) for the full evidence trail.
 
@@ -568,7 +596,7 @@ A spawned task that *did* run but produced a result the caller never observes is
 
 ## §B12. Cryptographic code (silent insecurity)
 
-**The trap**: cryptographic code generated by LLMs has a unique failure profile. Studies report that only ~23% of LLM-generated crypto Rust code compiles at all, and of the code that *does* compile, static analyzers like CodeQL miss **~57% of the vulnerabilities** present. Crypto code looks right, runs, passes round-trip tests (encrypt → decrypt yields original) — and is still catastrophically insecure.
+**The trap**: cryptographic code generated by LLMs has a unique failure profile. A large fraction of LLM-generated crypto Rust fails to compile at all, and of the code that *does* compile, static analyzers like CodeQL miss **~57% of the vulnerabilities** present. Crypto code looks right, runs, passes round-trip tests (encrypt → decrypt yields original) — and is still catastrophically insecure.
 
 **Why this happens**: cryptography requires *protocol-level* reasoning the LLM does not do. Encrypt-then-decrypt round-trip is the canonical test, and it passes for any non-broken cipher regardless of whether the key, nonce, or mode is sound. The bugs live at a level orthogonal to functional correctness.
 
@@ -666,7 +694,9 @@ In a single-threaded test, this is correct. Under concurrent load, N threads sim
 
 ## §B15. Advanced async pitfalls (AFIT, Pin, Waker, block_on)
 
-A cluster of narrow but high-impact traps that appear in non-trivial async code. Each compiles in isolation; each fails in production or under composition.
+A cluster of narrow but high-impact traps that appear in non-trivial async code. Each compiles in isolation; each fails in production or under composition. The body is split into five sub-categories below; references elsewhere to `§B15` cover all of them, and may name a specific sub-section (`§B15a`–`§B15e`) where the distinction matters.
+
+### §B15a. Async fn in traits (AFIT vs RPITIT)
 
 **AFIT vs RPITIT — terminology matters, they are not interchangeable:**
 
@@ -687,6 +717,8 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Surface every async-returning trait method in the post-flight summary, with the syntax used and whether `Send` is bounded.
 - Never describe RPITIT as "AFIT with a Send bound" in source code. AFIT desugars into RPITIT internally, but the trait's *written* syntax determines what bounds you can express — pick the form deliberately.
 
+### §B15b. Manual futures machinery (Pin, Waker)
+
 **`Pin::new_unchecked` without justification**: `Pin::new_unchecked` is `unsafe` for a reason — it asserts that the pointee will never move again. LLMs reach for it when they don't understand `Pin` rather than as a justified low-level operation. If `Box::pin(...)`, `pin!` macro, or `pin-project` would work, use them.
 
 - Default to `Box::pin(future)` (owning, heap-allocated, `Pin<Box<T>>`) or the `pin!` macro (borrowing, stack-allocated, `Pin<&mut T>`). LLMs frequently mix these up when adapting examples — they have different lifetimes and different ownership. State which one you mean.
@@ -700,11 +732,15 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Default to combinators (`async/.await`, `FutureExt`, `tokio_util::sync::PollSender`) rather than manual `Future` impls.
 - If hand-rolling is unavoidable, write a comment naming who will call the stored waker and under what condition.
 
+### §B15c. Sync↔async bridging
+
 **`block_on` inside an async runtime**: `tokio::runtime::Handle::block_on` (or `futures::executor::block_on`) called from code already running inside a tokio runtime panics with "Cannot start a runtime from within a runtime". This happens when LLM writes a sync-looking helper that internally calls `block_on`, then invokes it from async code.
 
 - Inside async code, use `.await`, not `block_on`.
 - For running blocking/CPU-bound work from inside async, use `tokio::task::spawn_blocking` (separate blocking-thread pool) or `tokio::task::block_in_place` (runs blocking code on the current worker without starving sibling tasks — note this is for async-calls-blocking-code, *not* a sync-to-async bridge; you still cannot `.await` inside it without a `Handle`). Never use nested `block_on`.
 - If a helper function is shared between sync and async callers, prefer making the helper async and forcing sync callers to bridge explicitly.
+
+### §B15d. `Stream` vs `Iterator`
 
 **`Stream` vs `Iterator` — they are not interchangeable**: `Iterator::next(&mut self) -> Option<Item>` is synchronous; `futures::Stream::poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Item>>` is async and requires polling discipline. LLMs frequently write `for x in stream { ... }` (illegal — `Stream` does not impl `Iterator`) or call `.next().await` without importing the `StreamExt` extension trait.
 
@@ -712,7 +748,12 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - For async iteration: `while let Some(x) = stream.next().await { ... }`, not `for x in stream`.
 - Choosing the extension trait matters: `tokio_stream::StreamExt::next` returns the same shape as `futures::StreamExt::next`, but `tokio_stream` adds tokio-specific combinators (`.timeout(...)`, `.chunks_timeout(...)`). Pick one per module and stick with it.
 
-**Additional BANNED**:
+**BANNED**:
+- Dropping a half-consumed `Stream` without explicit acknowledgement that the buffered items are lost. For `tokio::sync::mpsc::ReceiverStream`, dropping the stream signals the sender side; for `BroadcastStream`, in-flight items are gone. Document the drop semantics or wrap the stream in a `Drop` that drains.
+
+### §B15e. tokio sync / timing primitives
+
+**BANNED**:
 - `notify.notified().await` without first checking the condition the notification represents — wakeups can race with `notify_one()` and be lost. Simply creating + `pin!`-ing a `Notified` future does **not** arm it for wakeups; only `.enable()` (or the first poll) adds it to the notify list. The canonical lost-wakeup-free pattern:
   ```rust
   let notified = notify.notified();
@@ -723,12 +764,11 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
   }
   ```
   The `enable()` call is load-bearing: it is what actually arms the wakeup before you inspect the condition, so a `notify_one()` that lands between the check and the await is not lost.
-- Dropping a half-consumed `Stream` without explicit acknowledgement that the buffered items are lost. For `tokio::sync::mpsc::ReceiverStream`, dropping the stream signals the sender side; for `BroadcastStream`, in-flight items are gone. Document the drop semantics or wrap the stream in a `Drop` that drains.
 - `tokio::select! { ... }` without a `biased;` directive when arm-priority matters (e.g., shutdown signal must win over data-availability when both are ready). The default behavior is pseudo-random per poll, which surfaces as occasional starvation under load.
 - `tokio::time::interval(period)` used as `loop { iv.tick().await; do_work().await; }` assuming the first `do_work` runs after `period`. The **first** `.tick().await` returns **immediately** (at creation time), not after one period — so the loop body fires once right away. Worse, the default `MissedTickBehavior::Burst` makes a delayed interval fire all missed ticks back-to-back to "catch up", producing a load spike. Compiles, passes a single-iteration test, surprises in production.
 - `tokio::sync::watch::Receiver::borrow()` assuming it returns the latest *sent* value — a freshly created receiver's `borrow()` returns the **initial** value passed to `watch::channel(initial)` before any `send`. The initial value is marked **seen** at receiver creation, so `changed().await` on a fresh receiver is **pending until the next `send`** — it does *not* fire for the initial value. In a `while changed().await.is_ok() { let v = rx.borrow_and_update().clone(); ... }` loop, use `borrow_and_update()` (not bare `borrow()`) so each observed value is marked seen and you don't reprocess it.
 
-**Additional REQUIRED**:
+**REQUIRED**:
 - For arm-priority, use `tokio::select! { biased; _ = shutdown.notified() => ..., msg = rx.recv() => ..., }` — left-to-right priority is now deterministic.
 - For "do X every N": either consume and discard the first immediate tick, or use `tokio::time::interval_at(Instant::now() + period, period)`, and set `MissedTickBehavior::Delay` (steady cadence) or `Skip` (drop missed ticks) explicitly rather than relying on the `Burst` default.
 
@@ -913,17 +953,17 @@ This category is the `select!`-specific application of §B3. The general rule (`
 - `as` for narrowing or sign-changing integer casts without a proven range: `u64 as u32`, `i64 as i32`, `usize as u32`, `i32 as u8`, `value.len() as u32`. The high bits are silently dropped; on a `>4 GiB` / `>4 billion` collection, `len() as u32` yields garbage.
 - Assuming `usize as u64` or `u32 as usize` is always lossless — `usize` is 32-bit on wasm32 and other 32-bit targets, so `u64 as usize` truncates there.
 - Treating `f as iN` / `f as uN` as wrapping or UB. Since Rust 1.45 it is **saturating**: `300.0_f32 as u8 == 255`, `-1.0_f32 as u8 == 0`, `NaN as i32 == 0`, `1e30 as i32 == i32::MAX`. Code written against pre-1.45 / C semantics gets a silently saturated value instead of the expected wraparound or error.
-- Bare `+` / `-` / `*` / `pow` / `Iterator::sum` / `product` on integers that come from untrusted input, grow over time, or accumulate (counters, offsets, lengths, balances) without `checked_*` / `saturating_*` / `wrapping_*`. In **debug** an overflow panics (`attempt to add with overflow`); in **release** — where `overflow-checks = false` by default — it **silently wraps** (two's-complement). `cargo test` runs the debug profile and stays green; the release binary wraps a counter/offset/size through zero in production. This is the most dangerous debug-vs-release divergence in the language: the profile you test in and the profile you ship in disagree, and no lint catches it by default (`clippy::arithmetic_side_effects` is pedantic, off by default — same blind spot as the cast lint above).
+- Bare `+` / `-` / `*` / `pow` / `Iterator::sum` / `product` on integers that **come from untrusted input, grow unbounded, or accumulate monotonically over the process lifetime** (counters, offsets, lengths, balances, running totals) without `checked_*` / `saturating_*` / `wrapping_*`. This does **not** mean every arithmetic expression: routine bounded locals (`i + 1` in a loop over a known-small range, `(lo + hi) / 2` on in-range indices, arithmetic on values you just proved fit) are fine and should not be flagged. The target is the value that can realistically reach the type's edge. In **debug** an overflow panics (`attempt to add with overflow`); in **release** — where `overflow-checks = false` by default — it **silently wraps** (two's-complement). `cargo test` runs the debug profile and stays green; the release binary wraps a counter/offset/size through zero in production. This is the most dangerous debug-vs-release divergence in the language: the profile you test in and the profile you ship in disagree, and no lint catches it by default (`clippy::arithmetic_side_effects` is in the **`restriction`** group (not `pedantic`), off by default — so unlike the lossy-cast lint, even `-W clippy::pedantic` will not surface integer overflow; you must enable it explicitly).
 - `a / b` or `a % b` on integers without proving `b != 0` — both panic in **debug and release** on a zero divisor; with `b` from untrusted input this is a clean remote DoS panic. (Note also: integer `%` truncates toward zero, so `-7 % 3 == -1`, not `2` — a surprise if you expect Python-style modulo.)
 - `v[i]` / `&slice[a..b]` / `slice.split_at(i)` with an index derived from untrusted input — panics on out-of-bounds (the slice/integer mirror of §B28's string-boundary panic).
 
 **REQUIRED**:
 - For narrowing conversions, use `u32::try_from(x)?` (or `TryFrom` / `try_into`) and handle the range `Err`. Keep `as` only for widening (`u8 as u64`) or explicitly-truncating-by-design casts with a `// truncation intentional: <reason>` comment.
 - For float→int with range control, do an explicit check (`if x.is_finite() && x >= 0.0 && x <= u8::MAX as f32`) before the `as`; do not rely on saturation as your error handling.
-- For integer arithmetic that can overflow on real inputs: `checked_add`/`checked_mul`/… returning `Option` (handle `None` as a real error), `saturating_*` where clamping is the correct semantics, or `wrapping_*` **only** where wraparound is intended, with a `// wrapping intentional: <reason>` comment.
-- For a production binary that must not silently wrap, set `overflow-checks = true` in the release profile (`[profile.release]`) so debug and release agree — a small runtime cost that closes the divergence.
+- **Primary — make debug and release agree:** set `overflow-checks = true` in the release profile (`[profile.release]`). This is the single highest-leverage fix: it turns every overflow into a panic in *both* profiles, so the profile you test in and the profile you ship in no longer disagree, without auditing every `+`. **Caveat:** it is a *global* runtime cost (≈5–15%+ on arithmetic-heavy code, and it blocks autovectorization of the checked operations). For a **numeric hot-path binary** (codecs, DSP, simulation, tight numeric kernels) prefer point `checked_*` at the few sites where overflow is actually reachable over the global flag — the §C4 "profile first" principle applies.
+- **Secondary — explicit per-site handling**, for (a) values arriving from untrusted input at a trust boundary, and (b) any site where wraparound must be caught as a *typed error* rather than a panic: `checked_add`/`checked_mul`/… returning `Option` (handle `None` as a real error), `saturating_*` where clamping is the correct semantics, or `wrapping_*` **only** where wraparound is intended, with a `// wrapping intentional: <reason>` comment.
 - For division/indexing on untrusted input: `checked_div` / `checked_rem`, and `slice.get(i)` / `slice.get(a..b)` (returns `Option`) instead of the panicking `[]`.
-- The post-flight checklist already flags `as` casts between integer types of different signedness or width — this is the backing rule for that line.
+- Narrowing `as` casts are a 🟢-tier item (delegated to `clippy::cast_possible_truncation` under `-W clippy::pedantic`, in the Post-flight command) — do not hand-surface them; this is the backing rule clippy enforces.
 
 ## §B27. Wall-clock vs monotonic time
 
@@ -992,7 +1032,7 @@ These are not bugs in the strict sense, but design choices the LLM makes that ar
 - `Result<T, Box<dyn Error>>` (or `Result<T, Box<dyn Error + Send + Sync>>`) as the return type of any `pub fn` in a published library crate. Callers cannot match on the error variant — every error becomes an opaque blob. For libraries, define a concrete error enum (typically via `thiserror`). Internal/workspace code may use `Box<dyn Error>` or `anyhow::Error` as a deliberate trade-off.
 - Reflexive `#[from]` on every error variant. `#[from] io::Error` makes every `?` on an I/O operation collapse into one variant — the resulting error can no longer say *which* operation failed (the config read? the socket write? the temp-file flush?). It compiles, tests pass, and production logs become "I/O error" with no call-site context. Use `#[from]` only where the source type already uniquely identifies the failure; otherwise carry context with `#[source]` plus an explicit `.map_err(|e| MyError::ConfigRead(e))` at each call site, or use `anyhow::Context::context` in binary code.
 - `std::env::var("X").unwrap()` / `.expect(...)` — panics at startup both when the variable is *missing* and when its value is *not valid UTF-8* (common for paths on Windows / non-UTF8 locales). For values that may be non-UTF8 use `std::env::var_os`; for missing-but-optional config, handle the `Err(VarError::NotPresent)` with a default instead of panicking.
-- `base.join(user_segment)` where `user_segment` may be absolute. `Path::join` with an absolute argument (`/etc/passwd`, `C:\…`, or a leading `/`) **discards `base` entirely** and returns the absolute path — a path-traversal / write-to-wrong-place hazard when any segment is attacker-controlled. It compiles, tests on relative names pass, and production reads/writes outside the intended directory. Validate with `Path::is_absolute` (and reject `..` components) before joining untrusted segments, or canonicalize and check the result is still under `base`.
+- `base.join(user_segment)` where `user_segment` may be absolute. `Path::join` with an absolute argument (`/etc/passwd`, `C:\…`, or a leading `/`) **discards `base` entirely** and returns the absolute path — a path-traversal / write-to-wrong-place hazard when any segment is attacker-controlled. It compiles, tests on relative names pass, and production reads/writes outside the intended directory. On Windows `join` discards `base` whenever the segment `has_root()`, which is **broader** than `is_absolute()`: `/etc/passwd` and `\\server\share` both have `is_absolute() == false` (Windows requires *both* a root and a prefix to be "absolute") yet still drop `base`. Validate with `Path::has_root()` (or reject a leading `Component::RootDir` / `Component::Prefix`), **not** `is_absolute()`, and reject `..` components before joining untrusted segments — or canonicalize and check the result is still under `base`.
 
 ## §C3. Async runtime and ecosystem coherence
 
@@ -1213,6 +1253,8 @@ If I cannot answer any of these confidently, I ask the user before generating co
 
 # Post-flight checklist (run after generating Rust)
 
+After generating Rust, run the toolchain, then surface **ONLY** the 🔴-tier occurrences (everything else is applied while writing per the Enforcement-tier model, not reported — the 🟢-tier items are left to clippy below):
+
 ```bash
 cargo build                                                   # baseline
 cargo clippy -- -W clippy::pedantic \
@@ -1223,73 +1265,26 @@ cargo clippy -- -W clippy::pedantic \
                 -W clippy::undocumented_unsafe_blocks \
                 -W clippy::clone_on_copy \
                 -W clippy::redundant_clone \
+                -W clippy::arithmetic_side_effects \
                 -W unused_must_use
 cargo test
-cargo +nightly miri test    # for any file touching unsafe
+cargo +nightly miri test    # any file touching `unsafe`
 ```
 
-Optional but strongly recommended for production code:
-- `tokio-console` to observe runtime task health and detect blocked workers (§B11) or stuck locks (§B9).
-- `heaptrack` or `valgrind --tool=massif` for steady-state memory profiling (§B10).
-- `loom` for concurrency model checking of multi-lock code (§B9).
+Surface each occurrence (file:line) of — and *only* of — the following. The "why/how" is in each category body; here it is a flat signature list:
+- `unsafe` / `transmute` / `mem::uninitialized`/`zeroed` (§B5)
+- any cryptographic call — list library, primitive, params (§B12)
+- every new `Cargo.toml` dependency — name + version + one-line justification (§A1)
+- manual `unsafe impl Send` / `Sync` (§B18)
+- `unbounded_channel` / unbounded `FuturesUnordered` (§B14)
+- `tokio::spawn` whose `JoinHandle` is dropped (§B21)
+- `impl Drop` doing async work — `.await` / `block_on` / `tokio::spawn` (§B22)
+- `==` / `!=` on secret material (§B24)
+- `extern "C"` fn / `Box::from_raw` / `Vec::from_raw_parts` (§B25)
+- `Pin::new_unchecked` (§B15b)
+- blanket impl in a public API (§C1)
 
-For any of the following found in the generated code, surface it explicitly to the user in the summary with line numbers and justification:
-- `unsafe`
-- `unwrap`, `expect`
-- `transmute`, `mem::transmute_copy`
-- `Arc<Mutex<_>>`, `Arc<RwLock<_>>`
-- two or more lock acquisitions in the same function or call chain (§B9)
-- `Rc<RefCell<_>>` or `Arc<Mutex<_>>` in graph/tree structures (§B10)
-- manual `Send` / `Sync` impl
-- blanket impl (`impl<T: Bound>`)
-- `panic!`, `unimplemented!`, `todo!`, `unreachable!`
-- `pub` items added to the crate API
-- `as` casts between integer types of different signedness or width
-- any async function call without `.await` (§B8) — verify intentional fire-and-forget via `tokio::spawn`
-- `std::thread::sleep`, `std::fs::*`, `reqwest::blocking::*` inside any `async` context (§B11)
-- any cryptographic operation (§B12) — list every crypto call, library, and parameter explicitly
-- every new dependency added to `Cargo.toml` (§A1) — list crate name, version, and a one-line justification for each, so the user can audit against slopsquatting
-- every `pub fn` with a non-`'static` output lifetime (§B1) — flag as potential API lifetime leak
-- every check-then-act pattern on a shared collection (§B13) — `contains_key` + `insert`, `get` + `set`, lock-load-modify-store
-- every `unbounded_channel`, `flume::unbounded`, `async_channel::unbounded` (§B14) — require explicit justification or replacement with bounded variant
-- every `async fn` in a trait definition (§B15) — flag missing `+ Send` bound for tokio spawn use
-- every manual `Future::poll` implementation (§B15) — verify waker registration before `Poll::Pending`
-- every `Pin::new_unchecked` or `mem::transmute` of pin-related types (§B15) — verify the SAFETY justification holds
-- every `.lock().unwrap()` (§B2 poisoning) — recommend explicit poison handling for non-trivial code
-- every proc-macro that emits bare `Option`/`Result`/`Vec` paths (§C6) — hygiene risk
-- every manual `impl PartialEq` / `impl Ord` / `impl Hash` (§B16) — verify the `a == b ⇒ hash(a) == hash(b)` contract and total-order property
-- every `f64` / `f32` field on a type used as a map key (§B16) — flag for `NotNan` / `OrderedFloat` wrap
-- every `RefCell::borrow_mut` reachable through a callback chain or trait dispatch (§B17) — flag potential reentrant panic
-- every `unsafe impl Send` / `unsafe impl Sync` (§B18) — verify the cited synchronization invariant
-- every `for i in 0..vec.len()` loop whose body mutates `vec` (§B19) — verify the loop is well-founded
-- every `RefCell<Vec<T>>` iterated through `borrow().iter()` with mutation inside (§B19) — flag potential invalidation
-- every `#[serde(untagged)]` enum (§B20) — verify variant-shape disjointness
-- every `#[serde(default)]` on `Option<T>` (§B20) — flag if "absent vs null" distinction matters
-- every `#[serde(rename = "...")]` (§B20) — verify round-trip test exists
-- every `tokio::spawn` whose returned `JoinHandle` is dropped (§B21) — verify intent is documented as detached-by-design
-- every `impl Drop` that calls `.await`, `block_on`, or `tokio::spawn` (§B22) — flag as defective; require explicit `async fn close(self)`
-- every `tokio::select!` arm with side effects inside the pending future (§B23) — verify cancel-safety per arm
-- every `==` / `!=` on `&[u8]` / `Vec<u8>` / `String` adjacent to secret material (§B24) — replace with `subtle::ConstantTimeEq`
-- every `extern "C" fn` (§B25) — verify the panic path is wrapped in `catch_unwind` and the body cannot abort silently
-- every `Box::into_raw` / `Box::from_raw` pair and every `Vec::into_raw_parts` / `Vec::from_raw_parts` pair (§B25) — verify same-process, same-allocator, matching `cap`, and that a paired free function exists for cross-boundary cases
-- every channel choice (§C8) — verify the channel kind matches the runtime and the producer/consumer cardinality
-- every `tokio::spawn` inside a function with an active `tracing::Span` (§C9) — verify `.in_current_span()` is applied
-- every workspace member's `default` feature set and every feature activated in `[dev-dependencies]` (§C10) — flag potential feature unification leak
-- every `impl Deref<Target = Inner> for Wrapper` where `Wrapper` is not a smart pointer (§C11) — recommend explicit accessor instead
-- every `#[should_panic]` without `expected = "..."` (§D1) — pin the expected message substring
-- every `thread::sleep` or real `tokio::time::sleep` inside a test (§D1) — replace with virtual time or explicit synchronization
-- every test in `tests/` reaching for `pub(crate)` items (§D2) — flag placement drift
-- every narrowing `as` cast (`u64 as u32`, `len() as u32`, `f as iN`) (§B26) — verify the range fits or switch to `try_from`
-- every bare integer `+`/`-`/`*`/`pow`/`sum` on untrusted or accumulating values (§B26) — wrap in `checked_*`/`saturating_*` or set `overflow-checks = true` for release
-- every `/` and `%` without a proven non-zero divisor, and every `[]` index from external input (§B26)
-- every single `read`/`write` treated as complete (§C4) — use `read_exact`/`write_all`
-- every `Path::join` with a possibly-absolute untrusted segment (§C2)
-- every `SystemTime`/`Utc::now()` used for a duration, and every `.elapsed().unwrap()` (§B27) — switch to `Instant`, handle the `Result`
-- every `&s[..]` with computed indices and every `s.len()`-as-char-count (§B28) — use `get`/`char_indices`
-- every `Box::leak` (§A2), `mem::forget` (§B4), and unbounded `FuturesUnordered` (§B14)
-- every `env::var(...).unwrap()` (§C2), `sort_unstable*` with meaningful equal-order (§B16), and `Vec` front-mutation in a loop (§C4)
-- every recursive function over untrusted input without a depth limit (§B7)
-- every PII field reachable through `Debug` / `tracing` (§C9)
+Optional for production: `tokio-console` for blocked workers / stuck locks (§B9/§B11), `loom` for multi-lock / atomic model checking (§B9/§B13), `heaptrack` for steady-state memory growth (§B10).
 
 ---
 

@@ -8,7 +8,44 @@ Patch = wording refinements, fixes, new sources.
 
 ## [Unreleased]
 
-Staged, not yet cut into a numbered release. A fifth review pass (empirical, against rustc 1.93 / tokio 1.52.3) found three fresh inaccuracies in the v0.4.0 text, one content gap (integer overflow) that survived the saturation sweep, and a command-file bug that survived all five rounds. Category count is unchanged at **44** — integer overflow was folded into §B26 rather than made a new category.
+Staged, not yet cut into a numbered release. Two batches of work sit here: a fifth-pass accuracy/content batch, and a sixth-pass **usability refactor**. Category count is unchanged at **44** throughout (no categories added, cut, merged, or renumbered). All edits are documented under the spec's `[Unreleased]` staging; no version has been assigned yet.
+
+---
+
+### Usability refactor (sixth review pass — "make it easier to apply", not new content)
+
+The sixth pass found the content saturated and accurate, but the document bloated and ritualistic: a 56-bullet post-flight that duplicated category bodies, "everything is a HARD constraint" with no triage, and over-flagging (every `as`, every `+`, every `clone`) that trains the reader to ignore the whole spec. This refactor reorganizes for **applicability** without removing a single rule.
+
+#### Added
+
+- **"Enforcement tiers" section** — the core change. Three tiers tell the reader *how strictly* to act on each category, orthogonally to the A/B/C/D *what-kind-of-bug* tiers: **🔴 surface-always / may block** (~11 high-blast-radius classes: unsafe, crypto, FFI, slopsquatting/new-dep, manual `Send`/`Sync`, async-`Drop`, secret-`==`, unbounded channel, blanket impl, `Pin::new_unchecked`, dropped `JoinHandle`), **🟢 delegate to clippy** (narrowing `as`, `clone_on_copy`/`redundant_clone`, `unexpected_cfgs` — don't hand-check what the linter catches), **🟡 apply while writing** (everything else — write it right, don't spam the summary). Goal: a summary a human reads in ten seconds where every line is worth acting on.
+
+#### Changed
+
+- **Post-flight checklist rebuilt: ~56 bullets → ~11.** Now a flat signature list of only the 🔴-tier occurrences, with the "why/how" left in the category bodies (where it already lived) instead of duplicated. The clippy command gains `-W clippy::arithmetic_side_effects` (see accuracy fix below). All the dropped 🟡-bullets (`as`, `+`/`sum`, `clone`/`to_string`, `sort_unstable`, `pub fn` lifetimes, `RefCell::borrow_mut`, `Path::join`, `read`/`write`, …) **remain as rules in their category bodies** — only the noisy re-surfacing mandate was removed.
+- **§B26 over-flagging softened.** `overflow-checks = true` (release profile) is now the *primary* defense; manual `checked_*` is reserved for untrusted boundaries and typed-error-on-wraparound. The BANNED wording no longer reads as "every arithmetic" — it targets values from untrusted input, unbounded growth, or monotonic accumulation; routine `i + 1` / `(lo + hi) / 2` are explicitly out.
+- **Operating mode mandates narrowed.** `/// cancel-safe:` annotation is required only for an `async fn` with more than one side-effecting `.await` or one documented to run under `select!`/`timeout` — not every async fn (the old mandate generated noise the spec itself calls ~50% unreliable). "Show the caller" is required only when the returned reference binds more than one input lifetime (the actual §B1a shape), not every `&T`.
+- **Blocking protocol narrowed.** Refuse-to-generate is now limited to three cases where the cost of guessing is catastrophic or irreversible: crypto without a threat model (§B12), `unsafe` with caller invariants unstated (§B5), and adding an unnamed/unverified dependency (§A1). Everything else (unknown crate versions, missing trait defs, drop semantics) switches to "proceed with explicitly stated assumptions" — generate the code, flag the assumptions, ask to confirm — instead of blocking the user.
+- **§B15 split into labeled subsections** §B15a (AFIT vs RPITIT) / §B15b (Pin, Waker) / §B15c (sync↔async bridging) / §B15d (`Stream` vs `Iterator`) / §B15e (tokio sync/timing primitives), as sub-headings under the unchanged `## §B15` — like the existing §B1a/§B1b. No renumber; every bullet preserved; trigger references point at the sub-anchors where natural.
+- **Opening de-duplicated.** The scope thesis ("compiles + tests ≠ correct") and the compile-only-exclusions list were restated 3–5 times across front-matter, the opening, the tier intro, "Principle", and the Tier B intro; each is now stated once canonically. The giant sentence that re-listed all 44 categories in prose was trimmed to a scope line plus a pointer to `docs/sources.md` for the empirical figures.
+
+#### Accuracy fixes folded into the same pass
+
+- **§B26 — `clippy::arithmetic_side_effects` is in the `restriction` group, not `pedantic`.** The text claimed it was pedantic and a "same blind spot as the cast lint"; in fact `-W clippy::pedantic` (which the post-flight runs) catches the lossy-cast lint but **not** integer overflow — you must enable `arithmetic_side_effects` explicitly. Reworded, and the flag added to the post-flight clippy command.
+- **§C2 — `Path::join` guard corrected for Windows.** `is_absolute()` is the wrong check: `join` discards the base on `has_root()`, and `/etc/passwd` or `\\server\\share` give `is_absolute() == false` while still dropping the base. Now recommends `has_root()` (or rejecting a leading `RootDir`/`Prefix` component).
+- **§B26 — `overflow-checks = true` hot-path caveat.** Noted the global runtime cost (~5–15%, inhibits autovectorization); for numeric hot paths, prefer targeted `checked_*` at the few real overflow sites over the global flag.
+- **§B12 — unsourced "~23%" figure removed** (it had no entry in `docs/sources.md`); the documented "~57% of crypto vulnerabilities missed by static analyzers" is kept.
+
+#### Tooling/docs (this pass)
+
+- **`README.md`** — one paragraph distinguishing the A/B/C/D category tiers (what kind of bug) from the 🔴/🟡/🟢 enforcement tiers (how strictly to act). No version/Status/count change.
+- **`docs/roadmap.md`** — the rejected `§B18 #[no_std]` draft moved to an explicit "Rejected — out of scope by design" section; the "add ~5 more trigger patterns" item inverted to "consolidate, don't grow"; the per-tier-file split question closed ("one `SKILL.md`; consolidate internally instead"); infrastructure (`examples/` corpus, CI link-checker) promoted to highest-value-next.
+
+---
+
+### Fifth review pass (accuracy + content)
+
+A fifth review pass (empirical, against rustc 1.93 / tokio 1.52.3) found three fresh inaccuracies in the v0.4.0 text, one content gap (integer overflow) that survived the saturation sweep, and a command-file bug that survived all five rounds. Integer overflow was folded into §B26 rather than made a new category.
 
 ### Changed (accuracy fixes — regressions from v0.4.0)
 
