@@ -1,6 +1,6 @@
 # Roadmap
 
-What's planned beyond v0.3. Ordered by value-per-cost.
+What's planned beyond v0.4. Ordered by value-per-cost.
 
 ## 1. Commands (tooling on top of the spec) — ✅ initial set shipped in v0.1
 
@@ -67,20 +67,24 @@ Categories with observed patterns but insufficient empirical backing or sharp BA
 
 **Tier D — Testing and CI gaps.** ✅ shipped in v0.3.0 as a new tier (§D1 tests that pass by luck, §D2 integration vs unit placement drift). Originally not in the roadmap; promoted directly because the empirical pattern was clear (LLM-generated tests routinely rely on `thread::sleep` and bare `#[should_panic]`).
 
-### Deferred to v0.4.0 (observed but not yet shipped)
+### Shipped in v0.4.0
 
-These are under the current scope (compile-clean, test-green, broken anyway) and are bullet-level additions to existing categories — not new categories. Batched for a future pass:
+The bullet-level items below were observed during the v0.3.x review passes and batched for v0.4.0. All are now shipped — most as bullets under existing categories, the rest folded into three new Tier B categories. All sit under the current scope (compile-clean, test-green, broken anyway).
 
-- **`std::env::var` non-UTF8 / missing panics** → §C2 / §B11 area. `var("X").unwrap()` panics on non-UTF8 (common on Windows) or missing vars at startup; `var_os` avoids the UTF-8 requirement.
-- **`Box::leak` for globals** → §A2. Intentional leak that grows on every re-init path; `OnceLock`/`LazyLock` (stable ≥ 1.80) is the right tool.
-- **`mem::forget` disabling RAII** → §B4. Same class as the reflexive `.clone()` of §C5, but for `Drop`.
-- **`serde_json` numeric fidelity** → §B20. `Value::as_f64` / deserializing large integers into `f64` silently loses precision above 2^53 (snowflake IDs, nanosecond timestamps).
-- **`tokio::sync::watch::Receiver` semantics** → §B15 / §C8. `borrow()` returns the initial value before any send; needs `borrow_and_update` to avoid re-looping `changed()`.
-- **`FuturesUnordered` without a cap** → §B14. Unbounded `.push()` is the same growth hazard as an unbounded channel; an empty set in `select!` busy-loops.
-- **`{:?}` on `&[u8]`/`Vec<u8>` prints decimal** → §C4. Non-secret bytes (hashes, checksums, wire frames) come out as `[222, 173, ...]`, not hex; use `hex::encode`.
-- **`Cell` vs `RefCell` for `Copy` interiors** → §A2 / §B17. `Cell<T>` avoids the runtime borrow-flag and §B17 panic surface for `Copy`/replace-whole cases.
+- **`std::env::var` non-UTF8 / missing panics** → §C2 ✅. `var("X").unwrap()` panics on non-UTF8 (common on Windows) or missing vars at startup; `var_os` avoids the UTF-8 requirement.
+- **`Box::leak` for globals** → §A2 ✅. Intentional leak that grows on every re-init path; `OnceLock`/`LazyLock` (stable ≥ 1.80) is the right tool.
+- **`mem::forget` disabling RAII** → §B4 ✅. Same class as the reflexive `.clone()` of §C5, but for `Drop`.
+- **`serde_json` numeric fidelity** → §B20 ✅. `Value::as_f64` / deserializing large integers into `f64` silently loses precision above 2^53 (snowflake IDs, nanosecond timestamps).
+- **`tokio::sync::watch::Receiver` semantics** → §B15 ✅. `borrow()` returns the initial value before any send; needs `borrow_and_update` to avoid re-looping `changed()`.
+- **`FuturesUnordered` without a cap** → §B14 ✅. Unbounded `.push()` is the same growth hazard as an unbounded channel; an empty set in `select!` busy-loops.
+- **`{:?}` on `&[u8]`/`Vec<u8>` prints decimal** → §C4 ✅. Non-secret bytes (hashes, checksums, wire frames) come out as `[222, 173, ...]`, not hex; use `hex::encode`.
+- **`Cell` vs `RefCell` for `Copy` interiors** → §A2 ✅. `Cell<T>` avoids the runtime borrow-flag and §B17 panic surface for `Copy`/replace-whole cases.
 
-Structural (form, not content): consider splitting the overloaded §B15 (AFIT/RPITIT vs Pin/Waker), and rebalancing section length toward high-frequency categories (§C4/§C5) and away from low-frequency depth (§B5/§B25 are large relative to how often unsafe/FFI actually appears).
+Three further gaps surfaced during the pass were large enough to ship as **new Tier B categories** (they were not in the original backlog): **§B26 Lossy numeric conversions** (`as`-cast truncation, float→int saturating), **§B27 Wall-clock vs monotonic time** (`SystemTime` for durations, `.elapsed().unwrap()`), and **§B28 UTF-8 and string-boundary hazards** (byte-indexing panics on a non-char-boundary, `len()`-as-char-count) ✅. Category count 41 → 44.
+
+**Still open — structural (form, not content).** Not done in v0.4.0: splitting the overloaded §B15 (AFIT/RPITIT vs Pin/Waker) into two, and rebalancing section length toward high-frequency categories (§C4/§C5) and away from low-frequency depth (§B5/§B25 are large relative to how often unsafe/FFI actually appears). Deferred to a future structural pass.
+
+With the bullet-level backlog now drained and three new categories shipped, the post-compilation content taxonomy is close to saturation. The next center of gravity is infrastructure rather than new rules — the `examples/` regression corpus and CI link-checking in [§4 below](#4-infrastructure).
 
 > Categories whose primary failure mode is a compile error (lifetime variance, GATs lifetime bounds, object safety from generic methods, cyclic workspace deps, `?`-in-`main`) are out of scope by design — the compiler is sufficient. They will not be added even with good wording.
 

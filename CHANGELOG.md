@@ -10,7 +10,55 @@ Patch = wording refinements, fixes, new sources.
 
 _No unreleased changes._
 
-See [`docs/roadmap.md`](docs/roadmap.md) for planned work, including the v0.4.0 batch of bullet-level additions (`env::var` non-UTF8, `Box::leak` vs `OnceLock`, `mem::forget`, `serde_json` numeric fidelity, `watch::Receiver` semantics, `FuturesUnordered` cap, `{:?}` on bytes, `Cell` vs `RefCell`), the trigger-table expansion, and a possible §B15 split.
+The post-compilation taxonomy is now near-saturated under the spec's scope. See [`docs/roadmap.md`](docs/roadmap.md) for the remaining work, which is now mostly **infrastructure** rather than content: an `examples/` regression corpus (deliberately-broken Rust per category, run through `/rust-cc-audit`), CI markdown/link checking, and the still-open structural question of splitting the overloaded §B15.
+
+## [0.4.0] — 2026-05-29
+
+Content release. Closes the last systematically-missed gap under the spec's scope — everyday **`std` primitives that compile, pass ASCII/small-number tests, and break in production** — with three new Tier B categories plus a batch of bullet-level additions to existing ones. A fourth review pass found v0.3.2 itself clean (zero regressions — the first patch in the project's history to introduce no new bugs), so this release is purely additive. **Category count 41 → 44.** No renumber of existing categories; slash commands and install/uninstall behavior unchanged. Re-run the installer.
+
+### Added (new Tier B categories)
+
+- **§B26. Lossy numeric conversions.** `as`-casts silently truncate, wrap, or saturate with no panic and no default warning (`clippy::cast_possible_truncation` is pedantic / off-by-default). Covers narrowing/sign-changing integer casts (`u64 as u32`, `len() as u32`), the `usize`-is-32-bit-on-wasm32 trap, and float→int saturation (since Rust 1.45: `300.0_f32 as u8 == 255`, `NaN as i32 == 0`). REQUIRED: `try_from` for narrowing; explicit range checks before float→int. This is the backing rule for the long-orphaned `as`-cast line in the post-flight checklist.
+
+- **§B27. Wall-clock vs monotonic time.** Measuring durations/timeouts with non-monotonic wall-clock time (`SystemTime::now()`, `Utc::now()`) breaks when the clock steps (NTP, DST, manual change); `.elapsed().unwrap()` / `.duration_since().unwrap()` panic in production on a backwards step because both return `Result` for exactly that reason. REQUIRED: `Instant::now()` for all durations/deadlines/benchmarks; `SystemTime` only for absolute timestamps; handle the `Err` or use `saturating_duration_since`.
+
+- **§B28. UTF-8 and string-boundary hazards.** String ops that are correct on ASCII and panic or corrupt on non-ASCII: `&s[a..b]` with computed indices panics on a non-char-boundary (`&"café"[0..4]`), `s.len()` (bytes) conflated with character count, `to_lowercase`/`to_uppercase` (full Unicode, can change length) used for ASCII protocol comparisons. REQUIRED: `s.get(a..b)` / `char_indices` / `chars().take(n)`; `unicode-segmentation` for graphemes; `eq_ignore_ascii_case` for protocol strings.
+
+### Added (bullet-level, existing categories)
+
+The eight items previously parked in the roadmap's v0.4.0 backlog, plus four medium-priority finds from the fourth review pass, shipped into existing categories:
+
+- **§A2** — `Box::leak(Box::new(...))` for globals (leaks on every re-init path; use `OnceLock`/`LazyLock`, stable ≥ 1.80); `RefCell` where `Cell` suffices for `Copy`/replace-whole interiors (avoids the §B17 `BorrowMutError` panic surface).
+- **§B4** — `mem::forget`/`ManuallyDrop` without a manual drop silently disables RAII (fd/connection/lock never released) — the §C5 reflexive-`.clone()` reflex applied to `Drop`.
+- **§B7** — unbounded recursion **depth** over untrusted input (recursive-descent parser, tree/JSON walk) overflows the stack, which is `SIGSEGV`/abort — *not* a catchable panic, so a clean DoS vector. (Distinct from the existing frame-size trap.) REQUIRED: explicit depth limit or iterative rewrite.
+- **§B14** — `FuturesUnordered`/`JoinSet` grown unbounded (same hazard as an unbounded channel), and an empty `FuturesUnordered` in a `select!` arm returns `Poll::Ready(None)` immediately → 100% CPU busy-loop.
+- **§B15** — `watch::Receiver::borrow()` returns the **initial** value before any `send`, and the first `changed().await` returns immediately; use `borrow_and_update()` to avoid re-processing.
+- **§B16** — `sort_unstable*` when the relative order of equal elements matters silently breaks a multi-key sort's secondary order; use stable `sort`/`sort_by_key` when the tie-break is load-bearing.
+- **§B20** — deserializing a large integer (snowflake ID, ns timestamp, `u64` > 2^53) into an `f64` field or via `Value::as_f64()` silently loses precision (53-bit mantissa).
+- **§C2** — `env::var("X").unwrap()` panics both on a missing var and on a non-UTF8 value (common on Windows); use `var_os` / handle `VarError::NotPresent`.
+- **§C4** — `Vec::remove(0)`/`insert(0, _)`/`contains` in a loop is O(n²) (use `VecDeque`/`swap_remove`/`HashSet`); `{:?}` on `&[u8]`/`Vec<u8>` prints a decimal array, not hex (use `hex::encode` for non-secret bytes).
+- **§C9** — logging PII (email, name, phone, address, government ID, card, IP) through `Debug`/`tracing` is a compliance leak (GDPR/PCI) distinct from §B12's crypto-secret coverage; classify and redact PII fields.
+
+### Changed (wording accuracy)
+
+- **§B15 — `Notify` pattern wording corrected.** v0.3.2's comment said `.enable()` "registers the waker"; per tokio's docs `enable()` does not register the task `Waker` (that happens at poll/await) — it *arms the future for wakeups* by adding it to the notify list. Reworded to "arms the wakeup"; the code and its load-bearing-`.enable()`-before-the-check semantics are unchanged.
+
+### Changed (self-monitoring + checklist)
+
+- **Trigger table** extended for every new rule: +8 phrase triggers (numeric cast, time measurement, substring/case, global/singleton, large JSON id, env var, sort-by, recursive parser) and +10 code-pattern triggers (`as`-narrowing, `SystemTime` duration, `&s[..]`/`len()`-as-chars, `Box::leak`, `mem::forget`, `FuturesUnordered`, `watch::channel`, `Vec` front-mutation, `{:?}`-on-bytes, `sort_unstable*`).
+- **Post-flight checklist** gains surface-able items for the new categories and bullets (narrowing casts, `SystemTime`-for-duration, computed `&s[..]`, `Box::leak`, `mem::forget`, unbounded `FuturesUnordered`, `env::var().unwrap()`, `sort_unstable*`, `Vec` front-mutation, depth-unbounded recursion, PII-through-`Debug`).
+- **Version pins** — float→int saturating cast pinned to Rust 1.45; `LazyLock` to 1.80 (alongside `OnceLock`).
+
+### Tooling and documentation
+
+- **`README.md`** — Status block gains a v0.4.0 entry (v0.3.2 preserved; v0.3.0 condensed to a one-line scope-reframe reference). Spec-architecture table Tier B range `§B1–§B25` → `§B1–§B28`. Category count updated to 44.
+- **`docs/roadmap.md`** — the "Deferred to v0.4.0" backlog is now "Shipped in v0.4.0" with each item mapped to its landing category; the §B15-split and section-rebalance notes remain open as structural work; a saturation note redirects future effort to infrastructure.
+- **`docs/sources.md`** — normative-source entries added for the three new categories (Rust Reference on `as`-cast semantics, `std::time` on monotonic vs wall-clock, `str` UTF-8 docs).
+- **`CHANGELOG.md`** — the v0.3.2 line-endings note was corrected (it claimed the working tree was renormalized to LF; in fact only the index is LF-canonical, the Windows working copy stays CRLF by design under `eol=lf`).
+
+### Migration
+
+Re-run the installer. The skill grew by three categories and ~a dozen bullets; nothing was renumbered or removed, so any reference to §A1–§D2 or §B1–§B25 remains valid (§B26–§B28 are new). Slash commands and scripts are unchanged.
 
 ## [0.3.2] — 2026-05-29
 
@@ -53,7 +101,7 @@ v0.3.1 added rules but no triggers for them, so the self-monitoring layer never 
 
 - **`README.md`** — Status block gains a v0.3.2 entry (the v0.3.0 entry is preserved below it for the scope-reframe context). The "Verify" section's category range corrected from `§A1–§C11` to `§A1–§D2` so Tier D is visible.
 - **`docs/roadmap.md`** — new "Deferred to v0.4.0" subsection listing the bullet-level additions surfaced by the third review pass (`env::var`, `Box::leak`, `mem::forget`, `serde_json` fidelity, `watch::Receiver`, `FuturesUnordered`, `{:?}`-on-bytes, `Cell` vs `RefCell`) plus structural notes (possible §B15 split, section-length rebalancing).
-- **`rust-intel.md`** — working-tree line endings renormalized to LF.
+- **`rust-intel.md`** — re-confirmed LF-canonical in the index (the committed blob is LF); the Windows working copy stays CRLF by design under `* text=auto eol=lf`, and git no longer warns because the canonical eol is explicit. (No content change — this corrects the wording of the original v0.3.2 note; nothing was actually re-converted.)
 
 ### Migration
 

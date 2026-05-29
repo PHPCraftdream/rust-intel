@@ -107,6 +107,9 @@ Known gotcha: `features = [...]` inside `[target.'cfg(...)'.dependencies]` activ
 - **Native async fn in traits (RPITIT)** — stabilized in Rust 1.75; idiomatic 2025–2026 pattern is `fn bar(&self) -> impl Future<Output = T> + Send`, with `trait-variant` for Send/non-Send variants and `async-trait` only for `dyn Trait` cases. <https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits/>. §B15.
 - **Tokio docs** — per-function cancel-safety guarantees (`AsyncReadExt::read` is cancel-safe, `read_exact` is not, etc.). §B3.
 - **Rust Reference / Nomicon** — Stacked Borrows, `repr(Rust)` vs `repr(C)`, Pin contracts. §B5, §B15.
+- **Rust Reference / `std` primitive-cast docs** — `as`-cast numeric semantics: integer narrowing truncates (wraps mod 2ⁿ), and float→int casts saturate to the target's bounds (and map `NaN` to 0) as of Rust 1.45. §B26.
+- **`std::time` docs** — `Instant` is monotonic and the only correct clock for measuring durations; `SystemTime` is wall-clock and can jump backward (NTP, manual changes), so `SystemTime::duration_since` / `elapsed` return a `Result` rather than a bare `Duration`. §B27.
+- **Rust `std::str` / "Strings are UTF-8" (Reference & the Book)** — `str` is UTF-8; byte-range indexing (`&s[a..b]`) panics when an index is not on a `char` boundary, and `str::len` / `[u8]` length is bytes, not `char`s or grapheme clusters. §B28.
 - **`clippy` lints:** `await_holding_lock`, `clone_on_copy`, `unwrap_used`, `expect_used`, `missing_safety_doc`, `undocumented_unsafe_blocks`, `redundant_clone`. Post-flight checklist.
 - **`miri`** — required in CI for any file containing `unsafe`. §B5.
 - **`loom`** — model checking for multi-lock code. §B9.
