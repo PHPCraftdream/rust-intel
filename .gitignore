@@ -21,3 +21,7 @@ desktop.ini
 # Future tooling artifacts
 /target/
 *.log
+
+# Stray Rust build artifacts (e.g. from ad-hoc test compiles in the repo root)
+*.rlib
+*.rmeta
