@@ -25,17 +25,17 @@ Default target (no flags): .\.claude\  (the current working directory).
 With -User:                %USERPROFILE%\.claude\  (user-global).
 If `$env:CLAUDE_CONFIG_DIR is set, it overrides both.
 
-Installs (renaming source nested -> target flat-with-prefix):
-  rust-intel.md                       -> <target>\skills\rust-intel\SKILL.md
-  commands\rust-intel-cc\audit.md     -> <target>\commands\rust-cc-audit.md
-  commands\rust-intel-cc\fix.md       -> <target>\commands\rust-cc-fix.md
-  commands\rust-intel-cc\plan.md      -> <target>\commands\rust-cc-plan.md
+Installs the modular skill (the single-file rust-intel.md reference is NOT installed):
+  skill\*.md  (SKILL.md + theme modules)  -> <target>\skills\rust-intel\
+  commands\rust-intel-cc\audit.md         -> <target>\commands\rust-cc-audit.md
+  commands\rust-intel-cc\fix.md           -> <target>\commands\rust-cc-fix.md
+  commands\rust-intel-cc\plan.md          -> <target>\commands\rust-cc-plan.md
 
 Slash commands after install:
   /rust-cc-audit   /rust-cc-fix   /rust-cc-plan
 
 Sweeps any previous install at the same target before copying:
-  <target>\skills\rust-intel\                                          (entire directory)
+  <target>\skills\rust-intel\                                          (entire directory, incl. any previous monolithic SKILL.md)
   <target>\commands\rust-cc-{audit,fix,plan}.md                        (v0.2.1+ flat-with-prefix)
   <target>\commands\rust-intel-cc\                                     (v0.2.0 namespace dir)
   <target>\commands\{rust-audit,rust-fix,rust-plan,rust-intel}.md      (legacy v0.1.x flat layout)
@@ -66,9 +66,9 @@ $SkillDir    = Join-Path $ClaudeDir 'skills\rust-intel'
 $CommandsDir = Join-Path $ClaudeDir 'commands'
 $NsDir       = Join-Path $CommandsDir 'rust-intel-cc'
 
-$SkillSource = Join-Path $RepoDir 'rust-intel.md'
-if (-not (Test-Path -LiteralPath $SkillSource)) {
-    Write-Error "rust-intel.md not found at $RepoDir. The installer must live alongside it."
+$SkillSourceDir = Join-Path $RepoDir 'skill'
+if (-not (Test-Path -LiteralPath (Join-Path $SkillSourceDir 'SKILL.md'))) {
+    Write-Error "skill\SKILL.md not found at $SkillSourceDir. The installer must live alongside the skill\ directory."
     exit 1
 }
 
@@ -110,7 +110,9 @@ function Install-File {
     Write-Output "  copied     $Destination"
 }
 
-Install-File -Source $SkillSource                                                       -Destination (Join-Path $SkillDir 'SKILL.md')
+Get-ChildItem -LiteralPath $SkillSourceDir -Filter '*.md' | ForEach-Object {
+    Install-File -Source $_.FullName -Destination (Join-Path $SkillDir $_.Name)
+}
 Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\audit.md')             -Destination (Join-Path $CommandsDir 'rust-cc-audit.md')
 Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\fix.md')               -Destination (Join-Path $CommandsDir 'rust-cc-fix.md')
 Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\plan.md')              -Destination (Join-Path $CommandsDir 'rust-cc-plan.md')

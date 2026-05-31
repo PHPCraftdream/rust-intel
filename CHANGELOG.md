@@ -6,6 +6,23 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.3.1] — 2026-05-31
+
+Structural repackaging — **no rule changes, no category changes** (still **51**). The single-file spec was split into a **modular skill**: `SKILL.md` (core — scope, blocking protocol, operating mode, enforcement tiers, the trigger table, version pins, and a new **category→module map**) plus nine theme modules under `skill/` holding the category bodies. Motivation: a single ~50k-token file overloads a reviewing/auditing agent — it loses detail mid-document; per-module files let one agent go deep on one theme.
+
+### Changed
+
+- **Split `rust-intel.md` → `skill/` modules** by theme: `async`, `unsafe-and-ffi`, `concurrency-and-state`, `data-and-types`, `security`, `drop-and-raii`, `deps-macros-ergonomics`, `lifetimes-and-api`, `testing`. Tier (A–E) is now a per-category **label**, not a file. Content is byte-complete — every original content line was verified present in the modules. The single-file `rust-intel.md` is **retired** (kept in git history under `v0.3.0`); cross-references between modules (e.g. `§B22 → §B4`) are navigational by design.
+- **`SKILL.md` gained a `category→module map`** (which module holds each §) and a **"Running a full pass"** section: it instructs the agent, for a full audit/review, to **fan out one sub-agent per module** (via the Workflow tool) and synthesize — instead of grinding all ~51 categories in one context. A single trigger or one category match still applies inline.
+- **Installers** now copy `skill/*.md` → `<target>/skills/rust-intel/` (the single-file reference is no longer installed); a prior monolithic `SKILL.md` is swept like any prior layout. `install.sh`/`install.ps1` updated and prove-tested; `uninstall.*` unchanged (already removes the whole directory).
+- **Docs** — `README.md`, `commands/README.md`, `docs/roadmap.md`, `docs/sources.md` updated for the modular layout.
+
+### Added
+
+- **`dev/review-modules.workflow.js`** — maintainer workflow: one agent per module (all lenses) → synthesis agent. The repeatable, one-command fan-out for reviewing the skill.
+
+---
+
 ## [0.3.0] — 2026-05-29
 
 Release 0.3.0 — the first tagged release since 0.2.2, collapsing all interim work (drafted under provisional 0.3.x / 0.4.0 labels and an `[Unreleased]` staging area, none of which were ever tagged on GitHub) into a single version. Net effect since 0.2.2: the taxonomy grew from **26 to 51 categories** across **five tiers (A–E)**. Work batches in this release: a fifth-pass accuracy/content batch, a sixth-pass **usability refactor**, a seventh-pass **final consistency/usability fix pass**, an eighth-pass **corrective pass** (external review — one verified bug, a 🔴-propagation gap, three undisclosed-precondition gaps, meta-layer recalibration), a **Tier E content batch** that opens a new top-level axis (systemic cost / performance) alongside the correctness tiers, and a **discipline-hardening batch** of within-category bullets (vacuous-test ban §D1, workspace version-unification + crate-boundary timing §C10, benchmark-as-regression-guard §E6). The first four batches left the category count unchanged at **44** (no categories added, cut, merged, or renumbered); the Tier E batch raises it to **50** (§E1–§E6) and the tier count from **four** to **five**; the discipline-hardening batch adds bullets only and keeps the count at **50**; the latest **review-driven pass** (external multi-agent review) adds one category (§B29) to bring it to **51**, alongside accuracy fixes, within-category completeness bullets, and anti-dogmatism calibration. Two subsequent verification passes — a second- and a third-review correction batch — fix residual defects, recalibrate a few rules, and add within-category security bullets (OS-command and SQL injection, allocation-size DoS, a Miri/FFI caveat, `cargo-vet`); both keep the count at **51**. Full per-iteration detail is preserved in the sub-sections below.

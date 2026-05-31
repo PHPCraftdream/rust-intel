@@ -30,17 +30,17 @@ Default target (no flags): \$PWD/.claude/  (the current working directory).
 With --user:               \$HOME/.claude/  (user-global).
 If \$CLAUDE_CONFIG_DIR is set, it overrides both.
 
-Installs (renaming source nested -> target flat-with-prefix):
-  rust-intel.md                       -> <target>/skills/rust-intel/SKILL.md
-  commands/rust-intel-cc/audit.md     -> <target>/commands/rust-cc-audit.md
-  commands/rust-intel-cc/fix.md       -> <target>/commands/rust-cc-fix.md
-  commands/rust-intel-cc/plan.md      -> <target>/commands/rust-cc-plan.md
+Installs the modular skill (the single-file rust-intel.md reference is NOT installed):
+  skill/*.md  (SKILL.md + theme modules)  -> <target>/skills/rust-intel/
+  commands/rust-intel-cc/audit.md         -> <target>/commands/rust-cc-audit.md
+  commands/rust-intel-cc/fix.md           -> <target>/commands/rust-cc-fix.md
+  commands/rust-intel-cc/plan.md          -> <target>/commands/rust-cc-plan.md
 
 Slash commands after install:
   /rust-cc-audit   /rust-cc-fix   /rust-cc-plan
 
 Sweeps any previous install at the same target before copying:
-  <target>/skills/rust-intel/                                          (entire directory)
+  <target>/skills/rust-intel/                                          (entire directory, incl. any previous monolithic SKILL.md)
   <target>/commands/rust-cc-{audit,fix,plan}.md                        (v0.2.1+ flat-with-prefix)
   <target>/commands/rust-intel-cc/                                     (v0.2.0 namespace dir)
   <target>/commands/{rust-audit,rust-fix,rust-plan,rust-intel}.md      (legacy v0.1.x flat layout)
@@ -74,8 +74,8 @@ SKILL_DIR="$CLAUDE_DIR/skills/rust-intel"
 COMMANDS_DIR="$CLAUDE_DIR/commands"
 NS_DIR="$COMMANDS_DIR/rust-intel-cc"
 
-if [[ ! -f "$REPO_DIR/rust-intel.md" ]]; then
-    echo "Error: rust-intel.md not found at $REPO_DIR. The installer must live alongside it." >&2
+if [[ ! -f "$REPO_DIR/skill/SKILL.md" ]]; then
+    echo "Error: skill/SKILL.md not found at $REPO_DIR/skill. The installer must live alongside the skill/ directory." >&2
     exit 1
 fi
 
@@ -122,7 +122,9 @@ install_file() {
     fi
 }
 
-install_file "$REPO_DIR/rust-intel.md"                       "$SKILL_DIR/SKILL.md"
+for skill_file in "$REPO_DIR"/skill/*.md; do
+    install_file "$skill_file" "$SKILL_DIR/$(basename "$skill_file")"
+done
 install_file "$REPO_DIR/commands/rust-intel-cc/audit.md"     "$COMMANDS_DIR/rust-cc-audit.md"
 install_file "$REPO_DIR/commands/rust-intel-cc/fix.md"       "$COMMANDS_DIR/rust-cc-fix.md"
 install_file "$REPO_DIR/commands/rust-intel-cc/plan.md"      "$COMMANDS_DIR/rust-cc-plan.md"

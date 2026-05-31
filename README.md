@@ -18,13 +18,17 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ## Status
 
+**v0.3.1 — structural repackaging (2026-05-31).** The single-file spec is now a **modular skill**: `SKILL.md` (core — protocols, enforcement tiers, the trigger table, and a category→module map) plus nine theme modules under `skill/` holding the category bodies. No rule or category changes (still **51**) — content is byte-complete vs 0.3.0. `SKILL.md` also tells the agent to run a full audit/review by **fanning out one sub-agent per module** (via a workflow) instead of holding all categories in one context. Installers ship the modules; the single-file reference is retired (kept in git history). See [`CHANGELOG.md`](CHANGELOG.md).
+
 **v0.3.0 — content release (2026-05-29).** The first tagged release since 0.2.2 — it collapses all interim work (drafted under provisional 0.3.x / 0.4.0 labels, never tagged) into one version. The spec was reframed to cover only bugs that compile and pass tests but still break, then grown from **26 to 51 categories** across **five tiers (A–E)**: silent correctness bugs (async cancellation, `Mutex`-across-`.await`, UB, TOCTOU, crypto, FFI, lossy numeric/`as`-casts, wall-clock vs monotonic, UTF-8 boundaries, iterator/slice adapter traps), architecture/ergonomics, testing/CI gaps, and a top-level **Tier E — Systemic cost** (latency, allocation, complexity, contention; enforced 🟡/🟢, never 🔴). Includes an external multi-agent review pass — evidence-base accuracy fixes, build-time supply-chain coverage (§A1), and anti-dogmatism calibration. Slash commands unchanged. See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
 
 ## Layout
 
 ```
 rust-intel/
-├── rust-intel.md                       # The spec itself (Claude Code skill)
+├── skill/                              # The skill (this is what installs) — modular
+│   ├── SKILL.md                        # Core: protocols, enforcement tiers, trigger table, category→module map
+│   └── <theme>.md                      # Theme modules (async, unsafe-and-ffi, security, … — the category bodies)
 ├── README.md                           # This file
 ├── CHANGELOG.md                        # Version history
 ├── .gitattributes                      # Line-ending rules (LF for source, CRLF for .ps1/.bat)
@@ -68,7 +72,7 @@ rust-cc-install.bat -User             # user-global
 `CLAUDE_CONFIG_DIR` env var overrides everything if set.
 
 The installer copies:
-- `rust-intel.md` → `<target>/skills/rust-intel/SKILL.md` (the skill — Claude Code activates it automatically on Rust tasks)
+- `skill/*.md` → `<target>/skills/rust-intel/` (the modular skill — `SKILL.md` core plus theme modules; Claude Code activates it automatically on Rust tasks)
 - `commands/rust-intel-cc/{audit,fix,plan}.md` → `<target>/commands/rust-cc-{audit,fix,plan}.md` (the three slash commands; installer flattens with a `rust-cc-` prefix on copy)
 
 It also sweeps any prior install at the same target — including the legacy v0.1.x flat layout (`commands/rust-audit.md`, `commands/rust-fix.md`, `commands/rust-plan.md`, and the very early `commands/rust-intel.md`) — so re-running it cleanly migrates from any older version.

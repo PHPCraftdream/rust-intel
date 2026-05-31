@@ -1,11 +1,11 @@
 # Commands
 
-Thin commands built on top of the `rust-intel` skill. All of them rely on **one** source of truth — `../rust-intel.md` — and never copy rules.
+Thin commands built on top of the `rust-intel` skill. All of them rely on **one** source of truth — the `rust-intel` skill in `../skill/` — and never copy rules.
 
 ## Architectural principle
 
 ```
-rust-intel.md  ──  knowledge (categories, BANNED/REQUIRED, checklists)
+skill/ (SKILL.md core + theme modules)  ──  knowledge (categories, BANNED/REQUIRED, checklists)
        ▲
        │ invoke skill
        │
@@ -17,7 +17,7 @@ rust-intel.md  ──  knowledge (categories, BANNED/REQUIRED, checklists)
 - **Knowledge** lives in the skill — edit once, every command sees the change immediately.
 - **Process** lives per command — what to scan, what to output, what to ask.
 
-If a command wants a new rule, the rule lands in `rust-intel.md`, not in the command file. Duplication of knowledge is forbidden by design.
+If a command wants a new rule, the rule lands in the relevant `skill/` module, not in the command file. Duplication of knowledge is forbidden by design.
 
 ## Repo layout vs installed layout
 
@@ -49,7 +49,7 @@ rust-cc-install.bat
 rust-cc-install.bat -User
 ```
 
-The installer also handles the skill (`rust-intel.md` → `skills/rust-intel/SKILL.md`) and sweeps every prior layout at the target — v0.2.1+ flat-with-prefix, v0.2.0 namespace dir, and the v0.1.x flat-no-prefix layout.
+The installer also handles the skill (`skill/*.md` → `skills/rust-intel/`, modular) and sweeps every prior layout at the target — v0.2.1+ flat-with-prefix, v0.2.0 namespace dir, and the v0.1.x flat-no-prefix layout.
 
 ## Dependency on the skill
 

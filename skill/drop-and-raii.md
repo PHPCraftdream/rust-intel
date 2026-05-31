@@ -1,0 +1,36 @@
+# Rust Intel — Drop Order & RAII (incl. edition-2024 drop scope)
+
+> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B4 (and §B4a). The async-Drop case is §B22 in `async.md`. Tier labels (🔴/🟡/🟢; A–E) and all cross-references are preserved verbatim.
+
+---
+
+## §B4. Drop order and RAII contracts
+
+**The trap**: implicit `Drop` for transactions, file handles, async resources has library-specific contracts. `sqlx` implicit-rolls-back inside the async runtime (blocking). `deadpool-postgres` sends rollback to a background task that may never run. The semantics live in library source, not signatures.
+
+**REQUIRED** for any DB transaction / file handle / network resource:
+- After the last fallible operation that might fail (e.g., `tx.commit().await`), **assume the resource's `Drop` runs in an undefined state**. Do not rely on it for correctness.
+- For transactions: explicit `commit().await?` on success path, explicit `rollback().await?` on error path, **and** acknowledge the failure mode of `commit().await` itself failing (the tx is then in a library-specific state — check the docs).
+- Read the version-specific `Drop` impl docs for the library being used. State the version you assumed in a comment.
+- Be aware that holding multiple drop-significant guards (file + DB tx + lock) creates an ordering problem: Rust drops in reverse declaration order, but the *correct* order depends on the semantics. State which order matters.
+
+**BANNED**:
+- `std::process::exit(...)` from any code path where stack-local guards (database transactions, file handles, lock guards, logger flushers) still need to run their `Drop`. `process::exit` **does not unwind** — none of those `Drop` impls execute. Return a `Result` from `main`, or call `drop(guard)` explicitly on every guard before `process::exit`.
+- A `Drop::drop` body that can itself panic while panicking is already in flight (the second panic aborts the process via `panic_in_drop`). The idiomatic primary guard is `std::thread::panicking()`: skip or relegate the fallible work when the thread is already unwinding (`if !std::thread::panicking() { … }`), so `drop` never adds a second panic to an in-flight one. If `drop` does anything fallible, isolate it in `catch_unwind` and downgrade the inner panic to a logged error. **Precondition for this fix:** `catch_unwind` only catches an *unwinding* panic — under `[profile.*] panic = "abort"` a panic aborts the process immediately and unwinds nothing, so the `catch_unwind` (and the logging behind it) never runs. The guard is real only under `panic = "unwind"` (the default). `catch_unwind` also takes an `UnwindSafe` closure; reach for `AssertUnwindSafe` only after reasoning that no observer can see broken invariants across the caught panic — do not wrap blindly to silence the bound.
+- `mem::forget(guard)` or wrapping a guard in `ManuallyDrop` without a later manual drop — both silently disable the RAII release (file descriptor, DB connection, lock guard never freed). This is the §C5 reflexive-`.clone()` reflex applied to `Drop`: a quick way to silence a move/borrow complaint that leaks the resource instead.
+
+Async resources have an additional constraint that `Drop` cannot honor — see §B22 for the async-`Drop`-is-not-real problem.
+
+### §B4a. Edition-2024 temporary-scope drop-order changes
+
+**The trap**: migrating a crate to edition 2024 silently changes *when* temporaries drop in two places — with no runtime error and usually green tests, but a different drop order under locks and RAII guards.
+
+- **`if let … {} else {}` scrutinee** (`if_let_rescope`): in edition 2024 a temporary created in the `if let` scrutinee drops **before** the `else` block (and at the end of the `then` block), not at the end of the whole `if`/`else`. The canonical hazard is an `RwLock`/`Mutex` deadlock: `if let Some(v) = lock.read().get(&k) { … } else { lock.write().insert(…) }` deadlocks in 2021 (the read guard is still alive in the `else`) and silently *stops* deadlocking in 2024 — or, conversely, code that relied on the temporary living into the `else` now drops it early. `cargo fix --edition` auto-rewrites to a `match` to preserve 2021 behavior; review those rewrites.
+- **Tail-expression temporaries** (`tail_expr_drop_order`, RFC 3606): in edition 2024 temporaries in a block's tail expression drop **after** the tail value but **before** the block's locals, not at end of the enclosing statement. This shifts the drop order of any custom-`Drop` value (a `MutexGuard`, transaction handle, span guard) sitting in tail position. The lint is **advisory and has no autofix** — migration will not flag it for you unless you read the warning. A trailing `if let … {}` with no semicolon is *both* a tail expression and an `if let`, so it hits both rules at once.
+- **let-chains** (`if let A && let B`, stable 1.88, edition 2024) follow the same `if let` temporary-scope rule — reason about each chained temporary's drop point explicitly. `let`-chains also reached `match` *guards* (`match x { v if let Ok(y) = f(v) => … }`, stable **1.95**, all editions — verify against your pinned toolchain) — these do **not** share the `if let … else` drop hazard (a guard has no `else` arm), so no special drop-order review is needed there beyond normal guard-temporary scoping.
+- **never-type fallback** (edition 2024) is mostly out of scope for this spec: changing `!`'s fallback from `()` to `!` is a *compile-time* break in the common case (code relying on `Default::default()` inferring `()` stops compiling), and the one genuinely silent-at-runtime interaction — fallback flowing into an `unsafe` call — is guarded by the `never_type_fallback_flowing_into_unsafe` lint, which became **deny-by-default in edition 2024** (Rust 1.92). Because the dangerous case is deny-linted rather than silent, it sits outside this document's "survives the compiler" focus; annotate the type explicitly (`zeroed::<()>()`, `<() as Default>::default()`) when the lint fires.
+- Edition 2024 also changes **`impl Trait` lifetime capture**: a return-position `-> impl Trait` now captures *all* in-scope generic lifetime parameters by default. `fn f<'a>(x: &'a [u8]) -> impl Iterator<Item = u8>` ties the returned iterator to `'a` in edition 2024 where it did not before — a borrow that used to end early now lives as long as the input. Opt out with a precise-capture bound: `+ use<>` (capture nothing) or `+ use<'b, T>` (capture only what you name). On a 2021→2024 migration this silently changes how long the return value borrows its input (this is the §B1b lifetime-leaking shape arriving via edition migration).
+
+**REQUIRED**:
+- On any 2021→2024 edition migration, run `cargo fix --edition`, then manually review every `tail_expr_drop_order` warning (no autofix) and every `if let … else` that holds a lock guard or other RAII type in its scrutinee.
+- For lock guards specifically, bind the guard to a `let` with an explicit scope rather than relying on a temporary's lifetime — that makes the drop point edition-independent. See §B9 (lock order) and §B2 (guard across `.await`).

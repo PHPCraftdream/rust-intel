@@ -110,6 +110,6 @@ This is now the top of the value-per-cost order. The two items below are also **
 
 ## Open questions
 
-- ~~Should `rust-intel.md` be split into per-tier files, or is the current density still net-positive?~~ **Resolved: one `SKILL.md`.** Claude Code's install mechanism copies a single file, so per-tier splitting is off the table. The answer to density is *internal* consolidation — dedup duplicate rows and the §B15a–e sub-sections — not more files.
+- ~~Should `rust-intel.md` be split into per-tier files, or is the current density still net-positive?~~ **Resolved (v0.3.x): split into a modular skill.** `SKILL.md` holds the core (protocols, enforcement tiers, trigger table, category→module map); per-theme modules under `skill/` hold the category bodies. A Claude Code skill is a *directory* (SKILL.md + supporting files loaded on demand), so single-file install was never the real constraint. The single-file `rust-intel.md` reference was retired — the modules are now the one source of truth. Split is by theme (so most cross-references fall inside a module), with tier kept as a per-category label.
 - Do human-readable artifacts (README, CHANGELOG, roadmap) need a Russian translation, or is English enough alongside the English spec?
 - What's the right versioning granularity: each new category = minor, or batch them?
