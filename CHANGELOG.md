@@ -6,6 +6,24 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.3.2] — 2026-06-09
+
+Content additions from a study of Microsoft's *Rust Patterns & Engineering How-Tos* training book, filtered hard through the spec's grounding bar (most of the book is either already covered, deliberately out-of-scope because the compiler catches it — e.g. `&` to a `repr(packed)` field is now the hard error `E0793` — or general style that does not clear the "systematic LLM mistake" test). Four additions survived; all are **within-category sub-sections / body expansions**, so the headline count stays **51** (sub-sections are counted under their parent, like §B1a/b, §B4a, §B15a–e).
+
+### Added
+
+- **§C1a — missing `#[non_exhaustive]` on a published API's enums/structs** (`lifetimes-and-api.md`, 🟡). Author-side semver rule: a public enum/struct (especially an **error enum**) in a *published* crate without `#[non_exhaustive]` makes adding a variant/field a major break on consumer CI. Includes the struct-literal-construction cost (ship a constructor) and calibration (published-lib only; not for closed types; not retroactive). Complements the existing consumer-side §B6.
+- **§B18a — variance & `PhantomData` soundness in raw-pointer wrappers** (`unsafe-and-ffi.md`, 🔴). Wrong/absent `PhantomData` on a hand-written `*const T`/`*mut T`/`NonNull<T>` type silently picks the wrong variance (covariance where invariance is needed → use-after-free with no `unsafe` at the call site), drop-check, or auto-traits. The hole is in the *type declaration*, not any `unsafe` block, so a per-block `// SAFETY:` (§B5) cannot catch it — hence its own 🔴 check, with `PhantomData`-selection guidance and a `compile_fail`-doctest recommendation.
+
+### Changed
+
+- **§B4 expanded** (`drop-and-raii.md`) with three drop hazards: (1) the **memory-vs-resource fork at process exit** — memory-only `Drop` (a huge tree/map/arena) is wasted work at shutdown and may be skipped via `mem::forget`/`process::exit`, while resource-cleanup `Drop` must still run (resolves the apparent tension with the existing `process::exit`-skips-Drop ban); (2) **recursive auto-`Drop` overflows the stack** on deep self-owning structures (the §B7 DoS shape via the destructor) — write an iterative `Drop`; (3) the **drop-order shutdown deadlock** (a `JoinHandle` joined before its `Sender` closes → `join()` blocks forever) made concrete with the field/local drop-order rule and fix.
+- **§B5 gained the unsafe→safe boundary principle** (`unsafe-and-ffi.md`): split invariants into **value-invariants** (runtime-checkable → a total fallible `&[u8] → Result<Typed, _>` constructor that runs *on the bytes before minting the type* and never panics on adversarial input) and **relational invariants** (lifetime/aliasing/provenance/`Send` — not runtime-checkable; the only defense is the upstream `// SAFETY:` proof + correct variance/markers). §B18a is the concrete relational-class special case.
+- **`SKILL.md`** — trigger table and code-pattern table gained rows for all four additions; the 🔴 enforcement list gained §B18a; the category→module map now shows §C1 (a) and §B18 (a); the scope note now distinguishes safe-code variance (compile-caught, out of scope) from §B18a unsafe variance soundness (not caught).
+- **`docs/sources.md`** — added normative references (the Rustonomicon variance/PhantomData/dropck chapters, the Cargo Book SemVer chapter, the Rust Reference destructors page, the `from_utf8`/`TryFromBytes`/`Pod` constructors) plus the Microsoft RustTraining book for provenance.
+
+---
+
 ## [0.3.1] — 2026-05-31
 
 Structural repackaging — **no rule changes, no category changes** (still **51**). The single-file spec was split into a **modular skill**: `SKILL.md` (core — scope, blocking protocol, operating mode, enforcement tiers, the trigger table, version pins, and a new **category→module map**) plus nine theme modules under `skill/` holding the category bodies. Motivation: a single ~50k-token file overloads a reviewing/auditing agent — it loses detail mid-document; per-module files let one agent go deep on one theme.

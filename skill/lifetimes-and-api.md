@@ -1,6 +1,6 @@
 # Rust Intel — Lifetimes & Public API Surface
 
-> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B1, §C1, §A3. Tier labels (🔴/🟡/🟢; A–E) and all cross-references are preserved verbatim.
+> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B1, §C1 (and §C1a), §A3. Tier labels (🔴/🟡/🟢; A–E) and all cross-references are preserved verbatim.
 
 ---
 
@@ -75,6 +75,22 @@ pub fn parse<'a>(source: &'a str) -> Document<'a> { ... }
 - For any public trait being added, explicitly state in a comment whether it is sealed or open to external impl.
 - Respect orphan rules: never `impl ForeignTrait for ForeignType`. Use the newtype pattern: `pub struct MyWrapper(pub Foreign);`.
 - For **zero-cost** newtypes, prefer `#[repr(transparent)] pub struct MyWrapper(Foreign);` — this guarantees the same layout, size, and alignment as `Foreign`, so it can be transmuted to/from `Foreign` (with the usual `// SAFETY:` discipline) and crosses FFI boundaries identically. Without `#[repr(transparent)]`, the layout is `#[repr(Rust)]` (per §B5: stable attribute, unspecified layout) and you have *no* guarantee that the wrapper is a pure compile-time fiction — even for a single-field struct, the compiler is technically free to add padding or change alignment.
+
+## §C1a. Missing `#[non_exhaustive]` on a published API's enums and structs
+
+**The trap**: a public `enum` or `struct` in a *published* crate, declared without `#[non_exhaustive]`, freezes its shape into the semver contract. Adding a variant or a field later is a **major** breaking change: downstream `match` arms stop being exhaustive (a hard compile error in consumer crates) and downstream struct-literal construction breaks. The author's crate compiles fine; the break surfaces on consumer CI — exactly the §C1 delayed-blast pattern. LLMs reliably omit the attribute, most damagingly on **error enums**, which are the types downstream code matches on most. (This is the author-side rule; §B6 covers the *consumer* side — treating someone else's enum as if it were `#[non_exhaustive]`.)
+
+**REQUIRED in a published library** (not bin / internal / workspace-private crates):
+- Mark a public `enum` — especially an error or protocol/event enum — `#[non_exhaustive]` when future variants are plausible, which is the default assumption for those kinds.
+- Mark a public `struct` `#[non_exhaustive]` when future fields are plausible. This forbids downstream struct-literal construction (`Foo { a, b }`), so **ship a constructor or builder** (`Foo::new(...)`) at the same time — otherwise the type is unconstructable by consumers.
+- Accept the cost: downstream must write a wildcard arm (`_ => …`) and `..` in patterns. That cost *is* the feature — it buys the right to grow the type without a major version bump.
+
+**Calibration — do not slap it on everything**:
+- Only the **public** surface of a **published** crate. In a binary, an internal module, or a workspace-private crate there is no external consumer, so the attribute is pure friction — skip it.
+- Not for genuinely closed types whose shape is complete by definition (`enum Direction { North, South, East, West }`, a fixed `struct Rgb { r, g, b }`). Forcing a `_ =>` arm on a type that will never grow only hides real non-exhaustiveness bugs.
+- It is **not** retroactive insurance: adding `#[non_exhaustive]` to an *already-published* exhaustive type is itself a breaking change. Decide at first publication, flag the decision inline (at write time).
+
+This is the §C1/§A3 semver discipline applied to a type's *data shape* rather than its impls or visibility: every detail of a `pub` type's shape is a commitment unless you opt out of it up front.
 
 ## §A3. `pub` as a hammer for `E0603`
 

@@ -4,9 +4,9 @@ description: Hard rules for writing Rust in code that already compiles and passe
 
 # Rust Intel — Defense Against LLM Failure Modes
 
-**Scope, stated up front.** This spec assumes your code already compiles. It assumes `cargo test` is green. That is not enough. The categories below cover the failure modes that survive `rustc`, `clippy`, and the test suite, and only manifest as production incidents, semver breakage, performance collapse under load, or silent data corruption. Compilation-only failures (lifetime variance, trait bound mismatch, GAT lifetime bound errors, object-safety violations through generic methods, cyclic workspace deps, `?` in `main`, HRTB depth, recursive macro limits, self-referential structs in safe Rust, `no_std` reflexive `std::*` imports, `From`/`Into` cycles) are deliberately omitted — `rustc` already catches them and the LLM cannot ship them. This spec covers what ships anyway.
+**Scope, stated up front.** This spec assumes your code already compiles. It assumes `cargo test` is green. That is not enough. The categories below cover the failure modes that survive `rustc`, `clippy`, and the test suite, and only manifest as production incidents, semver breakage, performance collapse under load, or silent data corruption. Compilation-only failures (lifetime variance *in safe code*, trait bound mismatch, GAT lifetime bound errors, object-safety violations through generic methods, cyclic workspace deps, `?` in `main`, HRTB depth, recursive macro limits, self-referential structs in safe Rust, `no_std` reflexive `std::*` imports, `From`/`Into` cycles) are deliberately omitted — `rustc` already catches them and the LLM cannot ship them. (Exception: variance **soundness** in `unsafe` raw-pointer wrappers is *not* caught by the compiler — that is §B18a, and it is in-scope.) This spec covers what ships anyway.
 
-The **fifty-one categories** (held in this skill's theme modules — see the category→module map below) rest on an empirical base — a published 6-month field report on ~80k LOC of production LLM-generated Rust, academic benchmarks (RustEvo², SafeTrans, CRUST-Bench, SafeGenBench, Rust-SWE-Bench, AkiraRust), the error distribution observed across Claude/GPT/Cursor through 2025–2026, and real supply-chain incidents (CrateDepression 2022, `faster_log`/`async_println` 2025). (The count is of numbered categories; §B1, §B4, and §B15 split into lettered sub-sections — §B1a/b, §B4a, §B15a–e — that are referenced and triggered individually but counted under their parent.) Citations, URLs, sample sizes, and every percentage live in [`docs/sources.md`](docs/sources.md); load it alongside this file when a figure is load-bearing. The category→module map below is the index; the category bodies live in the theme modules, not in this file.
+The **fifty-one categories** (held in this skill's theme modules — see the category→module map below) rest on an empirical base — a published 6-month field report on ~80k LOC of production LLM-generated Rust, academic benchmarks (RustEvo², SafeTrans, CRUST-Bench, SafeGenBench, Rust-SWE-Bench, AkiraRust), the error distribution observed across Claude/GPT/Cursor through 2025–2026, and real supply-chain incidents (CrateDepression 2022, `faster_log`/`async_println` 2025). (The count is of numbered categories; §B1, §B4, §B15, §B18, and §C1 split into lettered sub-sections — §B1a/b, §B4a, §B15a–e, §B18a, §C1a — that are referenced and triggered individually but counted under their parent.) Citations, URLs, sample sizes, and every percentage live in [`docs/sources.md`](docs/sources.md); load it alongside this file when a figure is load-bearing. The category→module map below is the index; the category bodies live in the theme modules, not in this file.
 
 Industry signal: per Faros AI and Lightrun studies (2026), shifting from low to high AI adoption more than doubles the incidents-to-PR ratio, and 43% of AI-generated code changes need debugging in production; among surveyed engineering leaders, zero rated themselves "very confident" that AI-generated code behaves correctly once deployed. (These figures concern AI-generated code in general, not Rust specifically — see docs/sources.md.) This is the empirical context this document defends against.
 
@@ -97,6 +97,7 @@ Treating all 51 categories as equally critical produces noise that buries the fe
 - §B13 (the `Relaxed`-publish data race only — invisible to x86 tests, breaks on ARM; the broader check-then-act/TOCTOU body of §B13 is 🟡, applied at write time)
 - §B14 `unbounded_channel` / unbounded `FuturesUnordered`
 - §B18 manual `unsafe impl Send`/`Sync`
+- §B18a wrong / absent `PhantomData` on a raw-pointer wrapper (covariance where invariance is needed → UAF; a relational invariant no runtime guard can catch)
 - §B21 a `tokio::spawn` whose `JoinHandle` is dropped
 - §B22 `impl Drop` doing async work
 - §B24 `==` on secret material
@@ -155,11 +156,13 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "with timeout", "select!", "cancel", "race two futures", "first one wins" | §B3 cancel safety; §B23 select arm side effects | Silent partial state, no cancel-safe annotation; side effect on losing arm broken by cancellation |
 | "transaction", "rollback", "commit" | §B4 Drop and RAII | Library-specific Drop semantics on commit failure |
 | "migrate to edition 2024", "if let with a lock", "guard in if-let/else" | §B4a edition-2024 drop order | temporary drop point shifted; deadlock silently appears/disappears |
-| "fast", "zero-copy", "performance", "parse bytes", "from network" | §B5 unsafe UB | `ptr::read` on unaligned buffers |
+| "fast", "zero-copy", "performance", "parse bytes", "from network" | §B5 unsafe UB | `ptr::read` on unaligned buffers; validate raw bytes → `Result` before minting a typed value |
+| "transmute bytes to a struct", "reinterpret bytes", "from_bytes", "cast bytes to type", "parse a binary header" | §B5 unsafe→safe boundary | validate bytes → `Result` *before* minting the type (`from_utf8`/`TryFromBytes`/`Pod`), never `transmute` then check; relational invariants (lifetime/aliasing/provenance) have no runtime guard |
 | "fix this borrow error", "make this compile", "lifetime issue" | §C5 reflexive clone | `.clone()` as silencer of real ownership problem |
 | "implement trait for any T", "generic Display", "blanket impl" | §C1 semver hazard | Open blanket impl in public API |
 | "buffer of size N" where N is large | §B7 stack overflow | `[u8; N]` by value or `Box::new([0u8; N])` |
 | "parse this", "convert from string" | §C2 error handling | `.unwrap()` instead of typed error |
+| "define an error type", "error enum", "thiserror", "library error" | §C1a non_exhaustive; §C2 error handling | a published error enum without `#[non_exhaustive]` → adding a variant is a semver-major break downstream |
 | "use the latest version of X", "modern Y" | §A1 API hallucinations | Memory of pre-cutoff API for fast-evolving crates |
 | Code involves crate version 0.x | §A1 pre-1.0 churn | Breaking changes between minor versions |
 | "lock the X and the Y", "two shared resources", "atomic update across two" | §B9 ABBA deadlock | Locks acquired in opposite orders |
@@ -167,7 +170,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "read a file", "make HTTP request", "sleep", "wait N seconds" in async context | §B11 blocking executor | `std::fs`/`std::thread::sleep` in `async fn` |
 | "add this dependency", "use crate X for Y", "what crate should I use" | §A1 slopsquatting | Hallucinated crate name → supply-chain attack |
 | "encrypt", "decrypt", "hash a password", "JWT", "TLS", "sign this", "AES", "AEAD" | §B12 crypto insecurity | Nonce reuse, weak primitives, hallucinated crypto API |
-| "public API", "library", "publish to crates.io", "what should the signature be" | §B1 lifetime leaking; §C1 blanket impls | `'a` in public signatures, semver hazards |
+| "public API", "library", "publish to crates.io", "what should the signature be" | §B1 lifetime leaking; §C1 blanket impls; §C1a non_exhaustive | `'a` in public signatures, semver hazards; adding an enum variant / struct field is a major break without `#[non_exhaustive]` |
 | "lazy cache", "memoize", "compute if absent", "deduplicate concurrent requests", "ensure only once" | §B13 TOCTOU | `contains_key` + `insert` race; should be `entry().or_insert_with` |
 | "background worker", "event queue", "log pipeline", "broadcast to subscribers", "producer-consumer" | §B14 unbounded queue | `unbounded_channel` instead of bounded + backpressure policy |
 | "trait with async method", "trait Foo { async fn ... }", "trait object" | §B15a AFIT/RPITIT | Missing `+ Send` bound, not spawn-able; for a `dyn` async trait, not dyn-compatible without `async-trait` |
@@ -183,10 +186,11 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "compare token", "verify signature", "check password hash", "verify MAC", "validate HMAC" | §B24 timing attack | `==` on secret material is a network-observable side channel |
 | "deserialize JSON", "parse config", "load YAML", "decode payload" | §B20 serde field-presence | `null` vs absent collapse; `untagged` variant overlap |
 | "tracing span", "log context", "instrument", "correlation id" | §C9 span leakage | `tokio::spawn` without `.in_current_span()` |
-| "close connection", "shutdown gracefully", "flush buffer", "drain on exit" | §B4 Drop semantics; §B22 async Drop is not real | Library-specific Drop; async cleanup in `Drop::drop` |
+| "close connection", "shutdown gracefully", "flush buffer", "drain on exit" | §B4 Drop semantics; §B22 async Drop is not real | Library-specific Drop; async cleanup in `Drop::drop`; drop-order deadlock (`JoinHandle` joined before `Sender` closed) |
 | "workspace", "shared crate", "feature unification", "internal feature" | §C10 workspace unification | dev-dep features unify into a normal dep only in builds that pull dev targets (resolver v2); they leak into a plain release build only under resolver v1 |
 | "channel", "mpsc", "broadcast", "queue", "fan-out", "fan-in" | §C8 channel/runtime mismatch; §B14 backpressure | Wrong channel kind for the runtime + unbounded default |
 | "shared mutable state", "interior mutability", "shared between callbacks" | §A2 smart pointer; §B17 reentrant borrow; §B18 manual Send/Sync | Reflexive `Arc<Mutex<T>>`; reentrant `RefCell`; `unsafe impl Send` |
+| "PhantomData", "raw pointer wrapper", "*const/*mut field", "make my type Send", "covariant/invariant", "NonNull wrapper" | §B18a variance/`PhantomData`; §B18 manual Send/Sync | wrong / absent `PhantomData` → covariance where invariance is needed → UAF with no `unsafe` at the call site |
 | "wrap a type", "thin wrapper", "extension type", "augment an existing struct" | §C11 Deref antipattern; §C1 newtype + `repr(transparent)` | Fake inheritance via `Deref`; missing `#[repr(transparent)]` |
 | "async cleanup", "destructor closes resource", "RAII for async resource" | §B22 async Drop is not real | `tokio::spawn` from `Drop`; `block_on` from `Drop` |
 | "spawn a task", "background task", "fire and forget", "spawn and forget", "send notification", "log this event async" | §B21 JoinHandle semantics; §B8 silent task drop; §C9 span leakage | Dropped `JoinHandle` ≠ abort; forgotten `.await` (future never polled); missing `.in_current_span()` |
@@ -200,6 +204,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "FFI", "bindgen", "C library", "extern C", "native bindings", "wrap a C API" | §B25 FFI ABI; §B5 unsafe | Panic across `extern "C"`; allocator mismatch on `Box::from_raw`; `cap`-mismatched `Vec::from_raw_parts` |
 | "every N seconds", "periodically", "on a timer", "scheduled tick" | §B15e interval first-tick | first tick is immediate; the default `MissedTickBehavior::Burst` replays missed ticks back-to-back under lag |
 | "exit the program", "bail out", "exit with code", "abort on error" | §B4 process::exit skips Drop | Stack guards (transactions, files, locks) never run their Drop |
+| "exit fast", "teardown", "free on shutdown", "drop a large structure", "destroy the tree/arena/map on exit" | §B4 drop at exit (memory vs resource); §B7 recursive Drop | memory-only `Drop` walking a huge structure stalls exit (skip via `mem::forget`/`process::exit`); resource-cleanup `Drop` must still run; recursive `Drop` on deep input overflows the stack |
 | "wait for signal", "wait until ready", "condition variable", "notify the worker" | §B15e Notify lost-wakeup | Wakeup races with `notify_one` unless armed via `enable()` before the check |
 | "log this struct", "add debug logging", "derive Debug" (on types holding secrets) | §B12 crypto Debug-leak | `{:?}` prints `password`/`token`/`key` fields into logs |
 | "compare floats", "approximately equal", "assert the result is ~X" | §D1 tests by luck | `assert_eq!` on computed `f32`/`f64` flakes across builds/arches |
@@ -243,7 +248,11 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | Manual `impl PartialEq` or `impl Ord` on a type used as `HashMap`/`BTreeMap` key | §B16 (Eq/Hash contract) |
 | `tokio::select! { ... }` with side effects inside any arm body | §B23 (arm side effects) |
 | `tokio::spawn` inside a function with an active `tracing::Span` | §C9 (span leakage) |
-| `mem::transmute`, `ptr::read`, `slice::from_raw_parts` | §B5 (UB-prone unsafe) |
+| `mem::transmute`, `ptr::read`, `slice::from_raw_parts` | §B5 (UB-prone unsafe; validate bytes → `Result` before minting the typed value, never mint-then-check) |
+| a hand-written type with a `*const T` / `*mut T` / `NonNull<T>` field, or a by-hand `PhantomData<...>` | §B18a (variance / `PhantomData` soundness — covariance where invariance is needed → UAF), §B18 |
+| a struct holding both a `JoinHandle` (or `thread::JoinHandle`) and the `mpsc::Sender` that feeds its worker | §B4 (drop-order shutdown deadlock — close/drop the `Sender` before the join) |
+| a self-owning recursive type (`Box<Self>` linked list, deep `Box<Node>` tree) on the auto-derived `Drop` | §B4 / §B7 (recursive `Drop` overflows the stack on deep input — write an iterative `Drop`) |
+| `pub enum` / `pub struct` (especially an error enum) in a published library without `#[non_exhaustive]` | §C1a (adding a variant / field is a semver-major break downstream) |
 | `Box::new([0u8; N])` where `N` is large | §B7 (stack overflow before placement) |
 | `Vec::with_capacity(n)` / `vec![_; n]` / `reserve(n)` / `String::with_capacity(n)` where `n` is from untrusted input | §B7 (attacker-controlled allocation size) |
 | `extern "C" fn` body, `#[no_mangle]`, `Box::into_raw`/`Box::from_raw`, `Vec::from_raw_parts` | §B25 (FFI ABI and ownership), §B5 (UB-prone unsafe) |
@@ -299,11 +308,11 @@ The category bodies live in sibling modules of this skill. When a trigger above 
 | §B1 (a, b) | `lifetimes-and-api.md` |
 | §B2, §B3, §B8, §B11, §B15 (a–e), §B21, §B22, §B23 | `async.md` |
 | §B4 (a) | `drop-and-raii.md` |
-| §B5, §B7, §B18, §B25 | `unsafe-and-ffi.md` |
+| §B5, §B7, §B18 (a), §B25 | `unsafe-and-ffi.md` |
 | §B6, §B16, §B20, §B26, §B27, §B28, §B29 | `data-and-types.md` |
 | §B9, §B10, §B13, §B14, §B17, §B19 | `concurrency-and-state.md` |
 | §B12, §B24 | `security.md` |
-| §C1 | `lifetimes-and-api.md` |
+| §C1 (a) | `lifetimes-and-api.md` |
 | §C2 | `security.md` |
 | §C3, §C9 | `async.md` |
 | §C4 | `data-and-types.md` |
