@@ -23,7 +23,7 @@
   };  // guard dropped here
   some_async_op(value).await
   ```
-- Run `cargo clippy` after writing async code touching locks. `clippy::await_holding_lock` is **warn-by-default** (it lives in the `suspicious` group), so the bare `cargo clippy` already emits it — the explicit `-W clippy::await_holding_lock` in the Post-flight command is belt-and-suspenders, not a requirement. (It still misses guards hidden in closures / `if let` / early-return blocks — see the ~30% catch rate above.)
+- Run `cargo clippy` after writing async code touching locks. `clippy::await_holding_lock` is **warn-by-default** (it lives in the `suspicious` group), so the bare `cargo clippy` already emits it — the explicit `-W clippy::await_holding_lock` in the Post-flight command is belt-and-suspenders, not a requirement (and on a 1.50–1.60 toolchain it is *required* — see the version pin). It still has the ~30% catch-rate blind spots noted above, so clippy passing is not proof of absence.
 
 **Related anti-pattern: Mutex poisoning cascade.** When a thread panics while holding a `Mutex`, the Mutex is "poisoned": all subsequent `.lock().unwrap()` calls panic too. LLMs copy `.lock().unwrap()` from std/serde examples without considering poisoning. One unrelated panic in production cascades into every code path that touches that Mutex.
 
@@ -148,7 +148,7 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 **REQUIRED**:
 - Pick the construct deliberately and state it in a comment on the trait: `// AFIT (no Send)`, `// RPITIT + Send`, `// trait-variant`, or `// async-trait (dyn)`.
 - Note each async-returning trait method inline (at write time), with the syntax used and whether `Send` is bounded.
-- Never describe RPITIT as "AFIT with a Send bound" in source code. AFIT desugars into RPITIT internally, but the trait's *written* syntax determines what bounds you can express — pick the form deliberately.
+- Never describe RPITIT as "AFIT with a Send bound" in source comments — pick the form deliberately (the desugar-vs-written-syntax reason is in the terminology note at the top of this sub-category).
 
 ### §B15b. Manual futures machinery (Pin, Waker)
 

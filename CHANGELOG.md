@@ -6,6 +6,25 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.3.3] — 2026-06-10
+
+Accuracy pass — a completeness/correctness audit against the high-level Rust hazard map plus a version-date re-verification against primary sources. **No category changes** (still **51**); these are factual fixes and small clarifications to existing bodies.
+
+### Fixed (factual / dating)
+
+- **`SKILL.md` version pins — `clippy::await_holding_lock` group history.** Previously claimed "warn-by-default (suspicious group) since clippy 1.45". Corrected: introduced in 1.45 (`correctness`, deny), downgraded to `pedantic` (allow) around 1.50, promoted to `suspicious` (warn-by-default) only in **Rust 1.61** — so on a 1.50–1.60 toolchain the bare `cargo clippy` does *not* emit it and the explicit `-W` is required. The present-day "bare clippy emits it" claim was already right; only the dating was wrong.
+- **`SKILL.md` MSRV floor `1.84` → `1.85`.** Edition 2024 (which the spec targets) stabilized in **Rust 1.85**; a crate with `edition = "2024"` cannot build on 1.84, so the stated floor was internally contradictory. The strict-provenance API (stable 1.84) is subsumed by the 1.85 floor. The `Vec::into_raw_parts` pin's "MSRV floor is 1.84" line updated to match.
+- **§B4a (`drop-and-raii.md`) — `never_type_fallback_flowing_into_unsafe` dating.** Previously "deny-by-default in edition 2024 (Rust 1.92)". Corrected: warn-by-default in all editions since **1.80**, deny-by-default in edition 2024, which stabilized in **Rust 1.85**. "1.92" was phantom precision.
+- **§C7 (`deps-macros-ergonomics.md`) — target-specific feature unification.** The "`features = [...]` activates globally, not per-target (cargo#2524)" claim is **resolver v1** behavior. Under resolver v2 (default since edition 2021; the spec targets 2024) target-specific dependency features are not enabled for targets not being built. Now version-qualified and consistent with §C10's v1/v2 split.
+
+### Changed (clarity)
+
+- **§B9 (`concurrency-and-state.md`)** — note that `parking_lot::deadlock::check_deadlock()` requires the `deadlock_detection` cargo feature (the module is absent without it).
+- **§B12 (`security.md`)** — flagged that `rust-crypto` (in the API-hallucination example list) is itself unmaintained since 2016 (RUSTSEC-2022-0011) and must never be *proposed*; pointed to the maintained `RustCrypto` crates.
+- **§B2 / §B15a (`async.md`)** — trimmed two internal duplications (the `await_holding_lock` blind-spot list; the RPITIT-vs-AFIT desugar explanation) to single statements with back-references.
+
+---
+
 ## [0.3.2] — 2026-06-09
 
 Content additions from a study of Microsoft's *Rust Patterns & Engineering How-Tos* training book, filtered hard through the spec's grounding bar (most of the book is either already covered, deliberately out-of-scope because the compiler catches it — e.g. `&` to a `repr(packed)` field is now the hard error `E0793` — or general style that does not clear the "systematic LLM mistake" test). Four additions survived; all are **within-category sub-sections / body expansions**, so the headline count stays **51** (sub-sections are counted under their parent, like §B1a/b, §B4a, §B15a–e).

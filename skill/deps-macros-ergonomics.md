@@ -81,7 +81,7 @@ Concrete defenses:
 - Every `feature` in `Cargo.toml` is mirrored exactly in every `#[cfg(feature = "...")]`. Names are case-sensitive and exact.
 - Avoid feature-gated `pub` fields in structs — they break the public API between feature combinations. If a field is conditional, the whole struct or the whole module should be conditional.
 - Test the full feature matrix in CI: `cargo hack --feature-powerset check` or equivalent, at least for libraries.
-- For platform-conditional dependencies with features (`[target.'cfg(...)'.dependencies]`), be aware that `features = [...]` activates globally per Cargo's resolution, not per-target — this is a known Cargo gotcha (see cargo#2524).
+- For platform-conditional dependencies with features (`[target.'cfg(...)'.dependencies]`), the resolver version matters (mirror of §C10). Under **resolver v1** (default before edition 2021) `features = [...]` on a target-specific dependency activated *globally*, even for targets not being built — the cargo#2524 gotcha. **Resolver v2** (default since edition 2021; this spec targets 2024) fixes it: per the Cargo book, "features for target-specific dependencies are not enabled if the target is not currently being built." So on a 2021+/v2 project the global-activation surprise no longer applies; it resurfaces only if a crate is pinned to `resolver = "1"` or pre-2021 edition. Verify your `resolver` before relying on either behavior.
 
 ## §C10. Workspace feature unification surprises
 

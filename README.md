@@ -18,6 +18,8 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ## Status
 
+**v0.3.3 — accuracy pass (2026-06-10).** Factual/dating fixes (F1–F4): `clippy::await_holding_lock` group history corrected, MSRV 1.84→1.85, §C7 resolver v1/v2 qualification, `never_type_fallback` dating 1.92→1.85. Three minor clarifications (§B2, §B9, §B12, §B15a). No category changes (still **51**). See [`CHANGELOG.md`](CHANGELOG.md).
+
 **v0.3.2 — four content additions (2026-06-09).** From a study of Microsoft's *Rust Patterns & Engineering How-Tos*: §C1a (`#[non_exhaustive]` producer-side semver rule, 🟡), §B18a (variance/`PhantomData` soundness in raw-pointer wrappers, 🔴), expanded §B4 (memory-vs-resource `Drop` at exit, recursive `Drop` stack overflow, drop-order shutdown deadlock), and §B5 (unsafe→safe boundary principle: value-invariant guards vs relational invariants). Still **51** categories (sub-sections counted under parent). See [`CHANGELOG.md`](CHANGELOG.md).
 
 **v0.3.1 — structural repackaging (2026-05-31).** The single-file spec is now a **modular skill**: `SKILL.md` (core — protocols, enforcement tiers, the trigger table, and a category→module map) plus nine theme modules under `skill/` holding the category bodies. No rule or category changes (still **51**) — content is byte-complete vs 0.3.0. `SKILL.md` also tells the agent to run a full audit/review by **fanning out one sub-agent per module** (via a workflow) instead of holding all categories in one context. Installers ship the modules; the single-file reference is retired (kept in git history). See [`CHANGELOG.md`](CHANGELOG.md).

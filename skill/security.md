@@ -12,7 +12,7 @@
 
 **Specifically dangerous patterns**:
 - **Nonce reuse**: hardcoded nonce, nonce derived from a counter that resets, nonce equal to the message ID. Reusing a nonce with the same key in AES-GCM or ChaCha20-Poly1305 is catastrophic — recovers plaintext or forges authentication.
-- **API hallucination in crypto crates**: invented methods on `ring`, `rust-crypto`, `aes-gcm`, `chacha20poly1305`. Crypto-API names look interchangeable to the LLM but have very different security properties.
+- **API hallucination in crypto crates**: invented methods on `ring`, `rust-crypto`, `aes-gcm`, `chacha20poly1305`. Crypto-API names look interchangeable to the LLM but have very different security properties. (Note `rust-crypto` itself is **unmaintained since 2016** — RUSTSEC-2022-0011 — and must never be *proposed*; it appears in this list only as a name LLMs hallucinate methods on. Use the maintained `RustCrypto` org crates — `aes-gcm`, `sha2`, etc. — instead.)
 - **Weak parameter choices**: ECB mode (which the LLM may select because it's "simpler"), 64-bit nonces with random generation (birthday-bound collision), insufficient PBKDF2 iterations.
 - **Mixing primitives across security levels**: using SHA-1 alongside AES-256, or pairing a strong cipher with a weak MAC.
 - **Custom crypto code**: hand-rolling any cryptographic primitive in Rust. Almost always wrong.

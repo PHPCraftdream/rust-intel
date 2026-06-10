@@ -37,14 +37,14 @@
 - Use a consistent lock ordering across the entire crate. Common conventions: alphabetical by name, by declaration order in the struct, by a numeric rank field.
 - Prefer fine-grained immutable data + message passing (`mpsc`, `oneshot`) over multi-lock critical sections when possible.
 - When two locks must be held, take them **in the documented order, every time, without exception**.
-- For async code, prefer `tokio::sync::Mutex`. Deadlock *detection* is not automatic with this choice: `tokio-console` provides **visibility** (you can see which task holds which lock and which is waiting), not detection. Detection of cycles must be wired explicitly — `parking_lot::deadlock::check_deadlock()` for sync sections, periodic graph audit of the documented lock-acquisition order for async sections. The async `Mutex` itself gives no deadlock signal on its own.
+- For async code, prefer `tokio::sync::Mutex`. Deadlock *detection* is not automatic with this choice: `tokio-console` provides **visibility** (you can see which task holds which lock and which is waiting), not detection. Detection of cycles must be wired explicitly — `parking_lot::deadlock::check_deadlock()` for sync sections (requires the `deadlock_detection` cargo feature on `parking_lot`; the module does not exist without it), periodic graph audit of the documented lock-acquisition order for async sections. The async `Mutex` itself gives no deadlock signal on its own.
 
 **BANNED**:
 - Holding two locks across a function call (the called function may acquire locks in another order).
 - Acquiring a second lock while holding the first if the second one's acquisition can block on async work or I/O.
 - "Just try locking" patterns with `try_lock` to escape suspected deadlocks — that hides the design problem. This bans the *reflex*, not the technique: `try_lock` + backoff with a documented retry policy is a legitimate hierarchical-locking / backoff design; what is banned is reflexive `try_lock` as an escape from a deadlock you have not actually diagnosed.
 
-**Detection**: add `tokio-console` for runtime visibility, or `parking_lot::deadlock` detection in dev builds. Note each double-lock site inline (at write time).
+**Detection**: add `tokio-console` for runtime visibility, or `parking_lot::deadlock` detection in dev builds (gated behind `parking_lot`'s `deadlock_detection` feature). Note each double-lock site inline (at write time).
 
 ## §B10. Reference cycles in `Rc`/`Arc` graphs
 
