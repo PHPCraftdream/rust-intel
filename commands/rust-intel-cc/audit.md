@@ -23,6 +23,8 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
    - If a directory: every `*.rs` recursively, excluding `target/`.
    - Skip generated code (`OUT_DIR`, `build.rs` output).
 
+   **Fan-out preferred for broad scope.** For a whole-crate or directory scope, prefer the fan-out workflow from the skill's "Running a full pass" section — the shipped `audit-project.workflow.js` (one agent per module, async split into two). The serial walk below is the fallback for a single file or when the Workflow tool is unavailable.
+
 4. **Walk every category in the skill.** Iterate from §A1 through the final §E category (§E6) as enumerated in the `rust-intel` skill. For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness. Note that Tier E is a different axis — systemic cost (performance), not correctness — and is entirely 🟡/🟢, never 🔴.
 
 5. **For every finding, produce:**

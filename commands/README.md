@@ -5,7 +5,7 @@ Thin commands built on top of the `rust-intel` skill. All of them rely on **one*
 ## Architectural principle
 
 ```
-skill/ (SKILL.md core + theme modules)  ──  knowledge (categories, BANNED/REQUIRED, checklists)
+skill/ (SKILL.md core + theme modules + audit-project.workflow.js)  ──  knowledge + fan-out audit process
        ▲
        │ invoke skill
        │
@@ -14,8 +14,8 @@ skill/ (SKILL.md core + theme modules)  ──  knowledge (categories, BANNED/RE
 └────────────────┴──────────────┴─────────────────┘
 ```
 
-- **Knowledge** lives in the skill — edit once, every command sees the change immediately.
-- **Process** lives per command — what to scan, what to output, what to ask.
+- **Knowledge** lives in the skill modules — edit once, every command sees the change immediately.
+- **Process** lives per command (serial audit) and in `audit-project.workflow.js` (fan-out audit, one agent per module).
 
 If a command wants a new rule, the rule lands in the relevant `skill/` module, not in the command file. Duplication of knowledge is forbidden by design.
 
@@ -49,7 +49,7 @@ rust-cc-install.bat
 rust-cc-install.bat -User
 ```
 
-The installer also handles the skill (`skill/*.md` → `skills/rust-intel/`, modular) and sweeps every prior layout at the target — v0.2.1+ flat-with-prefix, v0.2.0 namespace dir, and the v0.1.x flat-no-prefix layout.
+The installer also handles the skill (`skill/*.md` + `*.js` → `skills/rust-intel/`, modular) and sweeps every prior layout at the target — v0.2.1+ flat-with-prefix, v0.2.0 namespace dir, and the v0.1.x flat-no-prefix layout.
 
 ## Dependency on the skill
 

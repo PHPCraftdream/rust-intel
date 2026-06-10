@@ -18,6 +18,8 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ## Status
 
+**v0.4.0 — fan-out audit workflow (2026-06-10).** Shipped `audit-project.workflow.js` — one agent per module, async split into two, runtime slicing of trigger tables (zero duplication), structured findings schema, synthesized `/rust-cc-audit` report. Module headers enriched with tier badges + audit semantics. `audit.md` gains fan-out-preferred note. Installers deliver the workflow. See [`CHANGELOG.md`](CHANGELOG.md).
+
 **v0.3.3 — accuracy pass (2026-06-10).** Factual/dating fixes (F1–F4): `clippy::await_holding_lock` group history corrected, MSRV 1.84→1.85, §C7 resolver v1/v2 qualification, `never_type_fallback` dating 1.92→1.85. Three minor clarifications (§B2, §B9, §B12, §B15a). No category changes (still **51**). See [`CHANGELOG.md`](CHANGELOG.md).
 
 **v0.3.2 — four content additions (2026-06-09).** From a study of Microsoft's *Rust Patterns & Engineering How-Tos*: §C1a (`#[non_exhaustive]` producer-side semver rule, 🟡), §B18a (variance/`PhantomData` soundness in raw-pointer wrappers, 🔴), expanded §B4 (memory-vs-resource `Drop` at exit, recursive `Drop` stack overflow, drop-order shutdown deadlock), and §B5 (unsafe→safe boundary principle: value-invariant guards vs relational invariants). Still **51** categories (sub-sections counted under parent). See [`CHANGELOG.md`](CHANGELOG.md).
@@ -32,7 +34,8 @@ The exact category count is given in the spec itself; the count is allowed to ev
 rust-intel/
 ├── skill/                              # The skill (this is what installs) — modular
 │   ├── SKILL.md                        # Core: protocols, enforcement tiers, trigger table, category→module map
-│   └── <theme>.md                      # Theme modules (async, unsafe-and-ffi, security, … — the category bodies)
+│   ├── <theme>.md                      # Theme modules (async, unsafe-and-ffi, security, … — the category bodies)
+│   └── audit-project.workflow.js       # Fan-out project audit (one agent per module)
 ├── README.md                           # This file
 ├── CHANGELOG.md                        # Version history
 ├── .gitattributes                      # Line-ending rules (LF for source, CRLF for .ps1/.bat)

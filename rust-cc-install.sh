@@ -31,7 +31,7 @@ With --user:               \$HOME/.claude/  (user-global).
 If \$CLAUDE_CONFIG_DIR is set, it overrides both.
 
 Installs the modular skill (the single-file rust-intel.md reference is NOT installed):
-  skill/*.md  (SKILL.md + theme modules)  -> <target>/skills/rust-intel/
+  skill/*.md + *.js  (SKILL.md + theme modules + workflow)  -> <target>/skills/rust-intel/
   commands/rust-intel-cc/audit.md         -> <target>/commands/rust-cc-audit.md
   commands/rust-intel-cc/fix.md           -> <target>/commands/rust-cc-fix.md
   commands/rust-intel-cc/plan.md          -> <target>/commands/rust-cc-plan.md
@@ -125,6 +125,7 @@ install_file() {
 for skill_file in "$REPO_DIR"/skill/*.md; do
     install_file "$skill_file" "$SKILL_DIR/$(basename "$skill_file")"
 done
+install_file "$REPO_DIR/skill/audit-project.workflow.js" "$SKILL_DIR/audit-project.workflow.js"
 install_file "$REPO_DIR/commands/rust-intel-cc/audit.md"     "$COMMANDS_DIR/rust-cc-audit.md"
 install_file "$REPO_DIR/commands/rust-intel-cc/fix.md"       "$COMMANDS_DIR/rust-cc-fix.md"
 install_file "$REPO_DIR/commands/rust-intel-cc/plan.md"      "$COMMANDS_DIR/rust-cc-plan.md"

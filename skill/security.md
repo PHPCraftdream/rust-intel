@@ -1,6 +1,8 @@
 # Rust Intel — Security (crypto, timing attacks, error/path/command/SQL injection)
 
 > Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B12, §B24, §C2. Tier labels (🔴/🟡/🟢; A–E) and all cross-references are preserved verbatim.
+> **Tiers in this module:** §B12 🔴 · §B24 🔴 · §C2 🟡. Derived from SKILL.md → Enforcement tiers (canonical).
+> **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
 ---
 

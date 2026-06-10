@@ -6,6 +6,21 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.4.0] — 2026-06-10
+
+Fan-out audit workflow + module header enrichment for agent audit ergonomics. **No category changes** (still **51**).
+
+### Added
+
+- **`skill/audit-project.workflow.js`** — shipped fan-out workflow for auditing a Rust project against the skill. One agent per module (async splits into two: await-discipline vs machinery/cost), with a Prepare phase that slices SKILL.md's trigger tables at runtime (zero knowledge duplication), structured FINDINGS_SCHEMA per agent, and a Synthesize phase that merges into the `/rust-cc-audit` report format with a Post-flight 🔴-summary. Closes G1 (trigger-table slicing), G3 (canonical finding schema), G5 (artifact-vs-process semantics), G6 (async split). Launched via `Workflow({scriptPath: '<skill-dir>/audit-project.workflow.js', args: {target, skillDir}})`.
+- **Module headers enriched (all 9 theme modules).** Each module's blockquote header now carries a `Tiers in this module` line (derived from SKILL.md's Enforcement tiers — the canonical source) and an `Audit semantics` line (🔴/🟡/🟢 meaning + artifact-vs-process rule). Closes G2 (tier badges) and G4 (dangling operational references).
+
+### Changed
+
+- **`skill/SKILL.md` — "Running a full pass" section** now points to the shipped `audit-project.workflow.js` instead of telling the reader to "write the equivalent fan-out". `dev/review-modules.workflow.js` (maintainer self-review) reference preserved.
+- **`commands/rust-intel-cc/audit.md` — step 4** gains a "Fan-out preferred for broad scope" note directing to the workflow for whole-crate audits (serial walk remains the single-file fallback). Closes G7.
+- **Installers** (`rust-cc-install.sh`, `rust-cc-install.ps1`) now copy `audit-project.workflow.js` alongside the `*.md` modules.
+
 ## [0.3.3] — 2026-06-10
 
 Accuracy pass — a completeness/correctness audit against the high-level Rust hazard map plus a version-date re-verification against primary sources. **No category changes** (still **51**); these are factual fixes and small clarifications to existing bodies.

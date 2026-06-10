@@ -1,6 +1,8 @@
 # Rust Intel — Drop Order & RAII (incl. edition-2024 drop scope)
 
 > Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B4 (and §B4a). The async-Drop case is §B22 in `async.md`. Tier labels (🔴/🟡/🟢; A–E) and all cross-references are preserved verbatim.
+> **Tiers in this module:** §B4 🟡 · §B4a 🟡. Derived from SKILL.md → Enforcement tiers (canonical).
+> **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
 ---
 

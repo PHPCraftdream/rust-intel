@@ -1,6 +1,8 @@
 # Rust Intel — Data, Types, Numerics & Iterators (serde, Eq/Hash, numeric, strings, allocation/complexity cost)
 
 > Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B6, §B16, §B20, §B26, §B27, §B28, §B29, §C4, §E2, §E3. Tier labels (🔴/🟡/🟢; A–E) and all cross-references are preserved verbatim.
+> **Tiers in this module:** §B6 🟡 · §B16 🟡 · §B20 🟡 · §B26 🟡 (narrowing as — 🟢 except trust boundary) · §B27 🟡 · §B28 🟡 · §B29 🟡 · §C4 🟡 · §E2 🟡/🟢 · §E3 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
+> **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
 ---
 

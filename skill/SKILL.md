@@ -30,7 +30,7 @@ This skill is split into modules (see the **category→module map** below): each
 - each agent goes deep on its small slice and returns structured findings;
 - a final synthesis agent merges, dedups, and prioritizes.
 
-This is the intended way to apply the skill at scale: **don't do it all yourself — delegate one agent per section.** A single trigger firing, or one category match, still applies **inline** — no workflow needed; fan out only for a full or broad pass. (A ready maintainer workflow that reviews this skill's own modules lives at `dev/review-modules.workflow.js`; for auditing a codebase, write the equivalent fan-out — one agent per module against the target code.)
+This is the intended way to apply the skill at scale: **don't do it all yourself — delegate one agent per section.** A single trigger firing, or one category match, still applies **inline** — no workflow needed; fan out only for a full or broad pass. (A ready maintainer workflow that reviews this skill's own modules lives at `dev/review-modules.workflow.js`.) For **auditing a codebase**, a ready fan-out workflow ships with this skill: `audit-project.workflow.js` (sibling of this file). Launch it via `Workflow({scriptPath: '<skill-dir>/audit-project.workflow.js', args: {target: '<path>', skillDir: '<skill-dir>'}})`. It reads SKILL.md at runtime to slice the trigger tables per module (zero knowledge duplication), splits the async module into two agents (await-discipline vs machinery/cost), and synthesizes findings in the `/rust-cc-audit` report format. If the Workflow tool is unavailable, write the equivalent fan-out manually via the Agent tool — one agent per module listed in the category map above.
 
 ---
 
