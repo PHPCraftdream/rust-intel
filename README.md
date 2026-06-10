@@ -18,6 +18,8 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ## Status
 
+**v0.4.1 — Tier F semantic conformance (2026-06-10).** Added Tier F (§F1–§F4): defects of *meaning* — code that compiles, passes tests, implements the wrong thing. Plus §D1a (oracle validity) and §D3 (test/prod divergence). **51 → 56 categories, 5 → 6 tiers (A–F).** See [`CHANGELOG.md`](CHANGELOG.md).
+
 **v0.4.0 — fan-out audit workflow (2026-06-10).** Shipped `audit-project.workflow.js` — one agent per module, async split into two, runtime slicing of trigger tables (zero duplication), structured findings schema, synthesized `/rust-cc-audit` report. Module headers enriched with tier badges + audit semantics. `audit.md` gains fan-out-preferred note. Installers deliver the workflow. See [`CHANGELOG.md`](CHANGELOG.md).
 
 **v0.3.3 — accuracy pass (2026-06-10).** Factual/dating fixes (F1–F4): `clippy::await_holding_lock` group history corrected, MSRV 1.84→1.85, §C7 resolver v1/v2 qualification, `never_type_fallback` dating 1.92→1.85. Three minor clarifications (§B2, §B9, §B12, §B15a). No category changes (still **51**). See [`CHANGELOG.md`](CHANGELOG.md).
@@ -104,7 +106,7 @@ Only touches the paths the installer creates. Other skills and commands under th
 
 ### Verify
 
-Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§E6 unprompted. Try:
+Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§F4 unprompted. Try:
 
 ```
 /rust-cc-audit src/
@@ -130,7 +132,7 @@ Details: [`commands/README.md`](commands/README.md).
 
 ## Spec architecture
 
-Five tiers plus a meta-layer:
+Six tiers plus a meta-layer:
 
 | Tier | Coverage | Categories |
 |---|---|---|
@@ -138,10 +140,11 @@ Five tiers plus a meta-layer:
 | **Tier A** | Compile-fix reflexes that leave silent residue — the LLM "fixes" the red squiggle in a way that compiles while leaving a real defect behind | §A1–§A3 |
 | **Tier B** | Silent correctness bugs, caught only in production | §B1–§B29 |
 | **Tier C** | Architecture and ergonomics, expensive to undo | §C1–§C11 |
-| **Tier D** | Testing and CI gaps — tests pass not because the code is correct but because the tests are blind | §D1, §D2 |
+| **Tier D** | Testing and CI gaps — tests pass not because the code is correct but because the tests are blind | §D1–§D3 |
 | **Tier E** | Systemic cost (performance / scale / contention) — correct in the small, wrong at scale — cost that survives correctness; enforced 🟡/🟢, never 🔴 | §E1–§E6 |
+| **Tier F** | Semantic conformance — defects of *meaning*: spec/reference divergence, violated documented guarantees, boundary/error-path resource lifecycle, missing round-trip obligations. Found by reading the *claim*, not by pattern-matching | §F1–§F4 |
 
-The A/B/C/D tiers classify *what kind* of bug a category targets. Orthogonally, the spec's **Enforcement tiers** (🔴 surface-always / may block · 🟡 apply silently while writing · 🟢 delegate to clippy) say *how strictly* to act on each — so a post-flight summary stays short and every line is worth acting on, instead of flagging every cast and clone. See the "Enforcement tiers" section in the spec.
+The A/B/C/D/F tiers classify *what kind* of bug a category targets. Orthogonally, the spec's **Enforcement tiers** (🔴 surface-always / may block · 🟡 apply silently while writing · 🟢 delegate to clippy) say *how strictly* to act on each — so a post-flight summary stays short and every line is worth acting on, instead of flagging every cast and clone. See the "Enforcement tiers" section in the spec.
 
 A Tier A category for trait bounds / type mismatches (E0277/E0308) was present in earlier drafts and retired in v0.3.0: compile-only failures are out of scope, the compiler is sufficient. The remaining Tier A categories were renumbered to close the gap.
 

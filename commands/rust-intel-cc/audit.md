@@ -25,7 +25,7 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
 
    **Fan-out preferred for broad scope.** For a whole-crate or directory scope, prefer the fan-out workflow from the skill's "Running a full pass" section — the shipped `audit-project.workflow.js` (one agent per module, async split into two). The serial walk below is the fallback for a single file or when the Workflow tool is unavailable.
 
-4. **Walk every category in the skill.** Iterate from §A1 through the final §E category (§E6) as enumerated in the `rust-intel` skill. For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness. Note that Tier E is a different axis — systemic cost (performance), not correctness — and is entirely 🟡/🟢, never 🔴.
+4. **Walk every category in the skill.** Iterate from §A1 through the final Tier F category (§F4) as enumerated in the `rust-intel` skill. For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness. Note that Tier E is a different axis — systemic cost (performance), not correctness — and is entirely 🟡/🟢, never 🔴. Tier F is reviewed with a different stance (see the skill's "Tier F — how to review for meaning"): first obtain the named spec/reference and the project's own guarantee-bearing docs (README, SECURITY.md, design docs), extract the mandated behaviors/guarantees into a checklist, then check the code against that list — enumerate, don't sample. If a claimed reference is unavailable, report "conformance to <X> not verified — reference not available" as a finding.
 
 5. **For every finding, produce:**
    - **Category:** `§XN — name`
@@ -37,7 +37,7 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
 
 6. **Report grouping:**
    - By severity (critical → info).
-   - Inside a severity, by tier (A → B → C → D → E).
+   - Inside a severity, by tier (A → B → C → D → E → F).
    - End with a Post-flight summary in the spec's canonical form: surface **only** the 🔴-tier occurrences — see the `rust-intel` skill's *Enforcement tiers* for the canonical list (it is the single source; do not duplicate it here). Do not enumerate 🟢-tier items (`unwrap`/`expect`, `clone_on_copy`, narrowing `as` casts, etc.) — those are left to clippy. Non-🔴 antipatterns surfaced as individual findings above stay there; they are not re-aggregated into the summary. Tier E (systemic cost / perf) is entirely 🟡/🟢, so it never surfaces in the Post-flight summary either — perf findings appear as ordinary findings above, like any other non-🔴 antipattern.
 
 ## Report format
@@ -95,6 +95,8 @@ Surface **only** the 🔴-tier occurrences — see the `rust-intel` skill's *Enf
 - `extern "C"` / `Box::from_raw` / `from_raw_parts` (§B25): none
 - `Pin::new_unchecked` (§B15b): none
 - Blanket impl in a public API (§C1): none
+- Spec / documented-guarantee divergence on a wire format, security guarantee, or persisted data (§F1/§F2): none
+- Leaked / unclosed boundary resource an untrusted peer can hold open (§F3): none
 ```
 
 ## Behavioral principles

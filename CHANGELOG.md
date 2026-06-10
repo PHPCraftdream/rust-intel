@@ -6,6 +6,31 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.4.1] — 2026-06-10
+
+**Tier F — Semantic conformance** (new tier, 4 categories) plus two testing additions: **51 → 56 categories**. Defects of *meaning* — code that compiles, passes its own tests and clippy, and implements the wrong thing. Unlike Tiers A–E these are not found by pattern-matching; the reviewer reads the *claim* (spec, README, function name) and checks the code against it counterfactually.
+
+### Added
+
+- **`skill/semantics-and-conformance.md`** — new (10th) theme module holding Tier F:
+  - **§F1 Spec / reference conformance** — the code names an external source of truth (RFC, format, "port of X") and diverges from it; both halves of a round-trip can share the same misreading, so self-round-trip is not conformance. BANNED: implementing a named spec from memory; `_ =>` absorbing spec-mandated states; undocumented deviations. REQUIRED: cite the reference at the implementation site, test against external vectors/the reference implementation, enumerate spec states before checking. 🔴 when the divergence affects a wire format, security guarantee, or persisted data; 🟡 otherwise.
+  - **§F2 Documented guarantees** — the project's own README/SECURITY.md/design docs state guarantees in prose ("tokens are never logged", "this port is untrusted") and a locally-reasonable diff violates one. The doc, not the call graph, defines the trust boundary; a Tier-F review that cites no project doc has not performed §F2. Same 🔴/🟡 split as §F1.
+  - **§F3 Boundary / error-path resource lifecycle** — cleanup reachable from fewer paths than the acquisition (early-`?` leaks), no read deadline on an untrusted peer (connect-then-silence DoS), `Ok(0)`-EOF mishandling, proxy shutdown propagation, per-connection sibling tasks not aborted on every exit. 🟡; 🔴 when the leak is attacker-extendable.
+  - **§F4 Round-trip obligations for inverse pairs** — `encode`/`decode`, `parse`/`Display`, `encrypt`/`decrypt` written together but never proven inverse over the domain; one `proptest` round-trip property per pair, shipped in the same change; knows the difference between `decode(encode(x)) == x` and the canonical-form law. 🟡.
+- **`skill/testing.md` — §D1a Oracle validity** (sub-section of §D1): the circular oracle (test written from the implementation; snapshot-blessing a new implementation), the world-erasing stub (in-memory transport hiding fragmentation/partial reads), and the missing negative control (a test that passes with the fix reverted is not evidence). The audit-mode counterfactual: *what mutation would this test catch?*
+- **`skill/testing.md` — §D3 Test/prod divergence**: `cargo test` runs debug profile, toy sizes, single-task — production runs release, real scale, real concurrency. Release-profile CI run when arithmetic/`debug_assert!` is load-bearing; one boundary-scale test per documented limit; `loom`/stress for concurrency claims. (§B26 owns the debug-vs-release fixes; §D3 is its testing-side enforcement plus the scale and concurrency axes.)
+- **`skill/SKILL.md`** — "Tier F — how to review for meaning" stance section (fetch the reference first; reason counterfactually; enumerate, don't sample; read the project's promises as a checklist); 6 phrase-trigger + 7 code-pattern rows for §F1–§F4/§D1a/§D3; conditional 🔴 entries for §F1/§F2 (wire format / security guarantee / persisted data) and §F3 (attacker-extendable); pre-flight grows 7 → 9 (reference claim check; inverse-pair round-trip obligation); category count and map updated (56; §D1 (a), §D3; §F1–§F4 → `semantics-and-conformance.md`).
+- **`skill/audit-project.workflow.js`** — 11th audit agent (`semantics`); the scoper now inventories guarantee-bearing docs (`docsFiles`) and extracts a verbatim guarantee/spec-claim digest (`docsDigest`); only the semantics agent receives the digest — §F1/§F2 are unauditable from source alone.
+- **`docs/sources.md`** — "Semantic conformance & test-oracle validity" section grounding the new categories on the Tier E precedent (normative/methodological, no numeric claims): RFC test-vector practice (RFC 8439 §2.8.2) for §F1; QuickCheck (ICFP 2000) + the proptest book round-trip for §F4; mutation testing / `cargo-mutants` for §D1a; CWE-404/772/400 + slowloris-class and the std/tokio `Ok(0)`-EOF contracts for §F3; Cargo Book profile defaults + `loom` for §D3; §F2 marked definitional. CRUST-Bench "Used in" extended with the external-oracle premise (§F1/§D1a).
+
+### Changed (conformance pass on the addition itself)
+
+- **`commands/rust-intel-cc/audit.md` — Tier F was invisible to `/rust-cc-audit`** (recurrence of the v0.3.x "Tier D invisible" bug, caught in review this time): the category walk stopped at §E6 and grouping stopped at E. Now walks §A1 → §F4, groups A → … → E → F, carries the Tier F review stance (obtain reference + project docs first, enumerate, report unavailable references), and the Post-flight illustrative list gains the two conditional-🔴 Tier F lines.
+- **`commands/rust-intel-cc/fix.md`** — routing table gains six symptom rows: green-on-pre-fix-code → §D1a; works-in-tests-breaks-in-prod → §D3; interop-fails-against-real-peer → §F1; behavior-contradicts-README → §F2; connection/FD leak on error paths / stalled-peer pin → §F3; round-trip corrupts on special characters → §F4.
+- **`skill/SKILL.md`** — the fan-out section's theme enumeration now includes semantics/conformance (was missing the 10th theme).
+- **`skill/semantics-and-conformance.md`** — header tier-line aligned to the other modules' template ("Derived from SKILL.md → Enforcement tiers (canonical)").
+- **`README.md`** — six tiers + Tier F row in the spec-architecture table; Verify range §A1–§F4.
+
 ## [0.4.0] — 2026-06-10
 
 Fan-out audit workflow + module header enrichment for agent audit ergonomics. **No category changes** (still **51**).

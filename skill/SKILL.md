@@ -1,28 +1,29 @@
 ---
-description: Hard rules for writing Rust in code that already compiles and passes tests but is silently broken, slow, or semver-fragile. Load this BEFORE writing any Rust code. Targets bugs that survive rustc, clippy, and cargo test but fail in production or rot the codebase. Covers async, unsafe, FFI, concurrency, crypto, supply-chain, tests-that-pass-by-luck, and systemic performance-at-scale hazards.
+description: Hard rules for writing Rust in code that already compiles and passes tests but is silently broken, slow, or semver-fragile. Load this BEFORE writing any Rust code. Targets bugs that survive rustc, clippy, and cargo test but fail in production or rot the codebase. Covers async, unsafe, FFI, concurrency, crypto, supply-chain, tests-that-pass-by-luck, and systemic performance-at-scale hazards. Also covers semantic-conformance defects: spec divergence, violated documented guarantees, boundary/error-path resource lifecycle, missing round-trip obligations, and invalid test oracles.
 ---
 
 # Rust Intel — Defense Against LLM Failure Modes
 
 **Scope, stated up front.** This spec assumes your code already compiles. It assumes `cargo test` is green. That is not enough. The categories below cover the failure modes that survive `rustc`, `clippy`, and the test suite, and only manifest as production incidents, semver breakage, performance collapse under load, or silent data corruption. Compilation-only failures (lifetime variance *in safe code*, trait bound mismatch, GAT lifetime bound errors, object-safety violations through generic methods, cyclic workspace deps, `?` in `main`, HRTB depth, recursive macro limits, self-referential structs in safe Rust, `no_std` reflexive `std::*` imports, `From`/`Into` cycles) are deliberately omitted — `rustc` already catches them and the LLM cannot ship them. (Exception: variance **soundness** in `unsafe` raw-pointer wrappers is *not* caught by the compiler — that is §B18a, and it is in-scope.) This spec covers what ships anyway.
 
-The **fifty-one categories** (held in this skill's theme modules — see the category→module map below) rest on an empirical base — a published 6-month field report on ~80k LOC of production LLM-generated Rust, academic benchmarks (RustEvo², SafeTrans, CRUST-Bench, SafeGenBench, Rust-SWE-Bench, AkiraRust), the error distribution observed across Claude/GPT/Cursor through 2025–2026, and real supply-chain incidents (CrateDepression 2022, `faster_log`/`async_println` 2025). (The count is of numbered categories; §B1, §B4, §B15, §B18, and §C1 split into lettered sub-sections — §B1a/b, §B4a, §B15a–e, §B18a, §C1a — that are referenced and triggered individually but counted under their parent.) Citations, URLs, sample sizes, and every percentage live in [`docs/sources.md`](docs/sources.md); load it alongside this file when a figure is load-bearing. The category→module map below is the index; the category bodies live in the theme modules, not in this file.
+The **fifty-six categories** (held in this skill's theme modules — see the category→module map below) rest on an empirical base — a published 6-month field report on ~80k LOC of production LLM-generated Rust, academic benchmarks (RustEvo², SafeTrans, CRUST-Bench, SafeGenBench, Rust-SWE-Bench, AkiraRust), the error distribution observed across Claude/GPT/Cursor through 2025–2026, and real supply-chain incidents (CrateDepression 2022, `faster_log`/`async_println` 2025). (The count is of numbered categories; §B1, §B4, §B15, §B18, §C1, and §D1 split into lettered sub-sections — §B1a/b, §B4a, §B15a–e, §B18a, §C1a, §D1a — that are referenced and triggered individually but counted under their parent.) Citations, URLs, sample sizes, and every percentage live in [`docs/sources.md`](docs/sources.md); load it alongside this file when a figure is load-bearing. The category→module map below is the index; the category bodies live in the theme modules, not in this file.
 
 Industry signal: per Faros AI and Lightrun studies (2026), shifting from low to high AI adoption more than doubles the incidents-to-PR ratio, and 43% of AI-generated code changes need debugging in production; among surveyed engineering leaders, zero rated themselves "very confident" that AI-generated code behaves correctly once deployed. (These figures concern AI-generated code in general, not Rust specifically — see docs/sources.md.) This is the empirical context this document defends against.
 
-The categories split into **five tiers and a meta-layer**, listed below:
+The categories split into **six tiers and a meta-layer**, listed below:
 - **Self-monitoring**: a triggers table (phrase- *and* code-pattern-based) that maps user-request patterns to risk categories. Scanned before generating code.
 - **Tier A — Compile-fix reflexes that leave silent residue (§A1, §A2, §A3)**: not "the compiler caught it and you fixed it correctly", but "the compiler caught it and the cheapest fix compiles while leaving a real defect behind". Stale-but-valid APIs, supply-chain via slopsquatting, reflexive `Arc<Mutex<T>>`, `pub` as a hammer for `E0603` that silently expands the public API.
 - **Tier B — Silent correctness bugs (§B1–§B29)**: pass compilation, often pass tests, fail in production. This is where the spec lives. Includes UB, async pitfalls (basic and advanced), lock ordering, memory leaks, silent task dropping, cryptographic insecurity, TOCTOU races, backpressure neglect, Mutex poisoning, equality/hash contracts, runtime borrow panics, manual `Send`/`Sync`, iterator invalidation through indirection, `serde` field-presence drift, `JoinHandle` semantics, the async-`Drop` impossibility, `select!` side-effect cancellation, timing-attack-prone equality on secrets, panic / ownership across `extern "C"` FFI, lossy numeric conversions, wall-clock vs monotonic time, and UTF-8 string-boundary hazards.
 - **Tier C — Architecture and ergonomics (§C1–§C11)**: design-level mistakes that are expensive to undo. Reflexive `.clone()`, procedural macro hygiene, Cargo feature flag hygiene, channel-and-runtime mismatch, `tracing` span leakage, workspace feature unification, `Deref` polymorphism.
-- **Tier D — Testing and CI gaps (§D1–§D2)**: code passes tests not because it's correct but because the tests are blind. Timing-based async tests, `#[should_panic]` without `expected`, unit-vs-integration placement drift.
+- **Tier D — Testing and CI gaps (§D1–§D3)**: code passes tests not because it's correct but because the tests are blind. Timing-based async tests, `#[should_panic]` without `expected`, unit-vs-integration placement drift, test/prod divergence of build profile, scale, and concurrency.
 - **Tier E — Systemic cost (§E1–§E6)**: correct in the small, wrong at scale — performance, allocation, complexity, and contention costs that survive `rustc`/`clippy`/tests and only bite under load. A different axis from A–D (cost, not correctness); enforced 🟡/🟢, never 🔴.
+- **Tier F — Semantic conformance (§F1–§F4)**: defects of *meaning*, not mechanism. The code is self-consistent, compiles, passes its own tests and clippy — and implements the wrong thing: it diverges from the named spec or reference implementation, contradicts the project's own documented guarantees, mishandles the boundary/error-path lifecycle of a connection or resource, or ships an encode/decode pair with no round-trip obligation. No grep finds these; they are found by reading the *claim* (RFC, README, function name, doc comment) and checking the code against it counterfactually. Reviewer stance for this tier is different — see "Tier F — how to review for meaning" below.
 
 ---
 
 ## Running a full pass — one agent per module, not one agent for everything
 
-This skill is split into modules (see the **category→module map** below): each theme — async, unsafe/FFI, concurrency, data/types, security, drop/RAII, deps/macros, lifetimes/API, testing — is its own file. For a **full-coverage pass** — auditing a codebase against every category, or reviewing/analyzing this skill itself — do **not** pull all modules into one context and grind through them serially. A single agent holding all ~51 categories loses detail and misses findings — the very overload this skill warns about, turned on itself.
+This skill is split into modules (see the **category→module map** below): each theme — async, unsafe/FFI, concurrency, data/types, security, drop/RAII, deps/macros, lifetimes/API, testing, semantics/conformance — is its own file. For a **full-coverage pass** — auditing a codebase against every category, or reviewing/analyzing this skill itself — do **not** pull all modules into one context and grind through them serially. A single agent holding all ~56 categories loses detail and misses findings — the very overload this skill warns about, turned on itself.
 
 **Instead, fan out — one agent per module — using the Workflow tool:**
 - spawn one sub-agent per module listed in the category→module map;
@@ -88,7 +89,7 @@ Whenever this command is loaded, before generating any Rust code I will:
 
 # Enforcement tiers — not every rule is equal
 
-Treating all 51 categories as equally critical produces noise that buries the few findings that matter. Apply rules at one of three tiers:
+Treating all 56 categories as equally critical produces noise that buries the few findings that matter. Apply rules at one of three tiers:
 
 **🔴 Surface-always / may block.** High blast-radius, often irreversible, invisible to tooling. Always list every occurrence in the summary; for crypto and unsafe-with-unstated-invariants, block and ask rather than guess (see Blocking protocol). These are:
 - §A1 adding an unverified / unnamed dependency (slopsquatting — runs malicious code)
@@ -104,6 +105,8 @@ Treating all 51 categories as equally critical produces noise that buries the fe
 - §B25 `extern "C"` boundary / `Box::from_raw` / `from_raw_parts`
 - §B15b `Pin::new_unchecked`
 - §C1 blanket impl in the public API of a **published** library (semver hazard; not a concern for bin/internal crates)
+- §F1 / §F2 a spec or documented-guarantee divergence affecting a wire format, security guarantee, or persisted data (silent, ecosystem-visible, hard to roll back — 🟡 otherwise; see "Tier F — how to review for meaning")
+- §F3 a leaked / unclosed boundary resource an untrusted peer can hold open (DoS — 🟡 otherwise)
 
 **🟢 Delegate to clippy — do not hand-check or re-surface.** The toolchain already catches these; just run the linter (see Post-flight) and trust it:
 - narrowing `as` casts → `clippy::cast_possible_truncation` (pedantic). **Caveat:** a narrowing cast *on a trust boundary* (`len() as u32`, a cast applied to untrusted/network input) is surfaced even when `pedantic`/clippy is off — the truncation there is a correctness/security bug, not a style nit (see §B26 — the trust-boundary narrowing-cast bullet).
@@ -114,6 +117,22 @@ Treating all 51 categories as equally critical produces noise that buries the fe
 **🟡 Apply while writing — don't spam the summary.** Everything else. Write the code correctly the first time per the category, but do not list every `+`, `clone`, cast, or `sort_unstable` as a "finding" — that is the noise this tier exists to prevent. Surface one of these only when it is genuinely load-bearing or you are unsure. **Inline-flag policy (canonical):** when a category body says to "flag/note X inline (at write time)", it means a one-line comment at the construct, *not* a summary entry — and only when the construct is non-obvious or load-bearing. This is the single definition; the per-category reminders point back here. All of **Tier E (§E1–§E6)** lives here too — it is a 🟡/🟢 tier on a different axis (systemic cost, not correctness) and nothing in it is ever 🔴: apply 🟡 on hot / per-request paths and let 🟢 (`clippy::perf`) catch the obvious waste.
 
 The goal: a summary a human can read in ten seconds, where every line is worth acting on.
+
+---
+
+# Tier F — how to review for meaning, not mechanism
+
+Tiers A–E are reviewed by *pattern recognition*: see the construct, recall the hazard. Tier F cannot be reviewed that way — the defective code contains no suspicious construct. The reviewer's stance changes in four ways:
+
+1. **Fetch the reference before reading the code.** If the code names a spec, RFC, file format, protocol, or upstream implementation ("port of", "compatible with"), that name is a *claim*. Obtain the claimed source of truth — the RFC section, the reference implementation's relevant function, the project's own README/docs — and review the code *against it*, not against its internal consistency. If the reference is unavailable, say so explicitly: "conformance to <X> not verified — reference not available" is a finding, silence is not.
+
+2. **Reason counterfactually, not confirmatorily.** For each guarantee (documented or implied by a name): construct the concrete input or interleaving that would violate it if the code were wrong, and trace the code on *that* input. "I read the code and it looks like it does X" is confirmation; "if it failed to do X, input Y would expose it — here is what the code does on Y" is verification. For tests, the counterfactual is mandatory: would this test fail if the fix were reverted / the bug reintroduced? If you cannot name the mutation the test would catch, the test is not evidence (§D1a).
+
+3. **Enumerate, don't sample.** Spec conformance is a totality property: a state machine that handles 9 of 10 spec-mandated states is non-conformant, and reading the 9 handled ones proves nothing. List the spec's required states / message types / error codes / edge cases *first*, then tick them off against the code. The omission is the bug — invisible to pattern-matching, found only by enumeration.
+
+4. **Read the project's own promises as a checklist.** Before reviewing a diff in a project with a README/SECURITY.md/design doc, extract its stated guarantees (what is secret, what input is untrusted, what is durable, what ordering is promised) into an explicit list and check the diff against each. A reviewer who has not read the docs structurally *cannot* find §F2 defects — this step is not optional for Tier F.
+
+Severity: §F1/§F2 findings are 🔴 when the divergence affects a wire format, a security guarantee, or persisted data (silent, ecosystem-visible, hard to roll back); otherwise 🟡. §F3 is 🟡 (🔴 when the leaked/unclosed resource is attacker-extendable — an untrusted peer holding tasks open is a DoS). §F4 is 🟡 — required at write time for every inverse pair, surfaced when absent.
 
 ---
 
@@ -231,6 +250,12 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "extract a crate", "split into a library", "new workspace member", "make this its own crate" | §C10 crate boundaries | premature extraction freezes an unproven API (§C1) and forces version/feature coordination |
 | "benchmark this", "lock in the speedup", "guard against regression" | §E6 measure | a `criterion` regression bench turns a measured win into a standing invariant |
 | "zip two lists", "iterate two sequences together", "deduplicate a vec", "split into chunks of N", "chunk size from config" | §B29 iterator/slice traps | `zip` truncates to shorter; `dedup` only adjacent; `chunks(0)`/`windows(0)`/`step_by(0)` panic; `collect` into map overwrites dup keys |
+| "implement RFC/spec X", "wire format", "protocol", "compatible with Y", "port of Z", "parser for <named format>" | §F1 spec conformance | code self-consistent but diverges from the named reference: wrong field order/width, incomplete state machine, edge cases the spec mandates and the code omits |
+| "per our README", "as documented", "the docs say", task touches code whose crate README/docs state guarantees (threat model, what counts as untrusted, durability/ordering promises) | §F2 documented guarantees | code silently violates a guarantee stated only in prose — never visible without reading the project docs first |
+| "proxy", "relay", "tunnel", "forward bytes", "handle the connection", "graceful EOF", "half-close" | §F3 boundary lifecycle; §B14 backpressure; §C4 partial read/write | error/EOF path leaks the peer socket, no read timeout on an untrusted remote, early-`?` skips the release, no shutdown propagation |
+| "encode and decode", "serialize/deserialize pair", "parse and Display", "to_string and from_str", "encrypt/decrypt", "pack/unpack" | §F4 round-trip obligation | the pair is written together, tested separately (or against each other only), and `decode(encode(x)) == x` is never established over the full input domain |
+| "write tests for this", "add a mock/stub/fake", "in-memory implementation for tests", "test against a fixture" | §D1a oracle validity | the oracle is the code itself: test written from the implementation, stub hides real-world conditions (stream fragmentation, reordering), no negative control |
+| "it works in tests but fails in prod", "load test", "real data sizes", "production traffic" | §D3 test/prod divergence; §B26 debug-vs-release | tests run debug profile, toy sizes, single-threaded — release profile, real scale, and real concurrency are an untested configuration |
 
 **Triggered by code, not phrase** — when the user's input *contains code that matches any of these patterns*, the linked categories activate even if no English phrase fires:
 
@@ -291,6 +316,13 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `Arc<Mutex<T>>` whose `T` is read-mostly / swapped wholesale / never mutably shared | §E4 (lock is contention — `ArcSwap`/atomic/`Arc<T>`), §A2, §B2 |
 | `assert_eq!(SOME_CONST, <same literal>)` / `assert!(true)` / a test that sets a field then asserts the getter | §D1 (vacuous test — assert a postcondition or an external contract, not a tautology) |
 | `.zip(`, `.dedup()`, `.chunks(n)`/`.windows(n)`/`.step_by(n)` with `n` from input (literal sizes are fine), `.collect::<HashMap<_,_>>()` on possibly-duplicate keys | §B29 (truncation / adjacent-only dedup / zero-size panic / dup-key overwrite) |
+| a comment / doc / identifier naming an external standard (`// RFC 9110`, `per the spec`, `Socks5`, `Bencode`, a `mod <protocol-name>`) | §F1 (the name is a conformance *claim* — verify against the reference, not against the code's own tests) |
+| `match` over a protocol state/opcode/message-type enum with a `_ => ` arm, or with fewer arms than the referenced spec defines | §F1 (incomplete state machine — the wildcard silently absorbs spec-mandated states) |
+| a connection/stream handler where the `Err`/early-`?` path does not run the same cleanup as the `Ok` path (no `shutdown`, no guard, cleanup only at fn tail) | §F3 (resource lifecycle on the error path) |
+| `.read(...)` / `read_exact` / `next()` on a remote-peer stream with no surrounding `timeout(...)` and no idle-deadline mechanism | §F3 (untrusted peer can hold the task forever) |
+| an `encode`/`serialize`/`to_*` fn and its `decode`/`parse`/`from_*` inverse in the same crate, with no test calling both in one assertion | §F4 (round-trip obligation untested) |
+| a test module whose only inputs are handcrafted literals mirroring the implementation's branches; an in-memory `impl` of an I/O trait used as the *only* test transport | §D1a (oracle written from the code; stub erases fragmentation/partial-read/reorder realities) |
+| test data sizes ≪ documented/realistic scale (`vec![..; 10]` where prod is millions), single-task tests of code documented as concurrent | §D3 (scale/concurrency divergence) |
 
 When two or more triggers fire in one request, treat it as a high-risk task and explicitly enumerate which categories I'm guarding against in my response.
 
@@ -298,7 +330,7 @@ When two or more triggers fire in one request, treat it as a high-risk task and 
 
 # Category map — which module holds each §
 
-The category bodies live in sibling modules of this skill. When a trigger above fires, open the module named here. Tier (🔴/🟡/🟢; A–E) is a property of each category, preserved in its body.
+The category bodies live in sibling modules of this skill. When a trigger above fires, open the module named here. Tier (🔴/🟡/🟢; A–F) is a property of each category, preserved in its body.
 
 | Category | Module |
 |---|---|
@@ -318,12 +350,13 @@ The category bodies live in sibling modules of this skill. When a trigger above 
 | §C4 | `data-and-types.md` |
 | §C5, §C6, §C7, §C10, §C11 | `deps-macros-ergonomics.md` |
 | §C8 | `concurrency-and-state.md` |
-| §D1, §D2 | `testing.md` |
+| §D1 (a), §D2, §D3 | `testing.md` |
 | §E1 | `async.md` |
 | §E2, §E3 | `data-and-types.md` |
 | §E4 | `concurrency-and-state.md` |
 | §E5 | `deps-macros-ergonomics.md` |
 | §E6 | `testing.md` |
+| §F1, §F2, §F3, §F4 | `semantics-and-conformance.md` |
 
 **Cross-reference note:** a few categories point to a twin in another module (e.g. §B22 async-Drop → §B4 sync Drop; §E4 contention → §A2/§B2/§B13/§B16). These are navigational only — open the named module via this map when you need the twin.
 
@@ -353,7 +386,7 @@ This spec targets **Rust edition 2024, MSRV ≥ 1.85**. (Edition 2024 was stabil
 
 # Pre-flight checklist (run mentally before any non-trivial Rust)
 
-Before writing the code, answer all seven out loud:
+Before writing the code, answer all nine out loud:
 
 1. **Versions**: which exact crate versions am I targeting? Did I read `Cargo.toml` and `CLAUDE.md`?
 2. **APIs**: am I about to call any method I'm not 100% sure exists in the pinned version? If yes, flag it.
@@ -362,6 +395,8 @@ Before writing the code, answer all seven out loud:
 5. **Unsafe**: do I have a stated `// SAFETY:` invariant for each block? Is miri in CI for this file?
 6. **Lifetimes**: if I'm returning a reference, can I write two consecutive call sites with disjoint inputs?
 7. **Public surface**: is anything I'm marking `pub` part of the intended public API? Any blanket impls? Any error types leaking through?
+8. **Reference**: does this code claim conformance to anything external (spec, RFC, format, reference impl, the project's own docs)? If yes — have I read the claimed reference, and can I name the edge cases it mandates? (Tier F)
+9. **Inverse pair**: am I writing one half of an encode/decode, parse/Display, encrypt/decrypt pair? If yes, the round-trip property test ships in the same change (§F4).
 
 If I cannot answer any of these confidently, I ask the user before generating code rather than guessing.
 
@@ -390,7 +425,7 @@ cargo +nightly miri test    # any file touching `unsafe`
 
 When surfacing a 🔴 occurrence, give the "why/how" from its category body — e.g. for a crypto call list library + primitive + params (§B12), for a new dependency give name + version + one-line justification (§A1), for `extern "C"` note the panic/ownership contract (§B25).
 
-Optional for production: `tokio-console` for blocked workers / stuck locks (§B9/§B11), `loom` for multi-lock / atomic model checking (§B9/§B13), `heaptrack` for steady-state memory growth (§B10).
+Optional for production: `tokio-console` for blocked workers / stuck locks (§B9/§B11), `loom` for multi-lock / atomic model checking (§B9/§B13), `heaptrack` for steady-state memory growth (§B10), `cargo-mutants` to check that tests actually fail when the code is mutated (§D1a — the oracle-validity counterfactual, mechanized).
 
 ---
 

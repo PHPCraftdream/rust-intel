@@ -1,6 +1,6 @@
 # Rust Intel — Lifetimes & Public API Surface
 
-> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B1, §C1 (and §C1a), §A3. Tier labels (🔴/🟡/🟢; A–E) and all cross-references are preserved verbatim.
+> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B1, §C1 (and §C1a), §A3. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
 > **Tiers in this module:** §B1a/b 🟡 · §C1 🔴 (blanket impl in pub API of a published library; rest is 🟡) · §C1a 🟡 · §A3 🟡. Derived from SKILL.md → Enforcement tiers (canonical).
 > **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 

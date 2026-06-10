@@ -1,6 +1,6 @@
 # Rust Intel — Dependencies, Macros & Ergonomics (supply-chain, clone, proc-macro, features, workspace, Deref, recompute cost)
 
-> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §A1, §C5, §C6, §C7, §C10, §C11, §E5. Tier labels (🔴/🟡/🟢; A–E) and all cross-references are preserved verbatim.
+> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §A1, §C5, §C6, §C7, §C10, §C11, §E5. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
 > **Tiers in this module:** §A1 🔴 (unverified/unnamed dependency; stale-API remainder is 🟡) · §C5 🟡 · §C6 🟡 · §C7 🟡 (typo'd cfg — 🟢 via unexpected_cfgs) · §C10 🟡 · §C11 🟡 · §E5 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
 > **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 

@@ -25,6 +25,7 @@ const MODULES = [
   'drop-and-raii.md',
   'deps-macros-ergonomics.md',
   'testing.md',
+  'semantics-and-conformance.md',
 ]
 
 const REVIEW_SCHEMA = {

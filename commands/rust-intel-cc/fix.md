@@ -71,6 +71,12 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | `Deref` chain produces unexpected type / inheritance-style API breaks | §C11 |
    | Test passes locally, flakes on CI / `thread::sleep` in test | §D1 |
    | Test in `tests/` cannot compile after refactor | §D2 |
+   | New test is green even with the fix reverted / on pre-fix code; snapshot blessed from a brand-new implementation | §D1a (oracle validity — the oracle is the code itself; add a negative control) |
+   | Works in tests, breaks in prod: wrong arithmetic only in release, timeout only at real data sizes, race only under real concurrency | §D3 (test/prod divergence) — release-wrap → §B26, scale → §E3/§B7, interleaving → §B13/§B9 |
+   | Own tests and round-trip green, but interop with the real peer / reference implementation / published vectors fails | §F1 (spec conformance — both halves share the same misreading; verify against the external oracle) |
+   | Behavior contradicts what README/SECURITY.md/docs promise (token logged, untrusted input trusted, write not durable) | §F2 (documented guarantees — the doc, not the call graph, defines the boundary) |
+   | Connection/FD/gauge leaks on error paths; a peer that connects and stalls pins a task forever; EOF busy-loop or peer never sees close | §F3 (boundary/error-path lifecycle; §B21/§B4 twins; no-timeout read on untrusted peer) |
+   | `parse(display(x))` / `decode(encode(x))` corrupts data on special characters or boundary sizes | §F4 (round-trip law never tested over the domain — add the property test) |
    | Feature never activates, code is dead | §C7 (feature typo) |
    | Slow / high latency under load / high CPU / throughput collapses at scale | §E (systemic cost) — pick the law by shape: serial work → §E1, allocation → §E2, complexity/O(n²) → §E3, lock contention → §E4, recompute/Regex-in-loop → §E5; all under §E6 (measure first) |
    | Two sequential `.await`s / not parallel / CPU-bound stalls the runtime | §E1 (`join!`/`buffer_unordered`/`JoinSet`; `spawn_blocking`/`rayon` for CPU-bound) |

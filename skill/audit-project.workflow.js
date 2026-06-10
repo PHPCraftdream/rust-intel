@@ -34,7 +34,8 @@ const MODULES = [
   { file: 'drop-and-raii.md', categories: ['B4','B4a'] },
   { file: 'deps-macros-ergonomics.md', categories: ['A1','C5','C6','C7','C10','C11','E5'] },
   { file: 'lifetimes-and-api.md', categories: ['B1','B1a','B1b','C1','C1a','A3'] },
-  { file: 'testing.md', categories: ['D1','D2','E6'] },
+  { file: 'testing.md', categories: ['D1','D1a','D2','D3','E6'] },
+  { file: 'semantics-and-conformance.md', categories: ['F1','F2','F3','F4'] },
 ]
 
 // One audit agent per unit. async.md splits into two (discipline vs machinery, G6).
@@ -49,6 +50,8 @@ const AUDIT_UNITS = [
   { module: 'deps-macros-ergonomics.md', label: 'deps-macros' },
   { module: 'lifetimes-and-api.md', label: 'lifetimes-api' },
   { module: 'testing.md', label: 'testing' },
+  // §F1/§F2 need the project's own spec/README/docs, not just source — see scoper docsFiles + auditPrompt.
+  { module: 'semantics-and-conformance.md', label: 'semantics' },
 ]
 
 const SLICER_SCHEMA = {
@@ -73,11 +76,13 @@ const SLICER_SCHEMA = {
 
 const SCOPER_SCHEMA = {
   type: 'object',
-  required: ['versions', 'files', 'claudeMdNotes'],
+  required: ['versions', 'files', 'claudeMdNotes', 'docsFiles', 'docsDigest'],
   properties: {
     versions: { type: 'string', description: 'pinned versions from Cargo.toml (edition, key deps + their versions, tokio/etc)' },
     files: { type: 'array', items: { type: 'string' }, description: 'list of *.rs source files, excluding target/ and generated files' },
     claudeMdNotes: { type: 'string', description: 'project-specific constraints from CLAUDE.md if present, else empty' },
+    docsFiles: { type: 'array', items: { type: 'string' }, description: 'paths to spec/guarantee-bearing docs: README, SECURITY.md, docs/**, ARCHITECTURE/THREAT-MODEL, any cited RFC/spec file. For §F1/§F2.' },
+    docsDigest: { type: 'string', description: 'the project\'s stated guarantees and named specs/references, extracted verbatim where possible: what is secret, what input is untrusted, durability/ordering promises, "compatible with / port of X" claims. For §F1/§F2.' },
   },
 }
 
@@ -148,6 +153,7 @@ Target crate dir: ${args.target}
 1. Read ${args.target}/Cargo.toml. Report the Rust edition, and the pinned versions of dependencies that matter for auditing (async runtime, sync/concurrency, serialization, crypto, FFI/bindgen, etc.) — name + version each.
 2. If ${args.target}/CLAUDE.md exists, read it and capture any project-specific constraints that change what counts as a finding (allowed unsafe, MSRV, forbidden deps, etc.). Otherwise leave empty.
 3. Inventory the *.rs source files under ${args.target}, EXCLUDING target/ and any generated files (build script output, *.gen.rs, OUT_DIR). Return their paths.
+4. Inventory the project's spec/guarantee-bearing docs (README, SECURITY.md, ARCHITECTURE/THREAT-MODEL, docs/**, and any RFC/spec file the code cites). Return their paths in docsFiles. Then read them and extract docsDigest: the stated guarantees (what is secret, what input is untrusted, durability/ordering promises) and every "compatible with / port of / implements <spec>" claim, verbatim where possible. This feeds the §F1/§F2 semantic-conformance audit; if there are no such docs, return empty docsFiles and an empty docsDigest.
 
 Return SCOPER_SCHEMA.`
 }
@@ -156,10 +162,19 @@ function auditPrompt(unit, slice, scope) {
   const focus = unit.onlyCategories
     ? `\nFocus ONLY on categories ${unit.onlyCategories}; ignore the rest of the module.\n`
     : '\n'
+  // §F1/§F2 are unauditable from source alone — the defect lives in the gap between
+  // the code and the project's own spec/docs. Feed the semantics agent the doc digest.
+  const docs = unit.module === 'semantics-and-conformance.md'
+    ? `\nPROJECT SPEC / DOCS (the source of truth for §F1 conformance and §F2 documented guarantees — review the code AGAINST these, not against its own internal consistency):
+Doc files: ${scope && scope.docsFiles && scope.docsFiles.length ? scope.docsFiles.join(', ') : '(none found — say so; "conformance not verified: no reference" is itself a finding)'}
+Stated guarantees + named specs/references:
+${scope && scope.docsDigest ? scope.docsDigest : '(none extracted)'}
+Read the doc files directly if you need more than the digest. For §F1, fetch/locate any cited RFC/spec and enumerate its mandated states before checking the code (Tier F stance: enumerate, don't sample).\n`
+    : ''
   return `You are auditing ONE theme of rust-intel against real Rust code.
 
 Read the module: ${args.skillDir}/${unit.module}
-${focus}
+${focus}${docs}
 TIER SEMANTICS:
 🔴 = report EVERY occurrence (no judgement on whether it "looks fine").
 🟡 = report only when load-bearing / non-obvious — skip the trivial.
