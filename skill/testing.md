@@ -1,7 +1,7 @@
 # Rust Intel — Testing, CI & Measurement
 
-> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §D1 (a), §D2, §D3, §E6. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
-> **Tiers in this module:** §D1 🟡 · §D1a 🟡 · §D2 🟡 · §D3 🟡 · §E6 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
+> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §D1 (a), §D2, §D3, §D4, §D5, §E6. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
+> **Tiers in this module:** §D1 🟡 · §D1a 🟡 · §D2 🟡 · §D3 🟡 · §D4 🟡 · §D5 🟡 · §E6 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
 > **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
 ---
@@ -26,6 +26,7 @@
 - Always pin `expected = "..."` substring in `#[should_panic(expected = "...")]`. The substring should be specific enough that a panic from elsewhere in the test setup does not coincidentally match.
 - Every test asserts a postcondition involving the system-under-test's *observable* state — a return value, a side effect on a passed-in mock, a state transition in a fake — not just absence of panic.
 - For non-deterministic systems, use `proptest` / `quickcheck` to generate inputs, and explicitly state the property being tested in the test name.
+- For an `interval`-driven background task under `start_paused`: tokio auto-advances paused time only when nothing else is ready, so a *spawned* task that races other futures ticks non-deterministically. Drive it explicitly — `advance(period)` once per tick you need (the first `interval` tick fires immediately), with `yield_now().await` between advances so the spawned task runs between virtual-time steps; asserting right after a single `advance` races the spawn. (A lone interval with no competing futures auto-advances on `tick().await` and needs none of this.)
 
 ## §D1a. Oracle validity — *the test is green because the oracle is the code*
 
@@ -72,6 +73,30 @@
 - Run the test suite in release at least in CI (`cargo test --release` as a separate job) when the crate does arithmetic on untrusted/accumulating values or uses `debug_assert!` for anything load-bearing — it is the cheap way to make the tested and shipped configurations overlap.
 - One boundary-scale test per documented size limit; one adversarial-depth test per recursive parser (§B7).
 - For code whose correctness claim is concurrency ("thread-safe", "lock-free", "concurrent map"), the claim defines the test: `loom` model or multi-thread stress — a single-threaded green suite is silent on the claim, not supportive of it.
+
+## §D4. Filtering test-runner output through `grep`/`head` hides hangs
+
+**The trap**: an agent or CI script pipes `cargo test` / `cargo nextest` through `grep`/`head` ("show me only the failures") to save context. Two silent losses follow: (1) the filter discards the per-test `SLOW`/`TIMEOUT`/`stalled` lines — the *only* lines that name a hanging test — because they are not `FAIL` lines, so a deadlock becomes invisible; (2) without `set -o pipefail` the pipeline exits with the *filter's* status (`0` when nothing matched), masking the runner's non-zero exit, so a failing or hung run reads as green. The `pipefail` foot-gun is not Rust-specific, but the agentic reflex of appending `| grep` to every test run is — and it blinds the agent to exactly the hang it most needs to see.
+
+**BANNED**:
+- `cargo test … | grep …` / `… | head` as the command whose exit status gates "tests passed", without `set -o pipefail` — the filter's status, not the runner's, then decides green/red, and `grep`-no-match returns `0`.
+- Concluding "no failures" from a filtered stream that drops `SLOW`/`TIMEOUT`/`stalled` lines — absence of `FAIL` in a filtered view is not absence of a hang.
+- Raising a per-test timeout (or adding `#[ignore]`, §D1) to make a `SLOW`/`TIMEOUT` line disappear — that masks a deadlock instead of fixing it.
+
+**REQUIRED**:
+- Gate on the runner directly, or `tee` full output to a file and grep the **file** — never gate on a live pipe. When a pipe is unavoidable, `set -o pipefail` first so the runner's exit status is the one that counts.
+- Treat any `SLOW`/`TIMEOUT`/`stalled` line as a deadlock bug: reproduce it under parallel load (`--test-threads`, repeated runs) and fix the root cause (§B9 lock order, §B13 TOCTOU, §B3a coordinator livelock), not the symptom.
+
+## §D5. Windows: a hung test process wedges the next link (LNK1104)
+
+**The trap**: on Windows a running `.exe` is locked against deletion and overwrite. When a test hangs and the harness kills the *thread* but not the *process*, the zombie lingers holding its own hashed test binary; the next build's link step then fails `LNK1104: cannot open file '…exe'` — and one flaky hang becomes a build cascade that looks unrelated to the test that caused it. This is a CI/ops failure mode rather than a code defect, but it is the direct Windows fallout of the §D4 hang, so it is enforced alongside it.
+
+**BANNED**:
+- "Fixing" a recurring `LNK1104` on a test/bench binary by retrying the build or rebooting the runner, without reaping the zombie process and fixing the underlying hang — the cascade recurs on the next hang.
+
+**REQUIRED**:
+- The root fix is the hang itself (§D4 — eliminate the deadlock). Zombie-reaping is defense-in-depth, not a substitute for it.
+- On Windows CI, reap stray hashed test/bench binaries (`<crate>-<hex>.exe` — never the dash-named runtime binary) at the start of each run, so a leftover process from a prior run cannot wedge this one.
 
 ---
 

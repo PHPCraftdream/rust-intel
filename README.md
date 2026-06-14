@@ -18,6 +18,8 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ## Status
 
+**v0.4.2 — concurrency/hang/flaky-test patterns (2026-06-14).** Two new numbered categories + a lettered sub-section + three extensions, extracted from real fixes: §B3a (coordinator-loop livelock — release leadership and exit on persistent error), §D4 (filtered test-runner output hides hangs — `pipefail` + nextest SLOW/TIMEOUT), §D5 (Windows LNK1104 from zombie test process, defense-in-depth on top of §D4). Extensions: §B2 (DashMap `Ref` across `.await` is an invisible shard lock), §B21 (periodic task must hold `Weak`, not `Arc`), §D1 (`interval` + `start_paused` tick discipline). **56 → 58 categories.** See [`CHANGELOG.md`](CHANGELOG.md).
+
 **v0.4.1 — Tier F semantic conformance (2026-06-10).** Added Tier F (§F1–§F4): defects of *meaning* — code that compiles, passes tests, implements the wrong thing. Plus §D1a (oracle validity) and §D3 (test/prod divergence). **51 → 56 categories, 5 → 6 tiers (A–F).** See [`CHANGELOG.md`](CHANGELOG.md).
 
 **v0.4.0 — fan-out audit workflow (2026-06-10).** Shipped `audit-project.workflow.js` — one agent per module, async split into two, runtime slicing of trigger tables (zero duplication), structured findings schema, synthesized `/rust-cc-audit` report. Module headers enriched with tier badges + audit semantics. `audit.md` gains fan-out-preferred note. Installers deliver the workflow. See [`CHANGELOG.md`](CHANGELOG.md).
@@ -140,7 +142,7 @@ Six tiers plus a meta-layer:
 | **Tier A** | Compile-fix reflexes that leave silent residue — the LLM "fixes" the red squiggle in a way that compiles while leaving a real defect behind | §A1–§A3 |
 | **Tier B** | Silent correctness bugs, caught only in production | §B1–§B29 |
 | **Tier C** | Architecture and ergonomics, expensive to undo | §C1–§C11 |
-| **Tier D** | Testing and CI gaps — tests pass not because the code is correct but because the tests are blind | §D1–§D3 |
+| **Tier D** | Testing and CI gaps — tests pass not because the code is correct but because the tests are blind | §D1–§D5 |
 | **Tier E** | Systemic cost (performance / scale / contention) — correct in the small, wrong at scale — cost that survives correctness; enforced 🟡/🟢, never 🔴 | §E1–§E6 |
 | **Tier F** | Semantic conformance — defects of *meaning*: spec/reference divergence, violated documented guarantees, boundary/error-path resource lifecycle, missing round-trip obligations. Found by reading the *claim*, not by pattern-matching | §F1–§F4 |
 

@@ -1,7 +1,7 @@
 # Rust Intel — Async (correctness, runtime, tracing, cost)
 
-> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B2, §B3, §B8, §B11, §B15(a–e), §B21, §B22, §B23, §C3, §C9, §E1. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
-> **Tiers in this module:** §B2 🟡 · §B3 🟡 · §B8 🟡 · §B11 🟡 · §B15a/c/d/e 🟡 · §B15b 🔴 (Pin::new_unchecked) · §B21 🔴 · §B22 🔴 · §B23 🟡 · §C3 🟡 · §C9 🟡 · §E1 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
+> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B2, §B3, §B3a, §B8, §B11, §B15(a–e), §B21, §B22, §B23, §C3, §C9, §E1. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
+> **Tiers in this module:** §B2 🟡 · §B3 🟡 · §B3a 🟡 · §B8 🟡 · §B11 🟡 · §B15a/c/d/e 🟡 · §B15b 🔴 (Pin::new_unchecked) · §B21 🔴 · §B22 🔴 · §B23 🟡 · §C3 🟡 · §C9 🟡 · §E1 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
 > **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
 ---
@@ -14,9 +14,11 @@
 - `std::sync::Mutex` / `parking_lot::Mutex` whose guard lives across a `.await`.
 - `std::sync::RwLock` whose guard lives across a `.await`.
 - `RefCell` or `Rc` anywhere reachable from async tasks crossing thread boundaries.
+- A `dashmap::DashMap` / `scc::HashMap` `Ref`/`RefMut` from `entry()`, `get()`, `get_mut()` held across `.await`. The guard is a synchronous per-**shard** `RwLock` — invisible (no `lock()` token), and `clippy::await_holding_lock` does **not** catch it. Holding it across an init `.await` deadlocks: a parked task pins a sync lock that no longer yields the worker; every other task touching *any* key on that shard blocks synchronously, and under runtime oversubscription all workers wedge. Note §B13 endorses `entry().or_insert_with()` for *synchronous* check-then-act atomicity only — that endorsement is void the instant an `.await` follows the guard.
 
 **REQUIRED**:
 - For data shared across `.await` points → `tokio::sync::Mutex` / `tokio::sync::RwLock`.
+- **REQUIRED for async lazy-init in a concurrent map:** store `Arc<OnceCell<T>>` (or `Arc<tokio::sync::OnceCell<T>>`) as the value; `Arc::clone` it **out** of the map and let the shard guard drop *before* awaiting the initializer. The `OnceCell` provides the single-init serialization; the shard lock only needs to guard the map insert, never the init.
 - For data accessed only synchronously inside an async block → `std::sync::Mutex` is fine, but **the guard must be dropped before any `.await`**. Write the drop explicitly:
   ```rust
   let value = {
@@ -79,6 +81,19 @@ async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
 - Calling a function with `db.write().await; send_ack().await` directly under `tokio::select!` or `tokio::time::timeout`.
 - Claiming a function is "cancel-safe because all `.await` points are idempotent" without proving each one (idempotence is necessary but not sufficient; you also need atomic recovery from any partial state).
 - `stream.next().then(|x| async move { ... .await ... })` — if the inner async block contains any `.await`, the entire chain is not cancel-safe: cancellation between `next()` resolving and the inner await completing loses the item from the stream.
+
+## §B3a. Coordinator loops need a circuit-breaker on persistent error
+
+**The trap**: a leader/drain/flush loop — one task elected (via a `flushing`/`leader` flag) to drain a queue, flush a buffer, or sync a segment — retries a fallible op in a loop, completing the current waiters with `Err` but never *exiting* the loop. On a *transient* error that is correct. On a *persistent* one (dead segment, full disk, broken fd, poisoned downstream) it livelocks: one core spins re-attempting the dead path, the resource never recovers, and the leadership flag stays held so no fresh attempt can re-enter from a clean state. Tests pass because the test's injected failure is always transient (a one-shot mock error); production failures are not.
+
+**BANNED**:
+- A coordinator/leader loop whose only response to a write/sync error is to fail the current waiters and loop again — no exit, no backoff, no bound. Unbounded immediate retry of a persistently-failing operation is a livelock, not resilience.
+- Releasing the leadership/`flushing` flag on the success path only, so an early `return`/`?` on the error path strands it set forever — the "leadership stranded" window. (A flag is a resource; this is §B4 RAII discipline applied to it.)
+
+**REQUIRED**:
+- On a write/sync error, **release leadership and return** (`flushing.store(false, Release); return;`) so the next attempt re-enters from a clean state instead of spinning on the dead path. Release the flag on *every* exit path — error included — with the same atomic-release discipline as the success path; an RAII guard on the flag (§B4) is the form that survives the next `?` someone adds. The election side must pair this with an `Acquire` (e.g. `compare_exchange(.., Acquire, ..)`), or the next leader may not observe the published clean state — §B13's `Release`/`Acquire` rule applies to the flag itself, not just the data it guards.
+- `return` only *de-livelocks* if something re-triggers election (a fresh enqueue, the next tick, a waiting producer). If the loop is the *sole* driver, a bare `return` trades a visible busy-spin for a silent stall — the flusher is simply dead, and a silent stall is *worse* (no spinning core to notice). So on a *persistent* error, escalate it (log / alert / propagate to the owner), don't just return into silence.
+- If retry *is* the intended recovery, bound it — cap the attempts or back off exponentially (`tokio::time::sleep`), never a tight immediate loop.
 
 ## §B8. Silent task dropping (forgotten `.await`)
 
@@ -224,6 +239,7 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - If you spawn for joinable work, hold the `JoinHandle` and call `.await` on it (or use `tokio::task::JoinSet` for fan-in across many tasks).
 - For graceful shutdown, hold an `AbortHandle` (via `JoinHandle::abort_handle()`) and call `.abort()` on shutdown; then `.await` the `JoinHandle` to observe `JoinError::is_cancelled()`.
 - Surface every `tokio::spawn(...)` whose returned `JoinHandle` is dropped (not held, not awaited, not detached-by-design) in the post-flight summary.
+- A spawned **periodic** task (timer-driven flush/reaper/sweeper) whose lifetime should track its owner's must hold a `Weak<T>`, not a strong `Arc<T>`, and exit when `upgrade()` returns `None`. A strong clone keeps the owner alive forever (its `Drop` never runs), inverting RAII. Pair it with a `..._exits_on_drop` test: drop the last strong ref, then assert the task terminated (no hang). This is the "stop when nobody needs me" shape; when shutdown is *explicit/supervised*, use the `AbortHandle`/`CancellationToken` path above instead — `Weak` and a cancellation signal answer different questions and are not interchangeable.
 
 ## §B22. `async Drop` is not real (yet)
 

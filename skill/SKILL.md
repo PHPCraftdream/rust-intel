@@ -6,7 +6,7 @@ description: Hard rules for writing Rust in code that already compiles and passe
 
 **Scope, stated up front.** This spec assumes your code already compiles. It assumes `cargo test` is green. That is not enough. The categories below cover the failure modes that survive `rustc`, `clippy`, and the test suite, and only manifest as production incidents, semver breakage, performance collapse under load, or silent data corruption. Compilation-only failures (lifetime variance *in safe code*, trait bound mismatch, GAT lifetime bound errors, object-safety violations through generic methods, cyclic workspace deps, `?` in `main`, HRTB depth, recursive macro limits, self-referential structs in safe Rust, `no_std` reflexive `std::*` imports, `From`/`Into` cycles) are deliberately omitted — `rustc` already catches them and the LLM cannot ship them. (Exception: variance **soundness** in `unsafe` raw-pointer wrappers is *not* caught by the compiler — that is §B18a, and it is in-scope.) This spec covers what ships anyway.
 
-The **fifty-six categories** (held in this skill's theme modules — see the category→module map below) rest on an empirical base — a published 6-month field report on ~80k LOC of production LLM-generated Rust, academic benchmarks (RustEvo², SafeTrans, CRUST-Bench, SafeGenBench, Rust-SWE-Bench, AkiraRust), the error distribution observed across Claude/GPT/Cursor through 2025–2026, and real supply-chain incidents (CrateDepression 2022, `faster_log`/`async_println` 2025). (The count is of numbered categories; §B1, §B4, §B15, §B18, §C1, and §D1 split into lettered sub-sections — §B1a/b, §B4a, §B15a–e, §B18a, §C1a, §D1a — that are referenced and triggered individually but counted under their parent.) Citations, URLs, sample sizes, and every percentage live in [`docs/sources.md`](docs/sources.md); load it alongside this file when a figure is load-bearing. The category→module map below is the index; the category bodies live in the theme modules, not in this file.
+The **fifty-eight categories** (held in this skill's theme modules — see the category→module map below) rest on an empirical base — a published 6-month field report on ~80k LOC of production LLM-generated Rust, academic benchmarks (RustEvo², SafeTrans, CRUST-Bench, SafeGenBench, Rust-SWE-Bench, AkiraRust), the error distribution observed across Claude/GPT/Cursor through 2025–2026, and real supply-chain incidents (CrateDepression 2022, `faster_log`/`async_println` 2025). (The count is of numbered categories; §B1, §B3, §B4, §B15, §B18, §C1, and §D1 split into lettered sub-sections — §B1a/b, §B3a, §B4a, §B15a–e, §B18a, §C1a, §D1a — that are referenced and triggered individually but counted under their parent.) Citations, URLs, sample sizes, and every percentage live in [`docs/sources.md`](docs/sources.md); load it alongside this file when a figure is load-bearing. The category→module map below is the index; the category bodies live in the theme modules, not in this file.
 
 Industry signal: per Faros AI and Lightrun studies (2026), shifting from low to high AI adoption more than doubles the incidents-to-PR ratio, and 43% of AI-generated code changes need debugging in production; among surveyed engineering leaders, zero rated themselves "very confident" that AI-generated code behaves correctly once deployed. (These figures concern AI-generated code in general, not Rust specifically — see docs/sources.md.) This is the empirical context this document defends against.
 
@@ -15,7 +15,7 @@ The categories split into **six tiers and a meta-layer**, listed below:
 - **Tier A — Compile-fix reflexes that leave silent residue (§A1, §A2, §A3)**: not "the compiler caught it and you fixed it correctly", but "the compiler caught it and the cheapest fix compiles while leaving a real defect behind". Stale-but-valid APIs, supply-chain via slopsquatting, reflexive `Arc<Mutex<T>>`, `pub` as a hammer for `E0603` that silently expands the public API.
 - **Tier B — Silent correctness bugs (§B1–§B29)**: pass compilation, often pass tests, fail in production. This is where the spec lives. Includes UB, async pitfalls (basic and advanced), lock ordering, memory leaks, silent task dropping, cryptographic insecurity, TOCTOU races, backpressure neglect, Mutex poisoning, equality/hash contracts, runtime borrow panics, manual `Send`/`Sync`, iterator invalidation through indirection, `serde` field-presence drift, `JoinHandle` semantics, the async-`Drop` impossibility, `select!` side-effect cancellation, timing-attack-prone equality on secrets, panic / ownership across `extern "C"` FFI, lossy numeric conversions, wall-clock vs monotonic time, and UTF-8 string-boundary hazards.
 - **Tier C — Architecture and ergonomics (§C1–§C11)**: design-level mistakes that are expensive to undo. Reflexive `.clone()`, procedural macro hygiene, Cargo feature flag hygiene, channel-and-runtime mismatch, `tracing` span leakage, workspace feature unification, `Deref` polymorphism.
-- **Tier D — Testing and CI gaps (§D1–§D3)**: code passes tests not because it's correct but because the tests are blind. Timing-based async tests, `#[should_panic]` without `expected`, unit-vs-integration placement drift, test/prod divergence of build profile, scale, and concurrency.
+- **Tier D — Testing and CI gaps (§D1–§D5)**: code passes tests not because it's correct but because the tests are blind. Timing-based async tests, `#[should_panic]` without `expected`, unit-vs-integration placement drift, test/prod divergence of build profile, scale, and concurrency, grep-filtered runner output hiding hangs, Windows zombie-process link wedges.
 - **Tier E — Systemic cost (§E1–§E6)**: correct in the small, wrong at scale — performance, allocation, complexity, and contention costs that survive `rustc`/`clippy`/tests and only bite under load. A different axis from A–D (cost, not correctness); enforced 🟡/🟢, never 🔴.
 - **Tier F — Semantic conformance (§F1–§F4)**: defects of *meaning*, not mechanism. The code is self-consistent, compiles, passes its own tests and clippy — and implements the wrong thing: it diverges from the named spec or reference implementation, contradicts the project's own documented guarantees, mishandles the boundary/error-path lifecycle of a connection or resource, or ships an encode/decode pair with no round-trip obligation. No grep finds these; they are found by reading the *claim* (RFC, README, function name, doc comment) and checking the code against it counterfactually. Reviewer stance for this tier is different — see "Tier F — how to review for meaning" below.
 
@@ -23,7 +23,7 @@ The categories split into **six tiers and a meta-layer**, listed below:
 
 ## Running a full pass — one agent per module, not one agent for everything
 
-This skill is split into modules (see the **category→module map** below): each theme — async, unsafe/FFI, concurrency, data/types, security, drop/RAII, deps/macros, lifetimes/API, testing, semantics/conformance — is its own file. For a **full-coverage pass** — auditing a codebase against every category, or reviewing/analyzing this skill itself — do **not** pull all modules into one context and grind through them serially. A single agent holding all ~56 categories loses detail and misses findings — the very overload this skill warns about, turned on itself.
+This skill is split into modules (see the **category→module map** below): each theme — async, unsafe/FFI, concurrency, data/types, security, drop/RAII, deps/macros, lifetimes/API, testing, semantics/conformance — is its own file. For a **full-coverage pass** — auditing a codebase against every category, or reviewing/analyzing this skill itself — do **not** pull all modules into one context and grind through them serially. A single agent holding all ~58 categories loses detail and misses findings — the very overload this skill warns about, turned on itself.
 
 **Instead, fan out — one agent per module — using the Workflow tool:**
 - spawn one sub-agent per module listed in the category→module map;
@@ -89,7 +89,7 @@ Whenever this command is loaded, before generating any Rust code I will:
 
 # Enforcement tiers — not every rule is equal
 
-Treating all 56 categories as equally critical produces noise that buries the few findings that matter. Apply rules at one of three tiers:
+Treating all 58 categories as equally critical produces noise that buries the few findings that matter. Apply rules at one of three tiers:
 
 **🔴 Surface-always / may block.** High blast-radius, often irreversible, invisible to tooling. Always list every occurrence in the summary; for crypto and unsafe-with-unstated-invariants, block and ask rather than guess (see Blocking protocol). These are:
 - §A1 adding an unverified / unnamed dependency (slopsquatting — runs malicious code)
@@ -191,6 +191,8 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "encrypt", "decrypt", "hash a password", "JWT", "TLS", "sign this", "AES", "AEAD" | §B12 crypto insecurity | Nonce reuse, weak primitives, hallucinated crypto API |
 | "public API", "library", "publish to crates.io", "what should the signature be" | §B1 lifetime leaking; §C1 blanket impls; §C1a non_exhaustive | `'a` in public signatures, semver hazards; adding an enum variant / struct field is a major break without `#[non_exhaustive]` |
 | "lazy cache", "memoize", "compute if absent", "deduplicate concurrent requests", "ensure only once" | §B13 TOCTOU | `contains_key` + `insert` race; should be `entry().or_insert_with` |
+| "DashMap/concurrent-map lazy init + await", "init the entry then await", "get-or-insert then fetch" | §B2 shard guard across `.await` | the `entry()`/`get()` `Ref` is a sync shard lock; holding it across the init `.await` deadlocks the whole shard — store `Arc<OnceCell<T>>`, clone out, drop the guard before awaiting |
+| "coordinator loop", "leader/drain/flush loop", "retry the flush forever", "background flusher" | §B3a coordinator circuit-breaker | a loop that retries a persistently-failing op without exiting livelocks one core and strands leadership — release the flag and return on error |
 | "background worker", "event queue", "log pipeline", "broadcast to subscribers", "producer-consumer" | §B14 unbounded queue | `unbounded_channel` instead of bounded + backpressure policy |
 | "trait with async method", "trait Foo { async fn ... }", "trait object" | §B15a AFIT/RPITIT | Missing `+ Send` bound, not spawn-able; for a `dyn` async trait, not dyn-compatible without `async-trait` |
 | "implement Future manually", "custom Poll", "wake the task" | §B15b Waker | `Poll::Pending` without registering waker → hang forever |
@@ -219,6 +221,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "Stream", "futures::Stream", "async iterator", "while let next" | §B15d Stream vs Iterator | `for x in stream` doesn't compile; missing `StreamExt` |
 | "deadline", "wall clock timeout" | §D1 tests by luck; §B3 cancel safety | `thread::sleep` in tests; cancellation between deadline arms |
 | "test that this panics", "should_panic", "expected panic" | §D1 tests by luck | `#[should_panic]` without `expected` catches any panic |
+| "grep test output", "show only failures", "filter the test log", "pipe cargo test to grep/head" | §D4 grep-filtered runner output | the filter drops `SLOW`/`TIMEOUT` lines and (without `pipefail`) masks the runner's exit code — a hang reads as green; run the runner directly or tee to a file and grep the file |
 | "MaybeUninit", "uninitialized memory", "zero-init buffer" | §B5 unsafe; §B7 large stack | `mem::uninitialized` is UB; `Box::new([0;N])` is on stack |
 | "FFI", "bindgen", "C library", "extern C", "native bindings", "wrap a C API" | §B25 FFI ABI; §B5 unsafe | Panic across `extern "C"`; allocator mismatch on `Box::from_raw`; `cap`-mismatched `Vec::from_raw_parts` |
 | "every N seconds", "periodically", "on a timer", "scheduled tick" | §B15e interval first-tick | first tick is immediate; the default `MissedTickBehavior::Burst` replays missed ticks back-to-back under lag |
@@ -338,7 +341,7 @@ The category bodies live in sibling modules of this skill. When a trigger above 
 | §A2 | `concurrency-and-state.md` |
 | §A3 | `lifetimes-and-api.md` |
 | §B1 (a, b) | `lifetimes-and-api.md` |
-| §B2, §B3, §B8, §B11, §B15 (a–e), §B21, §B22, §B23 | `async.md` |
+| §B2, §B3, §B3a, §B8, §B11, §B15 (a–e), §B21, §B22, §B23 | `async.md` |
 | §B4 (a) | `drop-and-raii.md` |
 | §B5, §B7, §B18 (a), §B25 | `unsafe-and-ffi.md` |
 | §B6, §B16, §B20, §B26, §B27, §B28, §B29 | `data-and-types.md` |
@@ -350,7 +353,7 @@ The category bodies live in sibling modules of this skill. When a trigger above 
 | §C4 | `data-and-types.md` |
 | §C5, §C6, §C7, §C10, §C11 | `deps-macros-ergonomics.md` |
 | §C8 | `concurrency-and-state.md` |
-| §D1 (a), §D2, §D3 | `testing.md` |
+| §D1 (a), §D2, §D3, §D4, §D5 | `testing.md` |
 | §E1 | `async.md` |
 | §E2, §E3 | `data-and-types.md` |
 | §E4 | `concurrency-and-state.md` |

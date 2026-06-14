@@ -44,6 +44,8 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | panic "PoisonError" / `poisoned lock` | §B2 (poisoning cascade) |
    | Task hangs, `Poll::Pending` forever | §B15 (Waker not registered) |
    | Deadlock without panic, two threads waiting on each other | §B9 |
+   | Deadlock / all async workers wedge after touching a concurrent map (`DashMap`/`scc`); `clippy::await_holding_lock` stays silent | §B2 (a `Ref`/`RefMut` shard guard held across `.await` — store `Arc<OnceCell>`, clone out, drop the guard before awaiting) |
+   | One core spins; a flush/drain/leader loop never recovers and never exits, waiters keep getting `Err` | §B3a (coordinator livelock — release leadership and `return` on a persistent error; bound/back off any retry) |
    | Steady-state RAM growth, OOM after days | §B10 (cycles) or §B14 (unbounded queue) |
    | Latency spike under load, executor starvation | §B11 (blocking executor) |
    | "Under load, `expensive_fetch` runs N times instead of 1" | §B13 (TOCTOU) |
@@ -55,6 +57,7 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | `unsafe impl Send` / `unsafe impl Sync` without SAFETY justification | §B18 |
    | `untagged` enum deserializes to wrong variant | §B20 (variant shape overlap) |
    | Task started but no way to cancel or observe completion | §B21 (dropped JoinHandle) |
+   | Owner's `Drop` never runs / a periodic task outlives its owner / `_exits_on_drop` test hangs | §B21 (timer task holds a strong `Arc` to its owner — hold `Weak`, exit on `upgrade()==None`) |
    | "Resource didn't close" / connection pool exhausted | §B22 (async Drop is not real) |
    | `tokio::select!` arm side effect lost on cancellation | §B23 |
    | "Timing-based authentication vulnerability" / CVE-class | §B24 (constant-time comparison) |
@@ -73,6 +76,8 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | Test in `tests/` cannot compile after refactor | §D2 |
    | New test is green even with the fix reverted / on pre-fix code; snapshot blessed from a brand-new implementation | §D1a (oracle validity — the oracle is the code itself; add a negative control) |
    | Works in tests, breaks in prod: wrong arithmetic only in release, timeout only at real data sizes, race only under real concurrency | §D3 (test/prod divergence) — release-wrap → §B26, scale → §E3/§B7, interleaving → §B13/§B9 |
+   | CI reads green but a test actually hangs; `SLOW`/`TIMEOUT` lines never surfaced; test command piped through `grep`/`head` | §D4 (filtered live pipe without `set -o pipefail` masks the hang — gate on the runner or tee-to-file-then-grep; root-cause the hang) |
+   | Windows: `LNK1104: cannot open file '…exe'` on a test/bench binary after a flaky run | §D5 (a zombie test process holds its own `.exe` — reap stray `<crate>-<hex>.exe` at run start; the real fix is the hang, §D4) |
    | Own tests and round-trip green, but interop with the real peer / reference implementation / published vectors fails | §F1 (spec conformance — both halves share the same misreading; verify against the external oracle) |
    | Behavior contradicts what README/SECURITY.md/docs promise (token logged, untrusted input trusted, write not durable) | §F2 (documented guarantees — the doc, not the call graph, defines the boundary) |
    | Connection/FD/gauge leaks on error paths; a peer that connects and stalls pins a task forever; EOF busy-loop or peer never sees close | §F3 (boundary/error-path lifecycle; §B21/§B4 twins; no-timeout read on untrusted peer) |

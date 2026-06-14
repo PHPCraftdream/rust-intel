@@ -26,7 +26,7 @@ if (!args.skillDir) {
 
 // Module -> category-ids it owns. Mirrors the category->module map in SKILL.md.
 const MODULES = [
-  { file: 'async.md', categories: ['B2','B3','B8','B11','B15','B15a','B15b','B15c','B15d','B15e','B21','B22','B23','C3','C9','E1'] },
+  { file: 'async.md', categories: ['B2','B3','B3a','B8','B11','B15','B15a','B15b','B15c','B15d','B15e','B21','B22','B23','C3','C9','E1'] },
   { file: 'concurrency-and-state.md', categories: ['A2','B9','B10','B13','B14','B17','B19','C8','E4'] },
   { file: 'data-and-types.md', categories: ['B6','B16','B20','B26','B27','B28','B29','C4','E2','E3'] },
   { file: 'security.md', categories: ['B12','B24','C2'] },
@@ -34,13 +34,13 @@ const MODULES = [
   { file: 'drop-and-raii.md', categories: ['B4','B4a'] },
   { file: 'deps-macros-ergonomics.md', categories: ['A1','C5','C6','C7','C10','C11','E5'] },
   { file: 'lifetimes-and-api.md', categories: ['B1','B1a','B1b','C1','C1a','A3'] },
-  { file: 'testing.md', categories: ['D1','D1a','D2','D3','E6'] },
+  { file: 'testing.md', categories: ['D1','D1a','D2','D3','D4','D5','E6'] },
   { file: 'semantics-and-conformance.md', categories: ['F1','F2','F3','F4'] },
 ]
 
 // One audit agent per unit. async.md splits into two (discipline vs machinery, G6).
 const AUDIT_UNITS = [
-  { module: 'async.md', label: 'async/discipline', onlyCategories: 'B2, B3, B8, B11, B21, B22, B23' },
+  { module: 'async.md', label: 'async/discipline', onlyCategories: 'B2, B3, B3a, B8, B11, B21, B22, B23' },
   { module: 'async.md', label: 'async/machinery', onlyCategories: 'B15a–e, C3, C9, E1' },
   { module: 'concurrency-and-state.md', label: 'concurrency' },
   { module: 'data-and-types.md', label: 'data-types' },
@@ -244,7 +244,7 @@ const synthesis = await agent(
 
 MERGE + DEDUP:
 - Same file:line flagged by two agents -> keep ONE entry, prefer the more specific category, and note "also flagged by <other category>".
-- Group by severity: critical -> high -> medium -> info. Within a severity, order by tier letter (A -> B -> C -> D -> E).
+- Group by severity: critical -> high -> medium -> info. Within a severity, order by tier letter (A -> B -> C -> D -> E -> F).
 - Do NOT invent findings not present in the input.
 
 Format the report EXACTLY like this:

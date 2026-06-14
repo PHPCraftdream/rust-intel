@@ -6,6 +6,25 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.4.2] — 2026-06-14
+
+**Concurrency / hang / flaky-test patterns** extracted and reviewed from real fixes: two new numbered categories plus three extensions. **56 → 58 categories** (§B3a is a lettered sub-section, counted under §B3; §D4/§D5 are new numbered categories). The two new categories and §B3a ship in the modules' `**The trap**`/`**BANNED**`/`**REQUIRED**` format and are grounded in `docs/sources.md` (the spec's "every category ships with a source" gate). Calibrated by an independent review pass: §B3a now distinguishes a bare `return` (a silent stall when the loop is the sole driver — escalate instead) from the livelock it fixes, and pairs the flag release with an `Acquire` on election (§B13); §B21 qualifies `Weak` (lifetime-coupled tasks) against `AbortHandle`/`CancellationToken` (explicit shutdown); §D1 no longer overstates `start_paused` (a lone interval auto-advances); §D5 drops an ungrounded lazy-handle aside; `fix.md` gains a §B21 "owner's `Drop` never runs" row.
+
+### Added
+
+- **`skill/async.md` — §B3a Coordinator loops need a circuit-breaker on persistent error** (sub-section of §B3): a leader/drain/flush loop that retries a fallible op forever — completing waiters with `Err` but never *exiting* — livelocks on a persistent failure. REQUIRED: release leadership and `return` on a write/sync error so a fresh attempt re-enters from clean state; the leadership flag is released on every exit path, error included. 🟡.
+- **`skill/testing.md` — §D4 Filtering test-runner output through `grep`/`head` hides hangs**: the filter silently drops `SLOW`/`TIMEOUT` lines (the only lines naming a hanging test) and, without `set -o pipefail`, masks the runner's non-zero exit so a deadlock reads as green. The `pipefail` foot-gun is generic; the `| grep`-on-every-test-run reflex is the agentic-Rust angle. BANNED: gating "passed" on a filtered live pipe without `pipefail`; raising a timeout to silence `SLOW`/`TIMEOUT`. REQUIRED: gate on the runner directly or tee-to-file-then-grep-the-file; root-cause every `SLOW`/`TIMEOUT` as a deadlock. 🟡.
+- **`skill/testing.md` — §D5 Windows: a hung test process wedges the next link (LNK1104)**: a lingering zombie test process holds its own hashed `.exe`, failing the next link step (`LNK1104`) — one flake becomes a build cascade. Framed as CI-hygiene defense-in-depth: the root fix is the hang itself (§D4); REQUIRED on Windows CI is reaping stray `<crate>-<hex>.exe` at run start. 🟡.
+
+### Changed
+
+- **`skill/async.md` — §B2** extended: a `dashmap::DashMap` / `scc::HashMap` `Ref`/`RefMut` held across `.await` is a synchronous per-shard `RwLock` invisible to `clippy::await_holding_lock`; holding it across an init `.await` deadlocks the shard. REQUIRED for async lazy-init in a concurrent map: store `Arc<OnceCell<T>>`, clone out of the map, drop the shard guard before awaiting the initializer. Cross-note added at §B13's `entry().or_insert_with()` endorsement ("synchronous only — see §B2").
+- **`skill/async.md` — §B21** extended: a spawned periodic task (timer-driven flush/reaper/sweeper) must hold a `Weak<T>`, not a strong `Arc<T>`, to its owner and exit on `upgrade() == None` — a strong clone inverts RAII. Pair with a `..._exits_on_drop` test.
+- **`skill/testing.md` — §D1** extended: for `interval`-driven background tasks under `start_paused`, `advance(period)` once per tick needed (the first tick fires immediately) and `yield_now().await` between advances so the spawned task runs between virtual-time steps.
+- **`skill/SKILL.md`** — category count 56 → 58; §B3 added to the lettered-split parent list and §B3a to the sub-section enumeration; category→module map updated (§B3a → `async.md`; §D4/§D5 → `testing.md`); Tier D overview range §D1–§D3 → §D1–§D5; three self-monitoring trigger rows added (DashMap/concurrent-map lazy init + await → §B2; coordinator/leader/flush loop → §B3a; grep/filter test output → §D4).
+- **`README.md`** — Tier D spec-architecture range §D1–§D3 → §D1–§D5 (threaded with the SKILL.md change; the recurring "range not propagated to README" gap, caught in review).
+- **`docs/sources.md`** — new "Concurrency liveness & test-harness honesty" subsection grounding §B3a (circuit-breaker / bounded retry — Fowler, AWS Builders' Library), §D4 (`pipefail` Bash semantics + `cargo nextest` slow/timeout reporting), and §D5 (MSVC `LNK1104` + Windows image locking). Documented-mechanism + observed-pattern, no numeric claims — on the Tier E/F precedent.
+
 ## [0.4.1] — 2026-06-10
 
 **Tier F — Semantic conformance** (new tier, 4 categories) plus two testing additions: **51 → 56 categories**. Defects of *meaning* — code that compiles, passes its own tests and clippy, and implements the wrong thing. Unlike Tiers A–E these are not found by pattern-matching; the reviewer reads the *claim* (spec, README, function name) and checks the code against it counterfactually.
