@@ -38,12 +38,14 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | `clippy::await_holding_lock` | §B2 (but clippy catches ~30% — check hidden cases too) |
    | `clippy::clone_on_copy`, `clippy::redundant_clone` | §C5 |
    | `clippy::unwrap_used`, `clippy::expect_used` | §C2 |
+   | A path under an attacker-mutable directory is `canonicalize`d + `starts_with(base)`-checked, then `open`ed / read — escape reported despite the check | §C2 (TOCTOU — the static check is not race-free; CWE-367; use `openat`+`O_NOFOLLOW` or the `cap-std` crate when the tree is attacker-mutable) |
    | `clippy::missing_safety_doc`, `clippy::undocumented_unsafe_blocks` | §B5 |
    | panic "Cannot start a runtime from within a runtime" | §B15 (block_on inside async) |
    | panic "cannot recursively acquire mutex" | §B9 (lock ordering / re-entry) |
    | panic "PoisonError" / `poisoned lock` | §B2 (poisoning cascade) |
    | Task hangs, `Poll::Pending` forever | §B15 (Waker not registered) |
    | Deadlock without panic, two threads waiting on each other | §B9 |
+   | A `std::thread::scope` block hangs / never returns; or a child-thread panic re-panics the parent at the closing brace, skipping cleanup | §B9 (scope auto-joins on the brace — close the channel / drop the sender / signal cancellation *before* the scope ends; inspect each `ScopedJoinHandle::join()` when cleanup must run regardless) |
    | Deadlock / all async workers wedge after touching a concurrent map (`DashMap`/`scc`); `clippy::await_holding_lock` stays silent | §B2 (a `Ref`/`RefMut` shard guard held across `.await` — store `Arc<OnceCell>`, clone out, drop the guard before awaiting) |
    | One core spins; a flush/drain/leader loop never recovers and never exits, waiters keep getting `Err` | §B3a (coordinator livelock — release leadership and `return` on a persistent error; bound/back off any retry) |
    | Steady-state RAM growth, OOM after days | §B10 (cycles) or §B14 (unbounded queue) |
@@ -53,6 +55,7 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | "The message/request/write didn't happen but no error either" | §B8 (forgotten `.await`) |
    | Encrypt/decrypt works, but security review finds a vulnerability | §B12 |
    | `HashMap::get` returns `None` but the value was inserted | §B16 (Eq/Hash contract mismatch) |
+   | A worker pins at 100% CPU on a regex match / request times out on a specific input; the engine is `fancy-regex` / `onig` / `pcre2` | §B16 (ReDoS — catastrophic backtracking on untrusted input; keep untrusted input on the linear `regex` crate, else size-cap + hard match timeout) |
    | panic `already borrowed: BorrowMutError` | §B17 (RefCell reentrant borrow) |
    | `unsafe impl Send` / `unsafe impl Sync` without SAFETY justification | §B18 |
    | `untagged` enum deserializes to wrong variant | §B20 (variant shape overlap) |

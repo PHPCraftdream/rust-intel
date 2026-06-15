@@ -6,6 +6,8 @@ A living specification that defends against the systematic mistakes LLMs make wh
 
 An empirically-grounded ruleset for the Rust mistakes that **survive `cargo build` and `cargo test`** but still wreck things in production or rot the codebase over time. Every category is backed by a specific study, production incident, or systematically observed LLM output pattern — see [`docs/sources.md`](docs/sources.md).
 
+> **Per-rule grounding ≠ measured coverage.** Each category is grounded individually (above), but there is no regression corpus yet that measures *what fraction* of real silent-failure bugs the spec catches. Building that corpus — `examples/` with deliberately broken Rust per category, exercised through `/rust-cc-audit` — is the next infrastructure step, tracked in [`docs/roadmap.md`](docs/roadmap.md) §4. Completeness, until then, is author-asserted.
+
 The premise: Rust's compiler catches a large class of LLM mistakes (a known empirical finding is that **76.3% of all compilation failures from LLM agents** fall into just two categories — project organization and type/trait semantics, per Rust-SWE-Bench). Categories where the failure mode is a compile error are *deliberately omitted* from this spec — the compiler is sufficient. What this spec covers is what's left after `rustc`, `clippy`, and `cargo test` have all said "fine":
 
 - **Silent correctness bugs** — `HashMap` corruption from inconsistent `Hash`/`Eq`, `tokio::sync::Mutex` held across `.await`, lost `JoinHandle`s, `RefCell` runtime panics under contention.
@@ -17,6 +19,8 @@ The premise: Rust's compiler catches a large class of LLM mistakes (a known empi
 The exact category count is given in the spec itself; the count is allowed to evolve.
 
 ## Status
+
+**v0.4.3 — siblings of safe-looking primitives (2026-06-15).** Three bullets, no new categories (still **58**): §C2 path-traversal recipe gains a TOCTOU caveat (`canonicalize` + `starts_with` defeats the static symlink, not a racing one — CWE-367; use `openat`+`O_NOFOLLOW` / `cap-std` when the tree is attacker-mutable); §B9 gains `std::thread::scope` as the sync mirror of §B21 (auto-join on the closing brace can deadlock; child panic re-panics the parent); §B16 gains a ReDoS sibling-of-HashDoS bullet (`regex` is linear by construction; `fancy-regex`/`onig`/`pcre2` reintroduce catastrophic backtracking — CWE-1333). Plus a README recall-honesty note (per-rule grounding ≠ measured coverage). See [`CHANGELOG.md`](CHANGELOG.md).
 
 **v0.4.2 — concurrency/hang/flaky-test patterns (2026-06-14).** Two new numbered categories + a lettered sub-section + three extensions, extracted from real fixes: §B3a (coordinator-loop livelock — release leadership and exit on persistent error), §D4 (filtered test-runner output hides hangs — `pipefail` + nextest SLOW/TIMEOUT), §D5 (Windows LNK1104 from zombie test process, defense-in-depth on top of §D4). Extensions: §B2 (DashMap `Ref` across `.await` is an invisible shard lock), §B21 (periodic task must hold `Weak`, not `Arc`), §D1 (`interval` + `start_paused` tick discipline). **56 → 58 categories.** See [`CHANGELOG.md`](CHANGELOG.md).
 

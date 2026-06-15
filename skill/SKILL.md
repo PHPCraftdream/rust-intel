@@ -242,12 +242,15 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "divide", "modulo", "percentage", "average", "ratio" | §B26 div-by-zero | `/ 0` and `% 0` panic; integer `%` truncates toward zero |
 | "read from socket", "read the stream", "write to connection", "read N bytes" | §C4 partial read/write | a single `read`/`write` may transfer fewer bytes; use `read_exact`/`write_all` |
 | "join paths", "build file path from input", "path from user", "config path" | §C2 Path::join absolute | absolute segment discards the base (path traversal) |
+| "open a path from untrusted input", "follow symlinks", "resolve and read", "container/sandbox file access" | §C2 canonicalize→open TOCTOU | `canonicalize` + `starts_with(base)` defeats the static symlink, not a racing one (CWE-367); name the threat model — use `openat`+`O_NOFOLLOW` / `cap-std` when the tree is attacker-mutable |
+| "scoped threads", "std::thread::scope", "borrow into a thread", "fan out without `'static`" | §B9 thread::scope auto-join | sync mirror of §B21 — children force-joined on the closing brace; a child waiting on a parent resource deadlocks the brace; child panics re-panic the parent on drop |
 | "run a command", "shell out", "execute a command", "call ffmpeg/git/imagemagick", "spawn a process" | §C2 command injection | untrusted data in a shell string → RCE; user value starting with `-` → argument injection |
 | "build a query", "dynamic SQL", "search/filter by", "WHERE/ORDER BY from input", "query by a user field" | §C2 SQL injection | `format!`-built SQL → injection; bind params (`$1` + `.bind`/`query!`/`QueryBuilder`) |
 | "optimize", "make this faster", "this is slow", "hot path", "high throughput", "low latency" | §E systemic cost (pick the law by form) | locally-correct code that fails under load; cost not caught by `rustc`/`clippy`/tests |
 | "run concurrently", "parallelize", "two awaits", "rayon", "spawn_blocking" | §E1 serialism | independent work done in sequence; CPU-bound work stalling the async worker |
 | "reduce allocations", "zero-copy", "avoid clone" | §E2 allocation | reflexive `.clone()`/`.collect()`/`format!`; allocate-in-a-loop with no `with_capacity` |
 | "fast hash", "faster HashMap", "FxHashMap" | §E4 contention + §B16 Eq/Hash | fast fixed-seed hasher is a win for trusted keys, a HashDoS trap for untrusted ones |
+| "lookahead/lookbehind in regex", "backreference", "I need fancy-regex / onig / pcre2", "regex on user input" | §B16 ReDoS sibling | the `regex` crate is linear by construction; backtracking engines on untrusted input/pattern → catastrophic backtracking (CWE-1333); size-cap + match-timeout |
 | "reduce contention", "lock is slow", "scale across cores" | §E4 contention | a lock is a queue under load; read-mostly/sharding/atomic beats `Arc<Mutex>` |
 | "add tests", "unit tests for this", "increase coverage", "write a test" | §D1 vacuous tests | test a *postcondition that could break* or an external *contract* — never a tautology/constant/`derive` |
 | "extract a crate", "split into a library", "new workspace member", "make this its own crate" | §C10 crate boundaries | premature extraction freezes an unproven API (§C1) and forces version/feature coordination |
@@ -309,6 +312,9 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `slice[i]` / `&s[a..b]` / `split_at(i)` with an index from untrusted input | §B26 (index OOB) / §B28 (string boundary) |
 | a single `.read(&mut buf)` / `.write(data)` treated as complete | §C4 (partial transfer) |
 | `base.join(untrusted)` | §C2 (absolute segment discards base) |
+| `canonicalize(...)` then `File::open(...)` / `fs::read(...)` on a path under an attacker-mutable directory | §C2 (TOCTOU between check and use — CWE-367; race-free only via `openat`+`O_NOFOLLOW` / `cap-std`) |
+| `std::thread::scope(\|s\| { s.spawn(...) ... })` whose children await a resource the *parent* code after `s.spawn` would release | §B9 (scope auto-joins on closing brace → deadlocks; child panic re-panics parent on drop) |
+| `fancy_regex::Regex::new(...)` / `onig::Regex::new(...)` / `pcre2::...` matched against untrusted input or with an attacker-controlled pattern | §B16 (ReDoS / catastrophic backtracking — keep untrusted input on `regex`, else size-cap + match-timeout) |
 | `Command::new("sh"/"bash"/"cmd")` with `arg("-c"/"/C")` + interpolated input; `.arg(format!(...))` / `.args(untrusted.split(...))` | §C2 (OS command / argument injection) |
 | `sqlx::query(&format!(...))` / `query_as(&format!(...))` / `diesel::sql_query(format!(...))` — untrusted input in the SQL string | §C2 (SQL injection — bind parameters, don't format) |
 | `x().await;` then an independent `y().await;` (no data dependency) | §E1 (serial latency — `tokio::join!`/`try_join!`) |

@@ -93,6 +93,12 @@ These were drafted but will **not** be promoted. Recorded here (rather than left
 
 - **§B18 (draft) `#[no_std]` and `alloc`.** Rejected under the v0.3 scope reframe: its primary failure mode is a compile error (`std::*` paths missing in `no_std`), which the compiler catches — the same reason as the compile-only blockquote above. Not a silent post-compilation bug, so it does not qualify for the spec.
 
+### Backlog — confirmed siblings, lower frequency
+
+Drafted, grounded, and confirmed against the existing taxonomy, but with frequency low enough that the value-per-line is below the bullets/triggers/sources cost. Park here rather than ship inline — promote when an actual incident or a reviewer surfaces it as load-bearing.
+
+- **`tokio::sync::Semaphore` permit lifecycle — sibling of §F3.** A `permit` held across `.await` blocks the rate-limit one slot beyond its intent; a `permit` dropped on the `?`/error path *under* an explicit `forget()` (or never `acquire`-ed under a panic between reserve and use) over-admits the limiter. Same shape as §F3 boundary/error-path lifecycle, scoped to the semaphore primitive. Mentioned in passing in `concurrency-and-state.md` under §B14 (`FuturesUnordered` self-deadlock on a shared semaphore); a dedicated bullet would live in §F3 with cross-refs from §B14 and §B11. Grounding: tokio `Semaphore` docs (permit-on-`Drop` release contract). Defer until a concrete incident or reviewer flags it.
+
 ## 3. Meta-layer refinements
 
 - **Trigger table:** consolidate, not grow — the table is now a source of duplication. Collapse the risk column into pointers (`→ §Bx`) and merge duplicate phrase/code rows rather than adding more.
