@@ -6,6 +6,18 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.4.4] — 2026-06-15
+
+**§D1a gains a fourth shape — the façade fitted to the test.** One bullet, no new categories (still **58**), no new tier. A defect class observed at scale in LLM-generated Rust: where the *circular oracle* (§D1a shape 1) writes the test from the code, the *façade fitted to the test* (new shape 4) writes the code from the test. Given the goal "make this test pass," an agent emits the declaration the test probes (a config key, a header, a status string) and nothing behind it. Unlike shapes 1–3, the test itself is valid — it merely under-specifies the feature, and the model optimizes into the gap (Goodhart on the suite).
+
+### Changed
+
+- **`skill/testing.md` — §D1a** gains shape (4) in the trap intro, one BANNED bullet ("treating a declaration-only test as evidence a behavioral feature works" — with the Grit SHA-256 example), and one REQUIRED clause sharpening the audit-mode counterfactual against this shape: *would a stub that emits exactly the observables this suite checks — and nothing else — still pass?* If yes, the suite specifies a façade, not the feature; ship at least one end-to-end test that **uses** it. Calibration carried in the BANNED bullet: the declaration test itself is fine (§D1's "contract pins are not vacuous" carve-out); *relying on it as behavioral evidence* is the defect.
+- **`skill/SKILL.md`** — one phrase-trigger row added ("make this test pass", "implement just enough to pass", "get the suite green", "satisfy these assertions" → §D1a façade).
+- **`commands/rust-intel-cc/fix.md`** — one routing row added (a feature's tests are green but using it end-to-end fails or corrupts data; tests only check a config flag/header/status string → §D1a façade).
+- **`docs/sources.md`** — new entry in the test-oracle-validity subsection: **Chacon 2026, "Grit"** — narrative field report of a ~360k-LOC LLM-generated Rust reimplementation of Git that reported 41,715 / 42,001 (99.3%) of Git's test suite green while its author publicly stated the build is "not *tested*" and "may even corrupt stuff," with the SHA-256 façade documented in his own words. Observed-pattern grounding (criterion c). Doubles as external corroboration of the spec's central premise that `cargo test` green ≠ correct.
+- **`README.md`** — status block for v0.4.4.
+
 ## [0.4.3] — 2026-06-15
 
 **Siblings of safe-looking primitives** — three bullets, no new categories (still **58**). Each is a sibling-framed addition to an existing §: a safe-looking primitive has a look-alike that reintroduces the very hazard the primitive removes. The category count, tier list, module headers, `MODULES`/`AUDIT_UNITS`, and lettered-split parent list are all unchanged. Calibrated by an independent review pass: §B9 panic-propagation event corrected (`scope` *returns* via `resume_unwind`, not `Scope::drop`); §B16 REQUIRED gains the untrusted-*pattern* defense (`RegexBuilder::size_limit` + pattern-length cap — stacked counted repetition blows up program size on the linear engine too); `sources.md` no longer overstates `regex` as an "explicit linear-time guarantee" (the doc states `O(m·n)` worst case, with `O(m·n²)` for iterator methods).

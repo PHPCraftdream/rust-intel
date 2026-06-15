@@ -78,6 +78,7 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | Test passes locally, flakes on CI / `thread::sleep` in test | §D1 |
    | Test in `tests/` cannot compile after refactor | §D2 |
    | New test is green even with the fix reverted / on pre-fix code; snapshot blessed from a brand-new implementation | §D1a (oracle validity — the oracle is the code itself; add a negative control) |
+   | A feature's tests are green but using it end-to-end fails or corrupts data; tests only check a config flag / header / status string — never exercise the behavior | §D1a (façade fitted to the test — Goodhart on the suite; add one end-to-end test that *uses* the feature, not just one that asserts it was announced) |
    | Works in tests, breaks in prod: wrong arithmetic only in release, timeout only at real data sizes, race only under real concurrency | §D3 (test/prod divergence) — release-wrap → §B26, scale → §E3/§B7, interleaving → §B13/§B9 |
    | CI reads green but a test actually hangs; `SLOW`/`TIMEOUT` lines never surfaced; test command piped through `grep`/`head` | §D4 (filtered live pipe without `set -o pipefail` masks the hang — gate on the runner or tee-to-file-then-grep; root-cause the hang) |
    | Windows: `LNK1104: cannot open file '…exe'` on a test/bench binary after a flaky run | §D5 (a zombie test process holds its own `.exe` — reap stray `<crate>-<hex>.exe` at run start; the real fix is the hang, §D4) |
