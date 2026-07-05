@@ -1,3 +1,7 @@
+בס״ד
+
+לכבוד הקדוש ברוך הוא — *for the glory of the Holy One, blessed be He*
+
 # rust-intel
 
 A living specification that defends against the systematic mistakes LLMs make when writing Rust.
@@ -19,6 +23,8 @@ The premise: Rust's compiler catches a large class of LLM mistakes (a known empi
 The exact category count is given in the spec itself; the count is allowed to evolve.
 
 ## Status
+
+**v0.4.5 — substitution catalog + plugin/npm distribution (2026-06-17).** A Tier E appendix in `data-and-types.md`: a pattern → cheaper-representation lookup table (~22 rows, 4 groups — ownership/allocation, lookup/complexity, the hasher ladder, concurrent maps by access shape), every row gated by §E6 measure-first; no new categories (still **58**). Plus two clone-free install paths: the repo is now a Claude Code **plugin + marketplace** (`/plugin marketplace add PHPCraftdream/rust-intel`) and an **npm package** (`npx rust-intel-cc`), published by CI on every release tag. See [`CHANGELOG.md`](CHANGELOG.md).
 
 **v0.4.4 — §D1a gains the façade fitted to the test (2026-06-15).** One bullet, no new categories (still **58**). A fourth shape under §D1a oracle validity: where the *circular oracle* writes the test from the code, the *façade fitted to the test* writes the code from the test — given the goal "make this test pass," an agent emits the declaration the test probes (a config key, header, status string) without the behavior behind it; tests are green, the feature is absent. Grounded in Chacon 2026, "Grit" (Rust-Git reimplementation, 360k LOC, 99.3% tests green, "not *tested*"). See [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -42,10 +48,16 @@ The exact category count is given in the spec itself; the count is allowed to ev
 
 ```
 rust-intel/
+├── .claude-plugin/                     # Claude Code plugin + marketplace manifests
+│   ├── plugin.json                     # Plugin manifest (skills/commands paths, version)
+│   └── marketplace.json                # This repo is its own marketplace (/plugin marketplace add PHPCraftdream/rust-intel)
 ├── skill/                              # The skill (this is what installs) — modular
 │   ├── SKILL.md                        # Core: protocols, enforcement tiers, trigger table, category→module map
 │   ├── <theme>.md                      # Theme modules (async, unsafe-and-ffi, security, … — the category bodies)
 │   └── audit-project.workflow.js       # Fan-out project audit (one agent per module)
+├── bin/install.js                      # npx installer (npm package: rust-intel-cc)
+├── package.json                        # npm package manifest (published on release tags by CI)
+├── .github/workflows/npm-publish.yml   # Publishes rust-intel-cc to npm on every v* tag
 ├── README.md                           # This file
 ├── CHANGELOG.md                        # Version history
 ├── .gitattributes                      # Line-ending rules (LF for source, CRLF for .ps1/.bat)
@@ -65,7 +77,30 @@ rust-intel/
 
 ## How to use it
 
-### Install (skill + commands)
+### Install — three ways
+
+#### 1. Claude Code plugin (recommended — one command, auto-updates)
+
+Inside any Claude Code session:
+
+```
+/plugin marketplace add PHPCraftdream/rust-intel
+/plugin install rust-intel@rust-intel
+```
+
+That's it — no clone, cross-platform, and updates arrive via `/plugin` (or `claude plugin update rust-intel`). The plugin ships the skill (auto-activates on Rust tasks) plus the commands under the plugin namespace: `/rust-intel:audit`, `/rust-intel:fix`, `/rust-intel:plan`.
+
+#### 2. npx (no clone, flat `/rust-cc-*` command names)
+
+```bash
+npx rust-intel-cc                # project-local: ./.claude/
+npx rust-intel-cc --user        # user-global:   ~/.claude/
+npx rust-intel-cc --uninstall   # inverse (add --user for global)
+```
+
+Same layout as the shell installers below: skill in `<target>/skills/rust-intel/`, commands flattened to `/rust-cc-audit`, `/rust-cc-fix`, `/rust-cc-plan`. Published to npm automatically on every release tag.
+
+#### 3. Shell installers (from a clone; `--symlink` for development)
 
 **Default is project-local** — files land in `./.claude/` of whatever directory you ran the installer from. Pass `--user` (or `-User` on PowerShell) to install to the user-global `~/.claude/` instead.
 
@@ -86,7 +121,7 @@ rust-cc-install.bat -User             # user-global
 # Note: --symlink is bash-only. PowerShell and cmd.exe installers always copy.
 ```
 
-`CLAUDE_CONFIG_DIR` env var overrides everything if set.
+`CLAUDE_CONFIG_DIR` env var overrides the target for the npx and shell installers if set.
 
 The installer copies:
 - `skill/*.md` → `<target>/skills/rust-intel/` (the modular skill — `SKILL.md` core plus theme modules; Claude Code activates it automatically on Rust tasks)

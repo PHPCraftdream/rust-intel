@@ -1,0 +1,16 @@
+{
+  "name": "rust-intel",
+  "displayName": "Rust Intel",
+  "version": "0.4.5",
+  "description": "Defense against LLM Rust failure modes: 58 categories of bugs that survive rustc, clippy, and cargo test — async cancellation, unsafe/FFI, concurrency, crypto, supply-chain, tests-that-pass-by-luck, semantic conformance, and systemic performance cost. Ships the rust-intel skill plus /rust-intel:audit, /rust-intel:fix, /rust-intel:plan commands.",
+  "author": {
+    "name": "Marat K",
+    "email": "phpcraftdream@gmail.com"
+  },
+  "homepage": "https://github.com/PHPCraftdream/rust-intel",
+  "repository": "https://github.com/PHPCraftdream/rust-intel",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["rust", "code-review", "audit", "llm", "correctness", "security", "performance"],
+  "skills": ["./skill/"],
+  "commands": ["./commands/rust-intel-cc/"]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "rust-intel",
+  "owner": {
+    "name": "Marat K",
+    "email": "phpcraftdream@gmail.com"
+  },
+  "description": "Marketplace for the rust-intel plugin — a living specification defending against the systematic mistakes LLMs make when writing Rust.",
+  "plugins": [
+    {
+      "name": "rust-intel",
+      "source": "./",
+      "description": "Defense against LLM Rust failure modes: 58 categories of bugs that survive rustc, clippy, and cargo test. Ships the rust-intel skill (auto-activates on Rust tasks) plus /rust-intel:audit, /rust-intel:fix, /rust-intel:plan commands and a fan-out project-audit workflow.",
+      "category": "development",
+      "tags": ["rust", "code-review", "audit", "correctness", "security", "performance"],
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/PHPCraftdream/rust-intel"
+    }
+  ]
+}

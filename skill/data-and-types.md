@@ -1,6 +1,6 @@
 # Rust Intel — Data, Types, Numerics & Iterators (serde, Eq/Hash, numeric, strings, allocation/complexity cost)
 
-> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B6, §B16, §B20, §B26, §B27, §B28, §B29, §C4, §E2, §E3. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
+> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §B6, §B16, §B20, §B26, §B27, §B28, §B29, §C4, §E2, §E3 — plus the **Substitution catalog** (Tier E appendix: pattern → cheaper representation, gated by §E6). Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
 > **Tiers in this module:** §B6 🟡 · §B16 🟡 · §B20 🟡 · §B26 🟡 (narrowing as — 🟢 except trust boundary) · §B27 🟡 · §B28 🟡 · §B29 🟡 · §C4 🟡 · §E2 🟡/🟢 · §E3 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
 > **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
@@ -150,11 +150,63 @@
 - **Where it shows up**: reflexive `.clone()`/`.to_vec()`/`.to_string()` to dodge a borrow (§C5); an intermediate `.collect::<Vec<_>>()` only to iterate once; `Vec`/`String` grown by `push` in a loop with no `with_capacity` when the size is known; `format!` where `write!`/`Display`/`push_str` would write in place; returning owned `Vec`/`String` where `impl Iterator`/`&[T]`/`Cow<'_, str>` (§B1b) would let the caller decide; `Box`/`Arc` that buys nothing; a large struct passed by value where `&T` suffices.
 - **The cheaper move**: borrow don't clone; take `&str`/`&[T]`, return `Cow` when ownership is conditional; pre-size with `with_capacity`/`reserve`; stream with iterators instead of materializing; reuse a scratch buffer (`clear()` + refill) across iterations and calls; `bytes::Bytes` for shared/zero-copy network buffers.
 - **Leave it when**: one-shot on a cold path, the clone is of a `Copy`/tiny type, or removing it tangles lifetimes for no measured gain. `clippy::perf` flags the obvious cases (`inefficient_to_string`, `useless_vec`); `redundant_clone`/`needless_collect` live in `nursery` (allow-by-default) and need an explicit `-W` — the Post-flight command enables `-W clippy::redundant_clone`.
-- 🟢 + 🟡. Cross: §C5, §B1b.
+- 🟢 + 🟡. Cross: §C5, §B1b. For the full lookup table of representation swaps, see the **Substitution catalog** below.
 
 ## §E3. Complexity that compounds — *An O(n²) invisible at n=10 is an outage at n=10⁴.*
 
 - **Where it shows up**: accidental quadratic — `.contains()`/`.position()`/`Vec::remove(0)`/`insert(0, _)` inside a loop (§C4); a nested-loop join that re-scans the inner collection per outer element; rebuilding or re-sorting a collection every iteration. The wrong container for the access pattern: `Vec` used for membership, front-insertion, or keyed lookup.
 - **The cheaper move**: hoist the inner collection into a `HashSet`/`HashMap` once, then O(1) lookup; `VecDeque` for front/back queues; `swap_remove` when order is free; `SmallVec`/`ArrayVec` for almost-always-tiny collections; `BTreeMap` for ordered iteration; a `match` or fixed array (or `phf`) for tiny static key sets; sort once, not per iteration.
 - **Leave it when**: n is provably small and bounded (a 3-element config), or the path is cold. Algorithmic complexity is the one performance class worth fixing without a profiler — unlike micro-allocation, it does not wait for load to hurt.
-- 🟡 (escalate to surface on a per-request path). Cross: §C4. Verify any new crate before adding — §A1.
+- 🟡 (escalate to surface on a per-request path). Cross: §C4. Verify any new crate before adding — §A1. For the full lookup table of representation swaps, see the **Substitution catalog** below.
+
+---
+
+## Substitution catalog — a cheaper representation for the same job (Tier E appendix)
+
+A write-time lookup table for §E2/§E3/§E4: when the code contains the pattern in the left column, *propose* the right column — with the gate in the third. This is a catalog, not a mandate: every row is 🟡 under §E6's measure-first law. Propose a swap when the path is hot / per-request or the change is free; never rewrite working code for an unmeasured win, and never trade an API's clarity for a micro-gain. Any row introducing a new crate goes through §A1 verification first. Audit semantics: rows here are suggestions, not findings — report one only when it coincides with a genuine §E2/§E3/§E4 hazard on a hot path.
+
+**Ownership & allocation** (§E2's domain):
+
+| You wrote | Consider | Gate — when it pays / when to leave it |
+|---|---|---|
+| `.clone()` / `.to_string()` / `.to_vec()` to satisfy the borrow checker | `&T` / `&str` / `&[T]`; `Cow<'_, str>` when ownership is conditional | Always worth a look (§C5); leave when the type is `Copy`/tiny or the path is cold |
+| Cloning a large immutable value into many tasks/threads | `Arc<T>` (also `Arc<str>`, `Arc<[T]>`) — clone becomes a refcount bump | Value is immutable after construction; if it mutates, that's §A2/§E4 territory, not this row |
+| Copying byte buffers between pipeline stages | `bytes::Bytes` / `BytesMut` — refcounted zero-copy slicing | Multi-stage byte pipelines (network, framing); overkill for a one-shot read |
+| Millions of short heap `String`s (ids, tags, tokens) | `compact_str` / `smol_str` — inline small-string optimization | Profile shows string-alloc churn; new dep → §A1 |
+| A `Vec<T>` field that almost always holds ≤ N small items | `smallvec::SmallVec<[T; N]>` — inline until spill; `arrayvec` for strictly stack-only; `tinyvec` when a 100%-safe dep matters | Hot, allocation-dominated, N genuinely small; otherwise it just bloats the struct and adds a spill branch |
+| `format!` in a hot loop (map keys, log lines, numbers) | `write!` into a reused buffer; `itoa`/`ryu` for hot int/float → string | Hot serialization paths; keep `format!` everywhere cold — readability wins |
+
+**Lookup & complexity** (§E3's domain):
+
+| You wrote | Consider | Gate — when it pays / when to leave it |
+|---|---|---|
+| `vec.contains(x)` / `.position()` inside a loop | Hoist into a `HashSet`/`HashMap` once → O(1) per probe | n can grow; leave for tiny bounded n (a 3-element config) |
+| `Vec::remove(0)` / `insert(0, _)` | `VecDeque` (`push_front`/`pop_front` are O(1)); `swap_remove` when order is free | Queue-shaped access (§C4) |
+| Re-sorting per iteration; repeated min/max extraction | Sort once outside the loop; `BinaryHeap` for repeated extract-min/max | — |
+| `HashMap<usize, T>` with dense, small integer keys | Index a `Vec<T>` / `Vec<Option<T>>` directly; `slab`/`slotmap` when slots are reused and keys must stay stable | Keys dense (0..n); sparse ids → keep the map |
+| `HashSet<usize>` membership over dense integer ids | A bitset (`fixedbitset` / `bitvec`) — 1 bit per id, cache-friendly | Dense universe; sparse → keep the set |
+| Dispatch over a small fixed string/key set | `match` on the literal, a const array, or `phf` (compile-time perfect hash) | Keys known at compile time |
+| A tiny *dynamic* map (N ≲ 32 small entries) on a hot path | `Vec<(K, V)>` with linear scan | Below a few dozen small entries a linear scan beats hashing (no hash, better cache locality); re-measure if N can grow |
+| Keyed lookup *plus* ordered iteration / range queries / repeated min-max | `BTreeMap`/`BTreeSet` — cache-friendly B-tree, `range()` for free | You actually use the ordering; for pure point lookups the hash map wins |
+| Output, serde snapshot, or a test depends on map iteration order | `indexmap::IndexMap`/`IndexSet` — hash map preserving insertion order | Deterministic iteration wanted by design — also the honest fix when a test depends on iteration order (std `HashMap`'s is random per process; pinning it via the test is a §D1 flake) |
+| Hand-rolled byte scanning | `memchr` / `memmem` — SIMD-accelerated search | Hot parsing loops; note std's `str::find` already uses these internally for common cases |
+
+**Keys & hashing** (§E4/§B16's domain — the trust boundary rules there are canonical):
+
+| You wrote | Consider | Gate — when it pays / when to leave it |
+|---|---|---|
+| Default `HashMap` (SipHash) on a hot path, keys you control | Pick by key shape: `rustc_hash::FxHashMap` for integer/tiny keys (what rustc itself runs on); `foldhash` for strings/medium keys (hashbrown's default since 0.15; `fast` and `quality` profiles); `ahash` (AES-NI, long-established) | **Trusted keys only** — on untrusted input a fixed-seed fast hasher is HashDoS; §B16 owns that boundary and it is not negotiable. Skip `fnv` (loses to Fx nearly everywhere today); `gxhash`/`wyhash` are niche wins behind §A1 + a target-CPU check (`gxhash` hard-requires AES intrinsics) |
+| `map.get(&key.to_string())` with a `&str` already in hand | `map.get(key)` — `Borrow<str>` makes the allocation pointless | Always |
+| `contains_key` + `insert` pair | The `entry()` API — one hash lookup instead of two, and check-then-act atomicity per §B13 | Always (synchronous only — §B2's shard-guard rule if an `.await` follows) |
+
+**Concurrent maps — pick by access shape** (§E4's domain; §B2's guard-across-`.await` rule applies to *every* guard-returning API here):
+
+| Access shape | Consider | Gate — when it pays / when to leave it |
+|---|---|---|
+| Moderate mixed read/write from many threads | `dashmap::DashMap`/`DashSet` — N shards × `RwLock` over hashbrown | The de-facto standard; degrades under hot-key contention (all writers of one key queue on its shard); holding a `Ref` across `.await` deadlocks the shard (§B2) |
+| Read-heavy, high concurrency — especially async | `scc::HashMap`/`HashIndex` — per-bucket locking, honest `*_async` methods, no stop-the-world resize; `papaya`/`flurry` for fully lock-free reads | `papaya` (2024+) and `flurry` are newer — §A1 verify and measure against `dashmap` on *your* access shape before switching |
+| Reads ≫ writes, snapshot staleness acceptable | `arc_swap::ArcSwap<HashMap>` — rebuild and swap the whole snapshot; `evmap`/left-right — readers never block | The gate is the **consistency model**, not the speed: writes become visible on publish/refresh, not immediately — state that in a comment |
+| Ordered iteration / range queries under concurrency | `crossbeam-skiplist` (`SkipMap`) / `scc::TreeIndex` | Ordered + concurrent without a global lock; single-threaded ordered → plain `BTreeMap` |
+| A single global `Mutex<HashMap<…>>` bottleneck | First ask §A2/§E4's design question — does the data shard per key? is it read-mostly? — before reaching for any concurrent map | The catalog is not a license to skip the design step; a concurrent map on top of the wrong ownership shape just moves the queue |
+
+**When NOT to substitute**: the profile is silent and the path is cold; the swap adds a dependency for a win nobody measured; the current type is part of a public API (§C1 — changing it is a semver event, not an optimization); or the "faster" structure loses a property the code relies on (ordering, stable addresses, iteration determinism). §E6 is the binding law of this table: the catalog tells you *what to reach for*, the profiler tells you *whether to bother*.

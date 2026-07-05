@@ -1,0 +1,37 @@
+{
+  "name": "rust-intel-cc",
+  "version": "0.4.5",
+  "description": "Defense against LLM Rust failure modes for Claude Code: 58 categories of bugs that survive rustc, clippy, and cargo test. npx installer for the rust-intel skill + /rust-cc-* commands.",
+  "bin": {
+    "rust-intel-cc": "bin/install.js"
+  },
+  "files": [
+    "bin/",
+    "skill/",
+    "commands/rust-intel-cc/",
+    "CHANGELOG.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PHPCraftdream/rust-intel.git"
+  },
+  "homepage": "https://github.com/PHPCraftdream/rust-intel#readme",
+  "bugs": "https://github.com/PHPCraftdream/rust-intel/issues",
+  "keywords": [
+    "rust",
+    "claude-code",
+    "claude",
+    "code-review",
+    "audit",
+    "llm",
+    "correctness",
+    "security"
+  ],
+  "author": "Marat K <phpcraftdream@gmail.com>",
+  "license": "(MIT OR Apache-2.0)"
+}

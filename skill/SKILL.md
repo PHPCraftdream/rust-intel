@@ -1,4 +1,5 @@
 ---
+name: rust-intel
 description: Hard rules for writing Rust in code that already compiles and passes tests but is silently broken, slow, or semver-fragile. Load this BEFORE writing any Rust code. Targets bugs that survive rustc, clippy, and cargo test but fail in production or rot the codebase. Covers async, unsafe, FFI, concurrency, crypto, supply-chain, tests-that-pass-by-luck, and systemic performance-at-scale hazards. Also covers semantic-conformance defects: spec divergence, violated documented guarantees, boundary/error-path resource lifecycle, missing round-trip obligations, and invalid test oracles.
 ---
 
@@ -250,6 +251,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "run concurrently", "parallelize", "two awaits", "rayon", "spawn_blocking" | §E1 serialism | independent work done in sequence; CPU-bound work stalling the async worker |
 | "reduce allocations", "zero-copy", "avoid clone" | §E2 allocation | reflexive `.clone()`/`.collect()`/`format!`; allocate-in-a-loop with no `with_capacity` |
 | "fast hash", "faster HashMap", "FxHashMap" | §E4 contention + §B16 Eq/Hash | fast fixed-seed hasher is a win for trusted keys, a HashDoS trap for untrusted ones |
+| "which container/structure should I use", "avoid this clone", "too many allocations", "can this be cheaper/faster", "which concurrent map / hasher" | §E2/§E3/§E4 + Substitution catalog (`data-and-types.md`) | pattern → cheaper representation lookup table (Cow, Arc<str>, Bytes, SmallVec, VecDeque, bitset, slab, indexmap, entry(), the hasher ladder, concurrent maps by access shape), every row gated by §E6 measure-first |
 | "lookahead/lookbehind in regex", "backreference", "I need fancy-regex / onig / pcre2", "regex on user input" | §B16 ReDoS sibling | the `regex` crate is linear by construction; backtracking engines on untrusted input/pattern → catastrophic backtracking (CWE-1333); size-cap + match-timeout |
 | "reduce contention", "lock is slow", "scale across cores" | §E4 contention | a lock is a queue under load; read-mostly/sharding/atomic beats `Arc<Mutex>` |
 | "add tests", "unit tests for this", "increase coverage", "write a test" | §D1 vacuous tests | test a *postcondition that could break* or an external *contract* — never a tautology/constant/`derive` |
