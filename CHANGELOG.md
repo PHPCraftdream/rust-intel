@@ -6,6 +6,16 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.4.6] — 2026-07-07
+
+**§B5 gains the padding-byte info-leak on serialize.** One bullet-pair, no new categories (still **58**), no tier change. The write-direction dual of §B5's existing "validate bytes → `Result` before minting" rule: turning a struct into `&[u8]` by a raw cast copies its inter-field padding, which is uninitialized — reading it is UB (miri flags it) *and* it carries stale memory out of the process (Heartbleed-class disclosure; a §B12 secret-leak when those bytes are sensitive). Compiles and passes `cargo test` because the value round-trips fine locally. Surfaced by miri-assisted LLM audits of real crates (Levin/Shnatsel 2026).
+
+### Changed
+
+- **`skill/unsafe-and-ffi.md` — §B5** gains one BANNED bullet (serializing a padded struct to bytes via a raw cast — `from_raw_parts(&t as *const _ as *const u8, size_of)` / `bytes_of` / `transmute` — across a trust boundary; and the `unsafe impl NoUninit`/`Pod`-to-force-it anti-pattern) and one REQUIRED bullet (derive `bytemuck::NoUninit` / `zerocopy::IntoBytes` and let them reject padded types at compile time — the rejection *is* the leak being caught; else make the layout padding-free with explicit zero-initialized `_pad` fields or serialize field-by-field; `#[repr(packed)]` removes padding but reintroduces the unaligned-access hazard). Calibration: scoped to bytes that cross a trust boundary (network/disk/IPC/log), not every struct-to-bytes.
+- **`skill/SKILL.md`** — one code-pattern trigger row (`&t as *const _ as *const u8` + `from_raw_parts`, or `bytes_of`/`transmute` on a struct, written to a socket/file/log → §B5 padding leak).
+- **`docs/sources.md`** — one grounding entry: `bytemuck::NoUninit` / `zerocopy::IntoBytes` reject-padding-at-compile-time contracts, CWE-212 (sensitive-info exposure) + CWE-908 (uninitialized resource), and the miri-assisted-audit field observation. Documented-mechanism grounding; no numeric claims.
+
 ## [0.4.5] — 2026-06-17
 
 **Distribution: Claude Code plugin marketplace + npm.** Two install paths that need no clone, alongside the existing shell installers.

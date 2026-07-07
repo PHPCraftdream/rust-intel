@@ -283,6 +283,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `tokio::select! { ... }` with side effects inside any arm body | §B23 (arm side effects) |
 | `tokio::spawn` inside a function with an active `tracing::Span` | §C9 (span leakage) |
 | `mem::transmute`, `ptr::read`, `slice::from_raw_parts` | §B5 (UB-prone unsafe; validate bytes → `Result` before minting the typed value, never mint-then-check) |
+| `&t as *const _ as *const u8` + `from_raw_parts(_, size_of)`, or `bytes_of`/`transmute` on a struct, then written to a socket/file/log | §B5 (padding-byte info-leak — reading uninit padding is UB *and* leaks stale memory; derive `NoUninit`/`IntoBytes` and let it reject padding, or serialize field-by-field) |
 | a hand-written type with a `*const T` / `*mut T` / `NonNull<T>` field, or a by-hand `PhantomData<...>` | §B18a (variance / `PhantomData` soundness — covariance where invariance is needed → UAF), §B18 |
 | a struct holding both a `JoinHandle` (or `thread::JoinHandle`) and the `mpsc::Sender` that feeds its worker | §B4 (drop-order shutdown deadlock — close/drop the `Sender` before the join) |
 | a self-owning recursive type (`Box<Self>` linked list, deep `Box<Node>` tree) on the auto-derived `Drop` | §B4 / §B7 (recursive `Drop` overflows the stack on deep input — write an iterative `Drop`) |
