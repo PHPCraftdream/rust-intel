@@ -190,6 +190,9 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "read a file", "make HTTP request", "sleep", "wait N seconds" in async context | §B11 blocking executor | `std::fs`/`std::thread::sleep` in `async fn` |
 | "add this dependency", "use crate X for Y", "what crate should I use" | §A1 slopsquatting | Hallucinated crate name → supply-chain attack |
 | "encrypt", "decrypt", "hash a password", "JWT", "TLS", "sign this", "AES", "AEAD" | §B12 crypto insecurity | Nonce reuse, weak primitives, hallucinated crypto API |
+| "verify a JWT", "decode the token", "check the claims", "validate the audience/issuer" | §B12 crypto insecurity | claims left unchecked — `aud`/`iss` default to `None`, `validate_exp = false`; not just `alg` |
+| "self-signed cert", "accept the dev certificate", "ignore TLS errors", "certificate error", "reqwest/rustls client" | §B12 crypto insecurity | `danger_accept_invalid_certs` / no-op `ServerCertVerifier` → silent MITM (CWE-295) — pin the CA instead |
+| "store a password", "salt the hash", "PBKDF2/Argon2 parameters", "derive a key from a password" | §B12 crypto insecurity | fixed/reused salt; below-OWASP-floor work factors; per-user `SaltString::generate` + OWASP params |
 | "public API", "library", "publish to crates.io", "what should the signature be" | §B1 lifetime leaking; §C1 blanket impls; §C1a non_exhaustive | `'a` in public signatures, semver hazards; adding an enum variant / struct field is a major break without `#[non_exhaustive]` |
 | "lazy cache", "memoize", "compute if absent", "deduplicate concurrent requests", "ensure only once" | §B13 TOCTOU | `contains_key` + `insert` race; should be `entry().or_insert_with` |
 | "DashMap/concurrent-map lazy init + await", "init the entry then await", "get-or-insert then fetch" | §B2 shard guard across `.await` | the `entry()`/`get()` `Ref` is a sync shard lock; holding it across the init `.await` deadlocks the whole shard — store `Arc<OnceCell<T>>`, clone out, drop the guard before awaiting |
@@ -206,6 +209,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "rate limit", "throttle" | §B14 backpressure | Unbounded queue feeding the limiter |
 | "batch", "buffer messages", "coalesce" | §B14 backpressure; §C8 channel choice | Wrong channel for the producer/consumer fanout |
 | "compare token", "verify signature", "check password hash", "verify MAC", "validate HMAC" | §B24 timing attack | `==` on secret material is a network-observable side channel |
+| "decrypt endpoint", "return the decrypt error", "why did decryption fail", "distinguish padding vs MAC" | §B24 decrypt oracle | distinguishable decrypt-failure errors across a trust boundary are a padding oracle (CWE-208/209) — one opaque error |
 | "deserialize JSON", "parse config", "load YAML", "decode payload" | §B20 serde field-presence | `null` vs absent collapse; `untagged` variant overlap |
 | "tracing span", "log context", "instrument", "correlation id" | §C9 span leakage | `tokio::spawn` without `.in_current_span()` |
 | "close connection", "shutdown gracefully", "flush buffer", "drain on exit" | §B4 Drop semantics; §B22 async Drop is not real | Library-specific Drop; async cleanup in `Drop::drop`; drop-order deadlock (`JoinHandle` joined before `Sender` closed) |
@@ -279,6 +283,11 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `#[serde(untagged)]` enum | §B20 (variant shape overlap) |
 | `if X { map.insert(...) }` or `cache.contains_key + cache.insert` | §B13 (TOCTOU) |
 | `==` / `!=` where one operand is *secret material* — a token, MAC tag, password hash, OTP, session key (not a public literal like an algorithm name `"HS256"`) | §B24 (timing attack) |
+| `danger_accept_invalid_certs(true)` / `danger_accept_invalid_hostnames(true)`, or a `ServerCertVerifier::verify_server_cert` returning `Ok(...)` unconditionally, outside `#[cfg(test)]` | §B12 (TLS validation bypass → MITM, CWE-295) |
+| `Validation::new(...)` used without `set_audience`/`set_issuer`/`set_required_spec_claims`; `validate_exp = false`; `insecure_disable_signature_validation()` | §B12 (JWT claims unchecked / verification disabled) |
+| `SaltString::from_b64(...)` / a `b"..."` literal salt / a salt derived from the username; `Argon2`/`pbkdf2` with visibly low params | §B12 (fixed salt / below-floor KDF params) |
+| `priv_key.decrypt(Pkcs1v15Encrypt, ...)` / low-level `rsa` private-key op on a request-handler path | §B12 (Marvin timing side channel — RUSTSEC-2023-0071; `cargo audit` before adding crypto deps) |
+| distinct `thiserror` variants / messages / HTTP statuses for padding vs MAC vs post-decrypt-parse failure, returned to a client | §B24 (decryption-failure oracle — collapse to one opaque error) |
 | Manual `impl PartialEq` or `impl Ord` on a type used as `HashMap`/`BTreeMap` key | §B16 (Eq/Hash contract) |
 | `tokio::select! { ... }` with side effects inside any arm body | §B23 (arm side effects) |
 | `tokio::spawn` inside a function with an active `tracing::Span` | §C9 (span leakage) |

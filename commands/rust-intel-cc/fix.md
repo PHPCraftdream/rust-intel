@@ -54,6 +54,12 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | "Compiles and works on x86/dev, but garbage/race on ARM/AArch64; data published via an atomic is visible before the payload write" | §B13 (`Relaxed`-publish — use `Release`/`Acquire`, or `AcqRel`/`SeqCst` for RMW; model-check with `loom`) |
    | "The message/request/write didn't happen but no error either" | §B8 (forgotten `.await`) |
    | Encrypt/decrypt works, but security review finds a vulnerability | §B12 |
+   | A token minted for another service/tenant authenticates; JWT verifies but `aud`/`iss` unchecked; expired token accepted | §B12 (claims not validated — `set_audience`/`set_issuer`/`set_required_spec_claims`; never `validate_exp = false`) |
+   | TLS/certificate errors "fixed" with `danger_accept_invalid_certs` / a no-op cert verifier; MITM in prod | §B12 (validation bypass, CWE-295 — pin the internal CA, never disable) |
+   | Password hashes identical for identical passwords; cracking one cracks a cohort; hashing "too slow" for tests | §B12 (fixed/reused salt or below-OWASP-floor KDF params — per-user `SaltString::generate` + OWASP floor) |
+   | Secret still visible in a core dump / swap after `#[derive(ZeroizeOnDrop)]`; leaks on a return or `push_str` | §B12 (zeroize defeated by move/realloc — `Box`/`SecretBox` at creation, pre-size buffers) |
+   | Crypto op is remotely timing-attackable with no code bug; `cargo audit` flags an open advisory on `rsa` | §B12 (Marvin / RUSTSEC-2023-0071 — keep advisory-carrying ops off attacker-timed paths) |
+   | Byte-at-a-time plaintext recovery; a decrypt endpoint returns distinguishable "bad padding" vs "MAC failed" errors | §B24 (decryption-failure oracle — collapse to one opaque error; error context stops at the crypto boundary, cf. §C2) |
    | `HashMap::get` returns `None` but the value was inserted | §B16 (Eq/Hash contract mismatch) |
    | A worker pins at 100% CPU on a regex match / request times out on a specific input; the engine is `fancy-regex` / `onig` / `pcre2` | §B16 (ReDoS — catastrophic backtracking on untrusted input; keep untrusted input on the linear `regex` crate, else size-cap + hard match timeout) |
    | panic `already borrowed: BorrowMutError` | §B17 (RefCell reentrant borrow) |
