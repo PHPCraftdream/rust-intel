@@ -65,6 +65,11 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | panic `already borrowed: BorrowMutError` | §B17 (RefCell reentrant borrow) |
    | `unsafe impl Send` / `unsafe impl Sync` without SAFETY justification | §B18 |
    | `untagged` enum deserializes to wrong variant | §B20 (variant shape overlap) |
+   | OOM / process abort decompressing a small gzip/zip/tar body though the compressed size was capped | §B7 (decompression bomb — the compressed cap bounds the wrong side; `.take(MAX+1)` on the decoder's output) |
+   | Stack overflow / SIGSEGV re-deserializing an already-parsed `serde_json::Value` (`from_value`/`IgnoredAny`/`flatten`) or on deeply-nested YAML, though "serde_json has a recursion limit" | §B7 (the 128 limit is parse-phase only; AST re-deserialize bypasses it; serde_yaml has none — `serde_stacker` / cap depth pre-parse) |
+   | Untrusted length clamp passes but allocation still OOMs; `count * item_size` clamped then allocated | §B7 / §B26 (release-wrap multiply passes the clamp, original count OOMs — `checked_mul`; CWE-190→789) |
+   | Client smuggles an extra/typo'd/duplicate JSON field past validation (mass assignment; `{"amount":1,"amount":1000000}` → last-wins) | §B20 (missing `deny_unknown_fields` on an untrusted request struct; JSON duplicate-key last-wins) |
+   | Deserialization ~2× slower / whole body allocated / errors lose position after adding `#[serde(flatten)]` or an internally-tagged enum | §B20 (flatten flips serde into buffer-everything `Content` mode — §E2; keep it off hot/untrusted paths) |
    | Task started but no way to cancel or observe completion | §B21 (dropped JoinHandle) |
    | Owner's `Drop` never runs / a periodic task outlives its owner / `_exits_on_drop` test hangs | §B21 (timer task holds a strong `Arc` to its owner — hold `Weak`, exit on `upgrade()==None`) |
    | "Resource didn't close" / connection pool exhausted | §B22 (async Drop is not real) |

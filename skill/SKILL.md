@@ -248,6 +248,9 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "sort by", "order by", "multi-key sort" | §B16 sort stability | `sort_unstable` breaks secondary order |
 | "recursive parser", "walk the tree", "parse nested" | §B7 recursion depth | unbounded depth → stack overflow (DoS) |
 | "read a length prefix", "preallocate a buffer", "buffer from a size field", "read N bytes where N is from input" | §B7 allocation DoS | `with_capacity(attacker_n)` → OOM; clamp + `Read::take(limit)` |
+| "decompress", "gunzip", "inflate", "unzip", "extract archive", "gzip/deflate/zlib body" | §B7 decompression bomb | capping the *compressed* input does not cap the *decompressed* output; `.take(MAX+1)` on the **decoder** |
+| "re-deserialize a Value", "from_value", "middleware JSON", "parse YAML config from upload", "already-parsed JSON" | §B7 parser-recursion sub-clause | serde_json's 128 limit is parse-phase only; `from_value`/`IgnoredAny`/`flatten` over an AST bypass it; serde_yaml has none — `serde_stacker` or cap depth pre-parse |
+| "validate request body", "reject unexpected fields", "PATCH/PUT body", "mass assignment" | §B20 deny_unknown_fields | default serde ignores unknown fields (smuggling/mass-assignment); JSON duplicate keys last-wins |
 | "counter", "offset", "accumulate", "running total", "sum", "balance", "index arithmetic" | §B26 integer overflow | debug panics, release silently wraps; use `checked_*`/`saturating_*` |
 | "divide", "modulo", "percentage", "average", "ratio" | §B26 div-by-zero | `/ 0` and `% 0` panic; integer `%` truncates toward zero |
 | "read from socket", "read the stream", "write to connection", "read N bytes" | §C4 partial read/write | a single `read`/`write` may transfer fewer bytes; use `read_exact`/`write_all` |
@@ -304,6 +307,10 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `pub enum` / `pub struct` (especially an error enum) in a published library without `#[non_exhaustive]` | §C1a (adding a variant / field is a semver-major break downstream) |
 | `Box::new([0u8; N])` where `N` is large | §B7 (stack overflow before placement) |
 | `Vec::with_capacity(n)` / `vec![_; n]` / `reserve(n)` / `String::with_capacity(n)` where `n` is from untrusted input | §B7 (attacker-controlled allocation size) |
+| `GzDecoder`/`DeflateDecoder`/`ZlibDecoder`/`ZipArchive` + `read_to_end`/`extract` with no cap on the *decoded* output (compressed cap is not enough) | §B7 (decompression bomb — `.take(MAX+1)` on the decoder) |
+| `serde_json::from_value(...)` / `IgnoredAny` on untrusted input; `serde_yaml::from_*` on an untrusted body | §B7 (recursion over an already-built AST bypasses the parse-phase depth limit → uncatchable stack overflow) |
+| `count * std::mem::size_of::<_>()` / `w * h * bpp` used to clamp then allocate, without `checked_mul` | §B7 / §B26 (release wrap passes the size clamp, original count OOMs — CWE-190→789) |
+| `#[derive(Deserialize)]` struct taking an untrusted request body (auth/financial/PATCH) without `deny_unknown_fields`; `#[serde(flatten)]` on a hot/untrusted deserialization path | §B20 (unknown-field smuggling / duplicate-key last-wins; `flatten` buffer-everything cliff — §E2) |
 | `extern "C" fn` body, `#[no_mangle]`, `Box::into_raw`/`Box::from_raw`, `Vec::from_raw_parts` | §B25 (FFI ABI and ownership), §B5 (UB-prone unsafe) |
 | `#[no_mangle]`/`#[unsafe(no_mangle)]` + `pub extern "C" fn` whose parameter is `&T`/`&mut T`/`&str`/`bool`/`char`/a plain `enum` (not `*const/*mut` + primitives) | §B25 (exported entry point trusts the type system — C can pass NULL/non-UTF-8/bad-discriminant → UB in safe Rust; validate the raw bits before minting), §B5 |
 | `union` keyword / `bindgen`-generated union / a field read like `unsafe { u.field }` with no preceding tag/discriminant `match` | §B5 (union field read without active-field check is instant UB; `#[repr(C)]` + tag-checked accessor, or use an `enum`) |
