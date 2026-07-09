@@ -199,6 +199,8 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "DashMap/concurrent-map lazy init + await", "init the entry then await", "get-or-insert then fetch" | §B2 shard guard across `.await` | the `entry()`/`get()` `Ref` is a sync shard lock; holding it across the init `.await` deadlocks the whole shard — store `Arc<OnceCell<T>>`, clone out, drop the guard before awaiting |
 | "coordinator loop", "leader/drain/flush loop", "retry the flush forever", "background flusher" | §B3a coordinator circuit-breaker | a loop that retries a persistently-failing op without exiting livelocks one core and strands leadership — release the flag and return on error |
 | "background worker", "event queue", "log pipeline", "broadcast to subscribers", "producer-consumer" | §B14 unbounded queue | `unbounded_channel` instead of bounded + backpressure policy |
+| "accept loop", "handle each connection", "spawn per request", "one task per connection" | §B14 unbounded admission; §B21; §F3 | no concurrency cap → N sockets/tasks/buffers (attacker sets N); `?` on `accept()` kills the loop, log-and-continue busy-spins on `EMFILE` — `Arc<Semaphore>` + `acquire_owned` before spawn, permit moved in; classify accept errors |
+| "cache per user/IP/session", "remember which X we've seen", "dedup set", "per-IP rate limiter map" | §B14 insert-only keyed collection | `HashMap`/`DashMap` insert with no eviction/TTL/cap on attacker-influenced keys grows forever (CWE-770) — bound with `lru`/`moka` or argue the key space is closed |
 | "trait with async method", "trait Foo { async fn ... }", "trait object" | §B15a AFIT/RPITIT | Missing `+ Send` bound, not spawn-able; for a `dyn` async trait, not dyn-compatible without `async-trait` |
 | "implement Future manually", "custom Poll", "wake the task" | §B15b Waker | `Poll::Pending` without registering waker → hang forever |
 | "block_on this from a helper", "synchronous wrapper for async" | §B15c nested runtime | `block_on` inside async context → panic |
@@ -206,7 +208,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "procedural macro", "derive macro", "proc-macro2", "syn"/"quote" | §C6 macro hygiene | Bare `Option`/`Result` paths, `panic!` in macro errors |
 | "feature flag", "conditional compilation", "cfg attribute" | §C7 feature hygiene | Typo'd feature names silently become dead code |
 | "singleton", "global state", "static config", "app-wide", "OnceLock", "lazy_static", "once_cell" | §A2 Box::leak; §B13 TOCTOU | leak grows on re-init (use `OnceLock`/`LazyLock`); init race |
-| "retry", "exponential backoff", "retry with jitter" | §B3 cancel safety; §B14 unbounded queue | Cancellation between retry and ack; retry buffer growth |
+| "retry", "exponential backoff", "retry with jitter", "reconnect on disconnect" | §B3 cancel safety; §B3a jitter; §B14 unbounded queue | Cancellation between retry and ack; retry buffer growth; deterministic backoff (no jitter) synchronizes N instances into thundering-herd waves — add jitter + a retry budget |
 | "rate limit", "throttle" | §B14 backpressure | Unbounded queue feeding the limiter |
 | "batch", "buffer messages", "coalesce" | §B14 backpressure; §C8 channel choice | Wrong channel for the producer/consumer fanout |
 | "compare token", "verify signature", "check password hash", "verify MAC", "validate HMAC" | §B24 timing attack | `==` on secret material is a network-observable side channel |
@@ -333,6 +335,9 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `mem::forget(...)` / `ManuallyDrop` without manual drop | §B4 (RAII disabled) |
 | `if let … {} else {}` whose scrutinee holds a lock/RAII guard; a custom-`Drop` value in tail position | §B4a (edition-2024 temporary-scope shift) |
 | `FuturesUnordered` pushed unbounded or polled while empty in `select!` | §B14 (busy-loop / unbounded growth) |
+| `loop { let (stream,_) = listener.accept().await?; tokio::spawn(...) }` with no `Semaphore` cap; `accept()` behind `?` or a bare `warn!; continue` | §B14 (unbounded admission — cap with `Arc<Semaphore>` + `acquire_owned` before spawn, permit moved in; classify accept errors: fatal vs transient-with-backoff, never hot-loop on `EMFILE`) |
+| `map.insert(key, v)` on a `HashMap`/`DashMap`/`BTreeMap` where `key` derives from request path/header/IP and there is no eviction/TTL/cap | §B14 (insert-only unbounded cache/registry — `lru`/`moka` or a stated cardinality bound) |
+| a second `lock.read()` on a `std::sync::RwLock` / `tokio::sync::RwLock` reachable while a first read guard is still live (through a helper/trait/callback) | §B17 (reentrant read deadlocks under a waiting writer — std's policy is unspecified, tokio's is write-preferring; drop the guard before re-reading or pass the data down) |
 | `watch::channel(...)` / `Receiver::borrow()` | §B15e (initial-value semantics) |
 | `Vec::remove(0)` / `insert(0, _)` / `contains` in a loop | §C4 (O(n²)) |
 | `{:?}` on `&[u8]`/`Vec<u8>` | §C4 (decimal not hex) |
