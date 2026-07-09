@@ -30,7 +30,7 @@ const MODULES = [
   { file: 'concurrency-and-state.md', categories: ['A2','B9','B10','B13','B14','B17','B19','C8','E4'] },
   { file: 'data-and-types.md', categories: ['B6','B16','B20','B26','B27','B28','B29','C4','E2','E3'] },
   { file: 'security.md', categories: ['B12','B24','C2'] },
-  { file: 'unsafe-and-ffi.md', categories: ['B5','B7','B18','B18a','B25'] },
+  { file: 'unsafe-and-ffi.md', categories: ['B5','B7','B18','B18a','B25','B25a'] },
   { file: 'drop-and-raii.md', categories: ['B4','B4a'] },
   { file: 'deps-macros-ergonomics.md', categories: ['A1','C5','C6','C7','C10','C11','E5'] },
   { file: 'lifetimes-and-api.md', categories: ['B1','B1a','B1b','C1','C1a','A3'] },

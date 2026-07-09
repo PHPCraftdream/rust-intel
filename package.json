@@ -1,6 +1,6 @@
 {
   "name": "rust-intel-cc",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Defense against LLM Rust failure modes for Claude Code: 58 categories of bugs that survive rustc, clippy, and cargo test. npx installer for the rust-intel skill + /rust-cc-* commands.",
   "bin": {
     "rust-intel-cc": "bin/install.js"

@@ -71,6 +71,12 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | `tokio::select!` arm side effect lost on cancellation | §B23 |
    | "Timing-based authentication vulnerability" / CVE-class | §B24 (constant-time comparison) |
    | "Panic crossed extern \"C\" boundary" / "process aborted in FFI" | §B25 |
+   | An exported `#[no_mangle] extern "C"` fn takes `&T`/`&str`/`bool`/`enum`; the C/Python/Node caller passes NULL/non-UTF-8/garbage and it segfaults or misbehaves inside "safe" Rust | §B25 (exported entry point trusts the type system — take `*const/*mut` + primitives, validate null/align/len/UTF-8/discriminant before minting any typed value; the read-direction mirror of §B5's validate-before-mint) |
+   | Callback from a C library UAFs / double-frees / heap-corrupts after the owner dropped; the trampoline reclaims `Box<F>`; the callback fires after unregister | §B25 (callback-context lifetime — trampoline borrows, never owns; unregister → drain in-flight → free, in that order) |
+   | Wrong/uninitialized `union` field read; UB from a bindgen'd union with no tag check | §B5 (union read without an active-field/tag check — tag-checked safe accessor + `// SAFETY:`; use an `enum` when the union only pairs with a Rust flag) |
+   | Double-free / leak from one uniform FFI wrapper across a library whose functions differ in take/copy/borrow/return-owned | §B25 (per-function ownership audit — cite the C doc line per function; undocumented direction is a §B5 block-and-ask) |
+   | FFI wrapper segfaults/races only under real concurrency though each handle is behind its own `Arc<Mutex>`; the C library has global state (`getenv`/`setenv`, non-reentrant parser, one-time init) | §B25a (the C library's own thread-safety contract — per-handle locks don't serialize the library's globals; cite the documented level, use a process-global lock / dedicated thread for a non-reentrant library; CVE-2020-26235) |
+   | `Error::last_os_error()` / `errno` reports the wrong error or success after a failing FFI call | §B25a (`errno` clobbered by an intervening call — capture it immediately, before any other call) |
    | `attempt to ... with overflow` panic (debug) / wrong result only in release | §B26 (integer overflow: debug-panic vs release-wrap) |
    | Numeric value wrong after a cast / `as` (`len() as u32`, `u64 as u32`) | §B26 (lossy conversion) |
    | `attempt to divide by zero` / `attempt to calculate the remainder with a divisor of zero` | §B26 (div/rem by zero) |
