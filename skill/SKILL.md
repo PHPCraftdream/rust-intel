@@ -190,6 +190,9 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "tree with parent links", "graph structure", "bidirectional", "scene graph", "DOM-like" | §B10 reference cycles | Symmetric `Rc<RefCell>` without `Weak` |
 | "read a file", "make HTTP request", "sleep", "wait N seconds" in async context | §B11 blocking executor | `std::fs`/`std::thread::sleep` in `async fn` |
 | "add this dependency", "use crate X for Y", "what crate should I use" | §A1 slopsquatting | Hallucinated crate name → supply-chain attack |
+| "use my fork", "patch the dependency", "the fix isn't released yet", "point it at my branch", "override with git" | §A1 unpinned `[patch]`/git | branch-only/no-`rev` git source follows HEAD and bypasses `cargo audit`/`vet` — same unverified-trust decision as a new dep name; pin a full `rev`, get user approval, state a removal condition |
+| "download in build.rs", "fetch protoc/schema at build time", "fetch the model/binary during build", "curl in the build script" | §A1 network in `build.rs` | unpinned bytes entering the build outside the lockfile — no `--locked`/`--offline`/`vendor` integrity, MITM-able, non-reproducible; vendor or pin a SHA-256 in a separate CI step |
+| "fix the CI dependency error", "candidate versions were yanked", "cargo update to fix the build" | §A1 yanked-crate handling | `--locked` builds a yanked (maybe advisory-flagged) pin with only a warning; blanket `cargo update` swaps many pins — use `cargo deny check advisories`/`cargo audit -D warnings` + targeted `cargo update -p <crate>` |
 | "encrypt", "decrypt", "hash a password", "JWT", "TLS", "sign this", "AES", "AEAD" | §B12 crypto insecurity | Nonce reuse, weak primitives, hallucinated crypto API |
 | "verify a JWT", "decode the token", "check the claims", "validate the audience/issuer" | §B12 crypto insecurity | claims left unchecked — `aud`/`iss` default to `None`, `validate_exp = false`; not just `alg` |
 | "self-signed cert", "accept the dev certificate", "ignore TLS errors", "certificate error", "reqwest/rustls client" | §B12 crypto insecurity | `danger_accept_invalid_certs` / no-op `ServerCertVerifier` → silent MITM (CWE-295) — pin the CA instead |
@@ -367,6 +370,8 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | an `encode`/`serialize`/`to_*` fn and its `decode`/`parse`/`from_*` inverse in the same crate, with no test calling both in one assertion | §F4 (round-trip obligation untested) |
 | a test module whose only inputs are handcrafted literals mirroring the implementation's branches; an in-memory `impl` of an I/O trait used as the *only* test transport | §D1a (oracle written from the code; stub erases fragmentation/partial-read/reorder realities) |
 | test data sizes ≪ documented/realistic scale (`vec![..; 10]` where prod is millions), single-task tests of code documented as concurrent | §D3 (scale/concurrency divergence) |
+| `[patch.crates-io]` / `[patch.*]` table, or a `git = "…"` dependency with only `branch = "…"` (or no `rev`/`branch` at all) | §A1 (unpinned source for a known-good name follows remote HEAD and bypasses `cargo audit`/`vet` — pin a full `rev`, name a user-approved repo, state a removal condition) |
+| `build.rs` containing `Command::new("curl"/"git"/"wget")`, `reqwest`/`ureq`/`hyper`, or any network call | §A1 (network at build time = unpinned bytes outside the lockfile — vendor or fetch in a separate CI step with a hardcoded SHA-256 + offline fallback) |
 
 When two or more triggers fire in one request, treat it as a high-risk task and explicitly enumerate which categories I'm guarding against in my response.
 
