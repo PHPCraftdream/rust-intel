@@ -1,5 +1,7 @@
 # Gap audit — concurrency correctness & resource-exhaustion/availability (2026-07-09)
 
+> **Status:** Historical input to v0.4.7. The current rules and second-pass corrections are tracked in [`README.md`](README.md) and the canonical modules; this file is not normative.
+
 Scope: what is **missing** from `skill/concurrency-and-state.md` (§A2, §B9, §B10, §B13, §B14, §B17, §B19, §C8, §E4) and `skill/async.md` (§B2, §B3/§B3a, §B8, §B11, §B15a–e, §B21, §B22, §B23, §C3, §C9, §E1) in the areas of thread/task exhaustion, connection/FD exhaustion, priority inversion, lock starvation, retry storms, unbounded caches, and cancellation-held locks. Both modules were read in full; adjacent bodies checked where a candidate could plausibly live elsewhere: §B7 (`unsafe-and-ffi.md` lines 42–56 — untrusted-size allocation, unbounded recursion depth) and §F3 (`semantics-and-conformance.md` lines 63–92 — error-path resource leaks, missing read deadlines, per-connection sibling tasks). Every "not covered" claim below cites the specific existing text it was checked against. No repo files edited other than creating this report.
 
 ---

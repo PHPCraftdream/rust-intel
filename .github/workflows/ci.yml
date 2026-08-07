@@ -1,0 +1,36 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate docs, manifests, links, and fixtures
+        run: node dev/validate.mjs
+      - name: Run fixture expectations
+        run: node dev/validate-fixtures.mjs
+      - name: Compile fixture syntax
+        run: |
+          mkdir -p "$RUNNER_TEMP/rust-intel-fixtures"
+          rustc --crate-type lib examples/fixtures/positive.rs -o "$RUNNER_TEMP/rust-intel-fixtures/positive.rlib"
+          rustc --crate-type lib examples/fixtures/negative.rs -o "$RUNNER_TEMP/rust-intel-fixtures/negative.rlib"
+      - name: Check JavaScript syntax
+        run: |
+          node --check bin/install.js
+          node --check bin/install-codex.js
+          node --check skill/audit-project.workflow.js
+      - name: Check shell installer syntax
+        run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
+      - name: Pack smoke test
+        run: npm pack --dry-run

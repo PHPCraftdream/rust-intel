@@ -56,6 +56,20 @@ function rmrf(p) {
   fs.rmSync(p, { recursive: true, force: true });
 }
 
+function copySkillTree(src, dst) {
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dst, entry.name);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(to, { recursive: true });
+      copySkillTree(from, to);
+    } else if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.js'))) {
+      fs.copyFileSync(from, to);
+      console.log(`  copied     ${to}`);
+    }
+  }
+}
+
 function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) return usage();
@@ -93,11 +107,7 @@ function main() {
   fs.mkdirSync(skillDst, { recursive: true });
   fs.mkdirSync(commandsDst, { recursive: true });
 
-  for (const entry of fs.readdirSync(SKILL_SRC)) {
-    if (!entry.endsWith('.md') && !entry.endsWith('.js')) continue;
-    fs.copyFileSync(path.join(SKILL_SRC, entry), path.join(skillDst, entry));
-    console.log(`  copied     ${path.join(skillDst, entry)}`);
-  }
+  copySkillTree(SKILL_SRC, skillDst);
 
   for (const c of COMMANDS) {
     const src = path.join(COMMANDS_SRC, `${c}.md`);

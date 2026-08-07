@@ -1,5 +1,7 @@
 # Gap audit — FFI/ABI boundary and unsafe-Rust edge cases
 
+> **Status:** Historical input to v0.4.7. The current rules and second-pass corrections are tracked in [`README.md`](README.md) and the canonical modules; this file is not normative.
+
 Scope: `skill/unsafe-and-ffi.md` (§B5, §B7, §B18, §B18a, §B25), cross-checked against §B9/§B13 in `skill/concurrency-and-state.md` and the SKILL.md trigger tables. Question asked: which real, documented, LLM-plausible unsafe/FFI footguns compile, pass tests with a well-behaved C stub, and break in production — and are **not** already a bullet in this module. Every candidate below was checked against the actual bullet text of the existing categories, not just their headings.
 
 ---

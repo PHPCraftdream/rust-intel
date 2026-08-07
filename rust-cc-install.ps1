@@ -26,7 +26,7 @@ With -User:                %USERPROFILE%\.claude\  (user-global).
 If `$env:CLAUDE_CONFIG_DIR is set, it overrides both.
 
 Installs the modular skill (the single-file rust-intel.md reference is NOT installed):
-  skill\*.md + *.js  (SKILL.md + theme modules + workflow)  -> <target>\skills\rust-intel\
+  skill\**\*.md + **\*.js (SKILL.md + theme modules + workflow + references) -> <target>\skills\rust-intel\
   commands\rust-intel-cc\audit.md         -> <target>\commands\rust-cc-audit.md
   commands\rust-intel-cc\fix.md           -> <target>\commands\rust-cc-fix.md
   commands\rust-intel-cc\plan.md          -> <target>\commands\rust-cc-plan.md
@@ -110,10 +110,15 @@ function Install-File {
     Write-Output "  copied     $Destination"
 }
 
-Get-ChildItem -LiteralPath $SkillSourceDir -Filter '*.md' | ForEach-Object {
-    Install-File -Source $_.FullName -Destination (Join-Path $SkillDir $_.Name)
+Get-ChildItem -LiteralPath $SkillSourceDir -Recurse -File | Where-Object {
+    $_.Name -like '*.md' -or $_.Name -like '*.js'
+} | ForEach-Object {
+    $relative = $_.FullName.Substring($SkillSourceDir.Length).TrimStart('\','/')
+    $destination = Join-Path $SkillDir $relative
+    $parent = Split-Path -Parent $destination
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    Install-File -Source $_.FullName -Destination $destination
 }
-Install-File -Source (Join-Path $SkillSourceDir 'audit-project.workflow.js') -Destination (Join-Path $SkillDir 'audit-project.workflow.js')
 Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\audit.md')             -Destination (Join-Path $CommandsDir 'rust-cc-audit.md')
 Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\fix.md')               -Destination (Join-Path $CommandsDir 'rust-cc-fix.md')
 Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\plan.md')              -Destination (Join-Path $CommandsDir 'rust-cc-plan.md')

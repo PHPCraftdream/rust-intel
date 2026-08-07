@@ -1,5 +1,7 @@
 # Gap audit — cryptography, secrets handling, randomness
 
+> **Status:** Historical input to v0.4.7. The current rules and second-pass corrections are tracked in [`README.md`](README.md) and the canonical modules; this file is not normative.
+
 Scope: what is MISSING from the current §B12 (crypto), §B24 (constant-time), §C2 (error/injection) bodies in `skill/security.md`, restricted to bugs that compile, pass `cargo test`, and break or leak in production. Baseline read in full: `skill/security.md` (all of §B12/§B24/§C2) and `skill/SKILL.md` (trigger tables, tier definitions, version pins). Coverage was verified by grepping the entire `skill/` tree for `salt`, `jwt`, `aud`, `issuer`, `tls`, `certificate`, `zeroize`, `secrecy`, `argon2`, `padding oracle` — not by trusting headers. Already-covered candidates were discarded (see verdict).
 
 Each entry: why in-scope → why not covered → minimal compiles-but-broken example → source → suggested tier → placement.

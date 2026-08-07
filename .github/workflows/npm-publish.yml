@@ -31,9 +31,13 @@ jobs:
       - name: Sanity checks
         run: |
           node --check bin/install.js
+          node --check bin/install-codex.js
           node --check skill/audit-project.workflow.js
           test -f skill/SKILL.md
+          test -f skill/references/sources.md
+          test -f .codex-plugin/plugin.json
           test -f commands/rust-intel-cc/audit.md
+          node dev/validate.mjs
 
       - name: Set version from tag
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
@@ -44,7 +48,15 @@ jobs:
           CLAUDE_CONFIG_DIR=/tmp/claude-sandbox node bin/install.js --user
           test -f /tmp/claude-sandbox/skills/rust-intel/SKILL.md
           test -f /tmp/claude-sandbox/skills/rust-intel/audit-project.workflow.js
+          test -f /tmp/claude-sandbox/skills/rust-intel/references/sources.md
           test -f /tmp/claude-sandbox/commands/rust-cc-audit.md
+
+      - name: Smoke-test the Codex installer
+        run: |
+          mkdir -p /tmp/codex-sandbox
+          node bin/install-codex.js --user-dir /tmp/codex-sandbox
+          test -f /tmp/codex-sandbox/rust-intel/SKILL.md
+          test -f /tmp/codex-sandbox/rust-intel/references/sources.md
 
       - name: Publish
         run: npm publish --provenance --access public

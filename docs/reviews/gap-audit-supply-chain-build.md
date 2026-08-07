@@ -1,5 +1,7 @@
 # Gap audit — supply-chain, build scripts, macro-hygiene attack surface
 
+> **Status:** Historical input to v0.4.7. The current rules and second-pass corrections are tracked in [`README.md`](README.md) and the canonical modules; this file is not normative.
+
 Scope: what is MISSING from §A1 (`skill/deps-macros-ergonomics.md`), §C5–§C11, the SKILL.md
 "Version pins" section, and `docs/sources.md` in the supply-chain / build-time / macro-trust
 area. Method: read the exact existing bullet text first, then web-verify each candidate

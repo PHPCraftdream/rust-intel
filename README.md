@@ -4,13 +4,15 @@
 
 # rust-intel
 
+**v0.4.8 (2026-08-07).** Review-of-reviews hardening: corrected union validity, Serde duplicate-key, and zeroization guidance; expanded fan-out scope and incomplete-coverage reporting; shipped nested evidence files; and added a Codex plugin manifest plus `rust-intel-codex` installer. Numbered categories remain **58**. See [`CHANGELOG.md`](CHANGELOG.md).
+
 A living specification that defends against the systematic mistakes LLMs make when writing Rust.
 
 ## What this is
 
-An empirically-grounded ruleset for the Rust mistakes that **survive `cargo build` and `cargo test`** but still wreck things in production or rot the codebase over time. Every category is backed by a specific study, production incident, or systematically observed LLM output pattern — see [`docs/sources.md`](docs/sources.md).
+An empirically-grounded ruleset for the Rust mistakes that **survive `cargo build` and `cargo test`** but still wreck things in production or rot the codebase over time. Every category is backed by a specific study, production incident, or systematically observed LLM output pattern — see the shipped [evidence base](skill/references/sources.md).
 
-> **Per-rule grounding ≠ measured coverage.** Each category is grounded individually (above), but there is no regression corpus yet that measures *what fraction* of real silent-failure bugs the spec catches. Building that corpus — `examples/` with deliberately broken Rust per category, exercised through `/rust-cc-audit` — is the next infrastructure step, tracked in [`docs/roadmap.md`](docs/roadmap.md) §4. Completeness, until then, is author-asserted.
+> **Per-rule grounding ≠ measured coverage.** Each category is grounded individually (above). `examples/fixtures/` now contains a deterministic two-case calibration seed for §B5/§B26, but there is still no agent-level corpus measuring *what fraction* of real silent-failure bugs the audit catches. Expanding the corpus to deliberately broken Rust per category and exercising it through `/rust-cc-audit` remains tracked in [`docs/roadmap.md`](docs/roadmap.md) §4; overall completeness is still author-asserted.
 
 The premise: Rust's compiler catches a large class of LLM mistakes (a known empirical finding is that **76.3% of all compilation failures from LLM agents** fall into just two categories — project organization and type/trait semantics, per Rust-SWE-Bench). Categories where the failure mode is a compile error are *deliberately omitted* from this spec — the compiler is sufficient. What this spec covers is what's left after `rustc`, `clippy`, and `cargo test` have all said "fine":
 
@@ -58,7 +60,9 @@ rust-intel/
 │   ├── SKILL.md                        # Core: protocols, enforcement tiers, trigger table, category→module map
 │   ├── <theme>.md                      # Theme modules (async, unsafe-and-ffi, security, … — the category bodies)
 │   └── audit-project.workflow.js       # Fan-out project audit (one agent per module)
+├── .codex-plugin/plugin.json            # Codex plugin manifest (points at skills/rust-intel/)
 ├── bin/install.js                      # npx installer (npm package: rust-intel-cc)
+├── bin/install-codex.js                 # Codex user-skill installer (rust-intel-codex)
 ├── package.json                        # npm package manifest (published on release tags by CI)
 ├── .github/workflows/npm-publish.yml   # Publishes rust-intel-cc to npm on every v* tag
 ├── README.md                           # This file
@@ -127,10 +131,22 @@ rust-cc-install.bat -User             # user-global
 `CLAUDE_CONFIG_DIR` env var overrides the target for the npx and shell installers if set.
 
 The installer copies:
-- `skill/*.md` → `<target>/skills/rust-intel/` (the modular skill — `SKILL.md` core plus theme modules; Claude Code activates it automatically on Rust tasks)
+- `skill/**/*.{md,js}` → `<target>/skills/rust-intel/` (the modular skill, including `references/`; Claude Code activates it automatically on Rust tasks)
 - `commands/rust-intel-cc/{audit,fix,plan}.md` → `<target>/commands/rust-cc-{audit,fix,plan}.md` (the three slash commands; installer flattens with a `rust-cc-` prefix on copy)
 
 It also sweeps any prior install at the same target — including the legacy v0.1.x flat layout (`commands/rust-audit.md`, `commands/rust-fix.md`, `commands/rust-plan.md`, and the very early `commands/rust-intel.md`) — so re-running it cleanly migrates from any older version.
+
+### Codex installation
+
+The repository also exposes a Codex plugin manifest at `.codex-plugin/plugin.json`. For a direct local user-skill install, run:
+
+```powershell
+node bin/install-codex.js                 # $env:CODEX_HOME\skills\rust-intel, or ~/.codex/skills/rust-intel
+node bin/install-codex.js --user-dir D:\Users\me\.codex\skills
+node bin/install-codex.js --uninstall
+```
+
+The npm package exposes the same command as `rust-intel-codex`. Start a new Codex thread after installation so the updated skill is loaded. If you use a Codex marketplace, add this repository as a local plugin source; no marketplace file is modified by the installer.
 
 ### Uninstall
 
@@ -162,7 +178,7 @@ Start `claude` inside the directory you installed to (or anywhere if you used `-
 
 ### As a checklist for humans
 
-The document reads top-to-bottom. The minimum bar before committing any non-trivial Rust: walk the **Pre-flight checklist** (7 questions at the end of the spec) and the **Post-flight checklist** (the list of things to surface in a summary).
+The document reads top-to-bottom. The minimum bar before committing any non-trivial Rust: walk the **Pre-flight checklist** (9 questions at the end of the spec) and the **Post-flight checklist** (the list of things to surface in a summary).
 
 ### Commands
 
@@ -201,7 +217,7 @@ Tier B is the centre of the spec: silent correctness bugs that survive `rustc`, 
 1. **Every category must be grounded.** No rule lands without one of (a) a published study with numbers, (b) a documented production incident, or (c) a systematically observed LLM output pattern.
 2. **The spec defends against LLMs, not humans.** Categories where LLMs don't err more often than humans don't belong here — that's just Rust style.
 3. **Proof before rule.** If a category lacks a sharp BANNED/REQUIRED formulation, it stays in the roadmap, not the main spec.
-4. **Sources are transparent.** Every number in the spec maps to an entry in `docs/sources.md`.
+4. **Sources are transparent.** Every number in the spec maps to an entry in the shipped [evidence base](skill/references/sources.md).
 
 ## Contributing
 

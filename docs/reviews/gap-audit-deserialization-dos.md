@@ -1,5 +1,7 @@
 # Gap audit — deserialization & parsing attack surface (resource exhaustion + structural attacks on untrusted input)
 
+> **Status:** Historical input to v0.4.7. The current rules and second-pass corrections are tracked in [`README.md`](README.md) and the canonical modules; this file is not normative.
+
 **Scope.** This audit hunts for real, documented, Rust-specific deserialization/parsing footguns that (a) an LLM would plausibly emit, (b) compile and pass `cargo test` on small/benign input, (c) DoS or corrupt in production on adversarial input, and (d) are **not already covered** by the rust-intel skill. It focuses on decompression/archive bombs, recursion bombs *inside third-party parser crates* (as opposed to the hand-written recursion of §B7), serde-specific structural gaps beyond §B20's field-presence coverage, and algorithmic-complexity attacks in parser crates beyond §B16's ReDoS/HashDoS. I checked each candidate against the *actual bullet text* in `data-and-types.md` (§B16, §B20, §B29, §C4, §E2/§E3, Substitution catalog), `security.md` (§C2), and `unsafe-and-ffi.md` (§B7), not just section titles.
 
 The existing coverage that candidates most often collided with:

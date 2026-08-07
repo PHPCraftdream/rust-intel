@@ -1,0 +1,24 @@
+{
+  "name": "rust-intel",
+  "version": "0.4.8",
+  "description": "Defensive Rust review skill covering correctness, async, unsafe/FFI, security, dependencies, testing, and conformance.",
+  "author": {
+    "name": "Marat K",
+    "email": "phpcraftdream@gmail.com",
+    "url": "https://github.com/PHPCraftdream"
+  },
+  "homepage": "https://github.com/PHPCraftdream/rust-intel#readme",
+  "repository": "https://github.com/PHPCraftdream/rust-intel",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["rust", "code-review", "security", "unsafe", "ffi", "async"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Rust Intel",
+    "shortDescription": "Defensive Rust project review",
+    "longDescription": "Audits Rust projects for hazards that can survive rustc, clippy, and ordinary tests, with evidence-backed remediation guidance.",
+    "developerName": "PHPCraftdream",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Analyze", "Write"],
+    "defaultPrompt": ["Audit this Rust project against rust-intel."]
+  }
+}

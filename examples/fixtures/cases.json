@@ -1,0 +1,10 @@
+[
+  {
+    "file": "positive.rs",
+    "expectedFindings": []
+  },
+  {
+    "file": "negative.rs",
+    "expectedFindings": ["B5", "B26"]
+  }
+]
