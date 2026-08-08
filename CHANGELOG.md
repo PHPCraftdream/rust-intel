@@ -1,14 +1,59 @@
 # Changelog
 
-## [0.5.0] - 2026-08-08
-
-**Review-of-reviews hardening and Codex distribution.** This minor release changes enforceable BANNED/REQUIRED guidance and substantive audit/install behavior: corrected union validity, Serde duplicate-key, zeroization, and version-aware `serde_yaml` guidance; expanded audit scope to manifests, lockfiles, toolchains, CI, scripts, and FFI artifacts; added per-agent incomplete-coverage reporting; hardened installers against source/destination overlap; added deterministic positive/negative fixture checks; and added a Codex plugin manifest plus a strictly parsed `rust-intel-codex` installer.
-
 Format — [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning — [SemVer](https://semver.org/).
 
 Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
+
+## [0.5.0] — 2026-08-08
+
+**Second distribution channel (Codex), a review-of-reviews pass over v0.4.7, and the repo's first CI.** **Numbered category count is unchanged (still 58)** — no category was added, split, or retired.
+
+**Why MINOR.** The bump is earned by the *distribution* half, not the spec half: a second installable target (Codex plugin manifest, the `rust-intel-codex` binary, the `skills/rust-intel/` layout) is a substantive addition under this repo's rule. The spec half is PATCH-shaped — corrections to existing bullets and their calibration, no new numbered categories. **Explicitly not MAJOR:** the corrected §B5/§B12/§B20 bullets narrow or sharpen claims that were overstated, and each keeps a mechanically-matchable form for the case tooling actually keys on (a tagged-union read with no tag `match`; a struct returned by value that holds key material; an untrusted-request struct without `deny_unknown_fields`). No BANNED/REQUIRED rule was withdrawn.
+
+### Spec corrections — the second pass over v0.4.7 (`docs/reviews/README.md`)
+
+Five audits shipped in v0.4.7 in five independently-written releases; this is the merge-time review they never got as a set. The ledger in `docs/reviews/README.md` records what each correction was, and the historical gap-audit reports are now banner-marked non-normative.
+
+- **`skill/unsafe-and-ffi.md` — §B5 `union` reads.** v0.4.7 claimed a tag check is required for *every* union read; that is false for deliberate type-punning between mutually valid representations (`u32` ↔ `[u8; 4]`). The rule now demands a **local validity proof**, and names which proof applies where: for a tagged union — the `bindgen`-emitted C shape that dominates FFI — the proof *is* the tag check and a read with no preceding `match` is still the finding; for type-punning it is a stated bit-validity argument. The non-`#[repr(C)]`-union-for-FFI ban is retained verbatim.
+- **`skill/unsafe-and-ffi.md` — §B5 `transmute`.** Split into two bans: the layout ban (neither side pinned to `#[repr(C)]`/`transparent`/`u32`/`packed`) and the *sufficiency* ban — a matching repr settles layout and nothing else, and does not prove value-validity, provenance, lifetimes, or aliasing. The "prefer a checked constructor" advice moved out of BANNED into the existing REQUIRED bullet where it belongs.
+- **`skill/security.md` — §B12 zeroize.** v0.4.7 overstated the mechanism ("every Rust move is a `memcpy`"). Restated as **best-effort memory hygiene, not a guarantee** — the compiler may elide, duplicate, or combine copies — while keeping both worked failure modes (a secret returned by value from `load()`; a `String` secret grown past its capacity) and the `Zeroize` documentation's own reallocation caveat. Adds `zeroize`'s custom-`Drop` pattern for types whose all-zero state would break an invariant.
+- **`skill/data-and-types.md` — §B20 duplicate keys.** v0.4.7 asserted flat "JSON duplicate keys are last-wins". Corrected: a direct Serde struct visitor normally *errors* on a duplicate known field; last-wins is the behavior of an intermediate `serde_json::Value`/map path. The proxy-vs-service parser-differential hazard is preserved — the policy must be chosen and tested at the boundary.
+- **`skill/data-and-types.md` — §B26 shift counts.** New BANNED bullet, stated to the module's own precision standard: a count at or beyond the type's bit width **panics in debug** and **masks to `n % BITS` in release**, so `x << 32` on a `u32` yields `x`, not `0` — defined behavior, wrong answer, green tests. Notes that the masking is on the *count*, so `wrapping_shl` does not mean "the bits shifted away".
+- **`skill/lifetimes-and-api.md` — §C1 `#[repr(transparent)]`.** No longer implies transmutability: it gives ABI compatibility, and §B5's value-validity/provenance/ownership proofs still apply on top.
+- **`skill/unsafe-and-ffi.md` §B7 + `skill/security.md` §C2 — archive extraction, split along the correct axis.** v0.4.7 filed the whole of archive safety under §B7 (resource exhaustion). The traversal half is not exhaustion: **zip-slip/tar-slip** (attacker-authored entry names, absolute/rooted paths, and link entries extracted first so a later write escapes the tree — CWE-22) now lives in §C2 next to the `Path::join` rule that already carries the component-rejection / `canonicalize` / `openat`-`cap-std` recipe. §B7 keeps the part that *is* exhaustion: no **aggregate** cap on extracted bytes, entry count, or nesting depth — per-entry limits do not bound the archive. Both bullets cross-reference each other; a traversal-safe extractor can still fill the disk, and a quota-bounded one can still write to `/etc`.
+- **`serde_yaml` wording made version-aware** everywhere it appears — the uncontrolled-recursion abort was fixed in 0.8.4 (RUSTSEC-2018-0005) and the crate is now unmaintained, so the instruction is to verify the pinned version, not to assume "no limit". This corrects a residue in `commands/rust-intel-cc/fix.md` that the v0.4.9 pass had missed.
+- **`skill/SKILL.md` — trigger tables.** Duplicate `x << n` code-pattern row removed (two independently-added rows for one rule); the `union` row regained its grep anchor ("no preceding tag/discriminant `match`", "not `#[repr(C)]`"); archive extraction split into a §C2 traversal row and a §B7 quota row; toolchain-as-artifact added to Version pins; `cargo audit`/`cargo deny` added to the command block as release/CI gates with an explicit "record the reason if you can't run them" clause. `commands/rust-intel-cc/fix.md` gains matching zip-slip and aggregate-quota symptom rows.
+- **`skill/SKILL.md` — fan-out fallback.** Rewritten host-neutrally (Claude `Workflow(...)` / Codex native delegation) **without** losing the hand-rolled fallback: the order is now explicitly workflow → one sub-agent per module written by hand → bounded single-context pass *with the report marked incomplete*.
+
+### Codex distribution — new channel
+
+- **`.codex-plugin/plugin.json`** — Codex plugin manifest with an `interface` block (display name, descriptions, category, capabilities, default prompt), validated field-by-field in CI against the documented schema (allowed fields, length limits, HTTPS-only URLs, strict semver, `./`-relative paths without traversal).
+- **`bin/install-codex.js`** — zero-dependency installer, exposed from the npm package as `rust-intel-codex`. Installs to `$CODEX_HOME/skills/rust-intel`, else `~/.agents/skills/rust-intel`; `--user-dir <path>` overrides, `--uninstall` removes. Argument parsing is strict: unknown flags, repeated flags, and a missing `--user-dir` value are hard errors (CI asserts each).
+- **`skills/rust-intel/`** — the Codex manifest requires a `skills/<name>/` layout, so a byte-identical mirror of `skill/` is checked in (a git-based plugin install has no build step). It is a **derived artifact**: generated by `npm run sync` (`dev/sync-mirror.mjs`), byte-identity enforced in CI, never edited by hand. Documented as such in `README.md` and `commands/README.md`, which is where the repo's "duplication of knowledge is forbidden by design" rule is stated.
+
+### Evidence base moved inside the skill
+
+- **`docs/sources.md` → `skill/references/sources.md`.** The evidence base now ships with the skill instead of living one directory outside it, so every in-skill citation resolves after installation. `docs/sources.md` remains as a compatibility page (the ~25 historical CHANGELOG links to it keep working), and `dev/validate.mjs` now fails any skill link that escapes the installable tree. All three installers copy `skill/**` recursively, so `references/` actually lands at the target.
+
+### Audit workflow — evidence obligations
+
+- **`skill/audit-project.workflow.js`** — the scoper now inventories non-Rust artifacts by group (manifests, lockfiles, toolchains, configs, CI, scripts, FFI/bindgen/linker), and each unit declares which groups it *must* open: deps/macros gets all of manifests+lockfiles+toolchains+configs+CI+scripts, unsafe/FFI gets build scripts and headers, testing gets CI/config/scripts, semantics gets the project's docs. Units return the exact paths they actually opened (`sourceFilesReviewed`/`artifactsReviewed`/`docsReviewed`) plus their assigned `label`, and the synthesis prompt is told never to infer one unit's coverage from another's evidence.
+- **Coverage gating is scoped to what the run owed each unit** — missing scope fields, missing slices, missing per-unit required inputs, unrecognized labels, and dropped agents. It deliberately does **not** gate on a total sweep of every `*.rs` file: units grep for candidates rather than reading the whole tree, so that condition is false on every real crate, and an always-red flag would drown the per-unit gaps that actually invalidate a finding. Source depth is reported instead as "reviewed R of T source files (grep-candidate sampling)".
+
+### Installers hardened
+
+- **Source/destination overlap is now a hard error** in all three installers (`bin/install.js`, `bin/install-codex.js`, `rust-cc-install.ps1`, `rust-cc-install.sh`) for both the skill and the commands directory, checked against canonicalized paths that tolerate not-yet-existing targets. Installing into the repo's own `skill/` used to delete the source mid-copy.
+- **Recursive copy** of `skill/**/*.{md,js}` replaces the flat `*.md` sweep plus a one-off `audit-project.workflow.js` line (which the PowerShell installer had been copying twice).
+
+### CI and repository checks — new
+
+- **`.github/workflows/ci.yml`** — the repo had none. Runs on every push and PR: pinned Rust toolchain (1.97.0), Codex-mirror sync check, `dev/validate.mjs`, `dev/validate-fixtures.mjs`, `rustc` compilation of both fixtures, `node --check` on every shipped script, `bash -n` on the shell installers, and `npm pack --dry-run`.
+- **`dev/validate.mjs`** — required-file existence; markdown link integrity for both the canonical skill and the mirror, including a check that no skill link escapes the installable tree; the workflow's module list and coverage contract; full Codex-manifest schema validation; version agreement across `package.json`/`.claude-plugin`/`.codex-plugin`; mirror byte-identity; Codex-installer CLI rejection cases; and **duplicate trigger rows** — two rows in one `SKILL.md` table keyed off the same set of inline-code tokens are the same rule stated twice, which is exactly how the `x << n` duplicate got in.
+- **`dev/validate-fixtures.mjs` + `examples/fixtures/`** — a two-case calibration seed (§B5 union validity, §B26 runtime shift) with positive and negative controls. Scope is stated honestly in `examples/README.md`: a regression tripwire and a structural check that the cited categories still exist and are still routed — **not** a coverage figure. It deliberately asserts nothing about rule *wording*; pinning prose in CI would make every legitimate rewrite a red build and freeze whichever phrasing shipped first.
+- **`dev/set-release-version.mjs`** — writes the tag's version into all three manifests at publish time, so `npm-publish.yml` remains the single release trigger and the manifests cannot drift.
+- **`dev/sync-mirror.mjs`** — regenerates (or with `--check`, verifies) the Codex mirror, including removal of files stale after a rename in `skill/`.
 
 ## [0.4.7] — 2026-07-09
 

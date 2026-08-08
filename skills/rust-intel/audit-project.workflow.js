@@ -300,7 +300,13 @@ const reviewedDocs = new Set(auditResults.flatMap((result) => result.docsReviewe
 const missingDocs = scoperResult && Array.isArray(scoperResult.docsFiles)
   ? scoperResult.docsFiles.filter((file) => !reviewedDocs.has(file))
   : []
-const resultsByLabel = new Map(auditResults.map((result) => [result.label, result]))
+// Units grep for candidates rather than reading every file, so unreviewed source files are the
+// NORMAL case — they describe sampling depth, not a broken run, and must not gate `complete`.
+// See sourceSampling below; the gating signals are the required inputs each unit was handed.
+const knownLabels = new Set(AUDIT_UNITS.map((unit) => unit.label))
+const strayLabels = [...new Set(auditResults.map((result) => result.label).filter((label) => !knownLabels.has(label)))]
+if (strayLabels.length) log(`WARNING: audit unit(s) returned unrecognized label(s): ${strayLabels.join(', ')}`)
+const resultsByLabel = new Map(auditResults.filter((result) => knownLabels.has(result.label)).map((result) => [result.label, result]))
 const missingUnitInputs = {}
 for (const unit of AUDIT_UNITS) {
   const result = resultsByLabel.get(unit.label)
@@ -318,15 +324,33 @@ for (const unit of AUDIT_UNITS) {
   }
   if (missing.length) missingUnitInputs[unit.label] = missing
 }
+// `complete` gates on what the RUN owed each unit: scope, slices, per-unit required inputs, and
+// every unit reporting back. It deliberately does NOT gate on total source/doc/artifact sweep —
+// a signal that is red on every real crate is a signal nobody reads, and it would drown the
+// per-unit gaps that actually invalidate a finding.
+const totalSourceFiles = scoperResult && Array.isArray(scoperResult.files) ? scoperResult.files.length : 0
+const sourceSampling = {
+  total: totalSourceFiles,
+  reviewed: totalSourceFiles - missingSourceFiles.length,
+  unreviewed: missingSourceFiles,
+  note: 'Units grep for candidate patterns; unreviewed files are expected and describe sampling depth, not a failed run.',
+}
 const coverageStatus = {
-  complete: missingScopeFields.length === 0 && missingSlices.length === 0 && missingArtifacts.length === 0 && missingSourceFiles.length === 0 && missingDocs.length === 0 && Object.keys(missingUnitInputs).length === 0 && dropped === 0,
+  complete:
+    missingScopeFields.length === 0 &&
+    missingSlices.length === 0 &&
+    Object.keys(missingUnitInputs).length === 0 &&
+    strayLabels.length === 0 &&
+    dropped === 0,
   missingScopeFields,
   missingSlices,
-  missingArtifacts,
-  missingSourceFiles,
-  missingDocs,
   missingUnitInputs,
+  strayLabels,
   droppedAgents: dropped,
+  // Informational depth metrics — reported, never gating.
+  sourceSampling,
+  missingArtifacts,
+  missingDocs,
 }
 
 phase('Synthesize')
@@ -337,7 +361,8 @@ MERGE + DEDUP:
 - Same file:line flagged by two agents -> keep ONE entry, prefer the more specific category, and note "also flagged by <other category>".
 - Group by severity: critical -> high -> medium -> info. Within a severity, order by tier letter (A -> B -> C -> D -> E -> F).
 - Do NOT invent findings not present in the input.
-- Coverage is COMPLETE only when coverageStatus.complete is true. Report every missingUnitInputs, missingSourceFiles, missingDocs, missingArtifacts, missing scope/slice, or dropped agent as INCOMPLETE; never infer coverage from another unit's evidence.
+- Coverage is COMPLETE only when coverageStatus.complete is true — i.e. every unit reported back under its own label with the scope, slice, and required artifacts/docs it was owed. If it is false, write INCOMPLETE and name exactly what is missing (missingUnitInputs, missingScopeFields, missingSlices, strayLabels, droppedAgents). Never infer one unit's coverage from another unit's evidence.
+- coverageStatus.sourceSampling, missingArtifacts, and missingDocs are DEPTH metrics, not failures: report sourceSampling as "reviewed R of T source files (grep-candidate sampling)" and do NOT downgrade coverage to INCOMPLETE because of them. Do not list the unreviewed file paths in the report.
 
 Format the report EXACTLY like this:
 
@@ -345,7 +370,7 @@ Format the report EXACTLY like this:
 
 **Scope:** ${args.target}
 **Pinned versions:** <from scoper / the versions seen in input>
-**Coverage:** <COMPLETE or INCOMPLETE — explain missing scope/slices/agents and never imply complete coverage when any required input is absent>
+**Coverage:** <COMPLETE or INCOMPLETE per coverageStatus.complete — when INCOMPLETE, name the missing units/inputs; then always append the depth line "reviewed R of T source files (grep-candidate sampling)">
 **Found:** N critical, M high, K medium, L info
 
 ---

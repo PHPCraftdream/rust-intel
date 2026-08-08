@@ -4,8 +4,8 @@ The five gap audits below were merged into v0.4.7. This ledger records the secon
 
 | Review | v0.4.7 status | Second-pass action |
 |---|---|---|
-| crypto/secrets | Integrated | Corrected zeroization wording; moves/copies and reallocations are caveats, not a universal `memcpy` claim. |
-| FFI/unsafe | Integrated | Corrected the union rule: a read needs valid bits for the selected field type; a tag is required only for a tagged-union contract. |
+| crypto/secrets | Integrated | Corrected zeroization wording; moves/copies and reallocations are caveats, not a universal `memcpy` claim. Third pass restored the two worked examples the correction had dropped and removed editorial voice from the rule text. |
+| FFI/unsafe | Integrated | Corrected the union rule: a read needs valid bits for the selected field type; a tag is required only for a tagged-union contract. Third pass restated it in BANNED form so the tagged-union case (the FFI-dominant one) is still a mechanically greppable finding, and moved the `transmute` "prefer a checked constructor" advice out of BANNED into REQUIRED. |
 | deserialization/DoS | Integrated | Direct Serde struct visitors commonly reject duplicate fields; last-wins is a separate `Value`/map/custom-path policy. `serde_yaml` wording is version-aware. |
 | concurrency/exhaustion | Integrated | No rule rollback; workflow now also audits admission-control artifacts outside `*.rs`. |
 | supply-chain/build | Integrated | No rule rollback; workflow now includes lockfiles, toolchains, CI, scripts, and policy files. |
@@ -16,4 +16,4 @@ The crypto review's prose count was inconsistent with its listed candidates. The
 
 ## Review quality gate
 
-Every future gap review must include: (1) a candidate inventory, (2) positive and negative calibration examples, (3) a primary source per accepted rule, (4) an explicit out-of-scope list, and (5) a post-merge regression entry in `docs/checkpoints/` or the repository's current checkpoint mechanism.
+Every future gap review must include: (1) a candidate inventory, (2) positive and negative calibration examples, (3) a primary source per accepted rule, (4) an explicit out-of-scope list, and (5) a post-merge regression record in a **committed** artifact — the release's `CHANGELOG.md` entry, plus a row in the table above whenever the review corrects an earlier one. (`docs/checkpoints/` is deliberately untracked local session state and cannot carry a repo-level obligation.)

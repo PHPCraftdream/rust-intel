@@ -74,6 +74,29 @@ for (const module of ['async.md', 'concurrency-and-state.md', 'data-and-types.md
   if (!workflow.includes(`file: '${module}'`)) errors.push(`workflow missing module: ${module}`);
 }
 
+// Duplicate trigger rows. Two rows in the same table that key off the SAME set of inline-code
+// tokens are the same rule stated twice — the drift that creeps in when independently-written
+// releases each add a row for a pattern the other already covered. Compared per contiguous table
+// block so the phrase table and the code-pattern table never collide with each other.
+const skillSource = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8').split('\n');
+let tableBlock = new Map();
+function flushTableBlock() {
+  for (const [signature, lines] of tableBlock) {
+    if (lines.length > 1) errors.push(`skill/SKILL.md: duplicate trigger rows for [${signature}] at lines ${lines.join(', ')}`);
+  }
+  tableBlock = new Map();
+}
+skillSource.forEach((line, index) => {
+  if (!line.startsWith('|')) return flushTableBlock();
+  const firstCell = line.slice(1).split('|')[0];
+  if (/^[\s:-]*$/.test(firstCell)) return; // header separator row
+  const signature = [...new Set([...firstCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]))].sort().join(' + ');
+  if (!signature) return; // prose-only trigger cell — nothing mechanical to compare
+  if (!tableBlock.has(signature)) tableBlock.set(signature, []);
+  tableBlock.get(signature).push(index + 1);
+});
+flushTableBlock();
+
 const plugin = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const claudePlugin = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));

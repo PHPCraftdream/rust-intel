@@ -4,7 +4,7 @@
 
 # rust-intel
 
-**v0.5.0 (2026-08-08).** Review-of-reviews hardening: corrected union validity, Serde duplicate-key, and zeroization guidance; expanded fan-out scope and per-agent incomplete-coverage reporting; shipped nested evidence files; and added a Codex plugin manifest plus `rust-intel-codex` installer. Numbered categories remain **58**. See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.5.0 (2026-08-08).** Second distribution channel, a review-of-reviews pass, and the repo's first CI. Codex plugin manifest + `rust-intel-codex` installer; the evidence base moved *inside* the skill (`skill/references/sources.md`); corrected §B5 union validity and `transmute` sufficiency, §B12 zeroization, §B20 duplicate keys, §C1 `repr(transparent)`; archive safety split along the right axis — zip-slip traversal to §C2, aggregate extraction quotas to §B7; new §B26 shift-count rule; the fan-out audit now records which artifacts each unit actually opened. Numbered categories remain **58**. See [`CHANGELOG.md`](CHANGELOG.md).
 
 A living specification that defends against the systematic mistakes LLMs make when writing Rust.
 
@@ -12,7 +12,7 @@ A living specification that defends against the systematic mistakes LLMs make wh
 
 An empirically-grounded ruleset for the Rust mistakes that **survive `cargo build` and `cargo test`** but still wreck things in production or rot the codebase over time. Every category is backed by a specific study, production incident, or systematically observed LLM output pattern — see the shipped [evidence base](skill/references/sources.md).
 
-> **Per-rule grounding ≠ measured coverage.** Each category is grounded individually (above). `examples/fixtures/` now contains a deterministic two-case calibration seed for §B5/§B26, but there is still no agent-level corpus measuring *what fraction* of real silent-failure bugs the audit catches. Expanding the corpus to deliberately broken Rust per category and exercising it through `/rust-cc-audit` remains tracked in [`docs/roadmap.md`](docs/roadmap.md) §4; overall completeness is still author-asserted.
+> **Per-rule grounding ≠ measured coverage.** Each category is grounded individually (above). `examples/fixtures/` now holds a deterministic two-case calibration *seed* for §B5/§B26 — a regression tripwire, not a coverage figure. There is still no agent-level corpus measuring *what fraction* of real silent-failure bugs the audit catches. Expanding the corpus to deliberately broken Rust per category and exercising it through `/rust-cc-audit` remains tracked in [`docs/roadmap.md`](docs/roadmap.md) §4; overall completeness is still author-asserted.
 
 The premise: Rust's compiler catches a large class of LLM mistakes (a known empirical finding is that **76.3% of all compilation failures from LLM agents** fall into just two categories — project organization and type/trait semantics, per Rust-SWE-Bench). Categories where the failure mode is a compile error are *deliberately omitted* from this spec — the compiler is sufficient. What this spec covers is what's left after `rustc`, `clippy`, and `cargo test` have all said "fine":
 
@@ -59,10 +59,13 @@ rust-intel/
 ├── skill/                              # The skill (this is what installs) — modular
 │   ├── SKILL.md                        # Core: protocols, enforcement tiers, trigger table, category→module map
 │   ├── <theme>.md                      # Theme modules (async, unsafe-and-ffi, security, … — the category bodies)
+│   ├── references/sources.md           # The evidence base — ships inside the skill
 │   └── audit-project.workflow.js       # Fan-out project audit (one agent per module)
-├── .codex-plugin/plugin.json            # Codex plugin manifest (points at skills/rust-intel/)
+├── skills/rust-intel/                  # DERIVED mirror of skill/ — Codex needs a skills/<name>/ layout.
+│                                       # Never edit by hand: run `npm run sync` (dev/sync-mirror.mjs); CI enforces byte-identity.
+├── .codex-plugin/plugin.json           # Codex plugin manifest (points at skills/rust-intel/)
 ├── bin/install.js                      # npx installer (npm package: rust-intel-cc)
-├── bin/install-codex.js                 # Codex user-skill installer (rust-intel-codex)
+├── bin/install-codex.js                # Codex user-skill installer (rust-intel-codex)
 ├── package.json                        # npm package manifest (published on release tags by CI)
 ├── .github/workflows/npm-publish.yml   # Publishes rust-intel-cc to npm on every v* tag
 ├── README.md                           # This file
