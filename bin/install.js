@@ -56,6 +56,31 @@ function rmrf(p) {
   fs.rmSync(p, { recursive: true, force: true });
 }
 
+function canonicalCandidate(value) {
+  let current = path.resolve(value);
+  const tail = [];
+  while (!fs.existsSync(current)) {
+    tail.unshift(path.basename(current));
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return path.join(fs.realpathSync(current), ...tail);
+}
+
+function isWithin(child, parent) {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function assertNoOverlap(source, destination) {
+  const sourcePath = canonicalCandidate(source);
+  const destinationPath = canonicalCandidate(destination);
+  if (isWithin(destinationPath, sourcePath) || isWithin(sourcePath, destinationPath)) {
+    fail(`destination must not overlap source (source: ${sourcePath}, destination: ${destinationPath})`);
+  }
+}
+
 function copySkillTree(src, dst) {
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const from = path.join(src, entry.name);
@@ -96,6 +121,9 @@ function main() {
   if (!fs.existsSync(COMMANDS_SRC)) {
     fail(`package is missing commands/rust-intel-cc/ (looked in ${COMMANDS_SRC})`);
   }
+
+  assertNoOverlap(SKILL_SRC, skillDst);
+  assertNoOverlap(COMMANDS_SRC, commandsDst);
 
   console.log(`Installing rust-intel into ${target} ...`);
 

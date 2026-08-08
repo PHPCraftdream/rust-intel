@@ -72,6 +72,36 @@ if (-not (Test-Path -LiteralPath (Join-Path $SkillSourceDir 'SKILL.md'))) {
     exit 1
 }
 
+function Get-CanonicalCandidate {
+    param([string]$PathValue)
+    $full = [IO.Path]::GetFullPath($PathValue)
+    if (Test-Path -LiteralPath $full) {
+        return (Resolve-Path -LiteralPath $full).Path
+    }
+    $parent = Split-Path -Parent $full
+    if ($parent -eq $full) { return $full }
+    return (Join-Path (Get-CanonicalCandidate $parent) (Split-Path -Leaf $full))
+}
+
+function Test-PathWithin {
+    param([string]$Child, [string]$Parent)
+    $childFull = $Child.TrimEnd('\')
+    $parentFull = $Parent.TrimEnd('\')
+    return $childFull.Equals($parentFull, [StringComparison]::OrdinalIgnoreCase) -or
+        $childFull.StartsWith($parentFull + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+$sourceCanonical = Get-CanonicalCandidate $SkillSourceDir
+$destinationCanonical = Get-CanonicalCandidate $SkillDir
+if ((Test-PathWithin $destinationCanonical $sourceCanonical) -or (Test-PathWithin $sourceCanonical $destinationCanonical)) {
+    throw "Destination must not overlap source (source: $sourceCanonical, destination: $destinationCanonical)."
+}
+$commandsSourceCanonical = Get-CanonicalCandidate (Join-Path $RepoDir 'commands\rust-intel-cc')
+$commandsDestinationCanonical = Get-CanonicalCandidate $CommandsDir
+if ((Test-PathWithin $commandsDestinationCanonical $commandsSourceCanonical) -or (Test-PathWithin $commandsSourceCanonical $commandsDestinationCanonical)) {
+    throw "Destination commands directory must not overlap source commands (source: $commandsSourceCanonical, destination: $commandsDestinationCanonical)."
+}
+
 Write-Output "Installing rust-intel into $ClaudeDir ..."
 
 # Sweep prior installation - all known layouts (current + every prior).

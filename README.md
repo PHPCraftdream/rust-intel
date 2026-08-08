@@ -4,7 +4,7 @@
 
 # rust-intel
 
-**v0.4.8 (2026-08-07).** Review-of-reviews hardening: corrected union validity, Serde duplicate-key, and zeroization guidance; expanded fan-out scope and incomplete-coverage reporting; shipped nested evidence files; and added a Codex plugin manifest plus `rust-intel-codex` installer. Numbered categories remain **58**. See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.5.0 (2026-08-08).** Review-of-reviews hardening: corrected union validity, Serde duplicate-key, and zeroization guidance; expanded fan-out scope and per-agent incomplete-coverage reporting; shipped nested evidence files; and added a Codex plugin manifest plus `rust-intel-codex` installer. Numbered categories remain **58**. See [`CHANGELOG.md`](CHANGELOG.md).
 
 A living specification that defends against the systematic mistakes LLMs make when writing Rust.
 
@@ -141,8 +141,8 @@ It also sweeps any prior install at the same target — including the legacy v0.
 The repository also exposes a Codex plugin manifest at `.codex-plugin/plugin.json`. For a direct local user-skill install, run:
 
 ```powershell
-node bin/install-codex.js                 # $env:CODEX_HOME\skills\rust-intel, or ~/.codex/skills/rust-intel
-node bin/install-codex.js --user-dir D:\Users\me\.codex\skills
+node bin/install-codex.js                 # $env:CODEX_HOME\skills\rust-intel, or ~/.agents/skills/rust-intel
+node bin/install-codex.js --user-dir D:\Users\me\.agents\skills
 node bin/install-codex.js --uninstall
 ```
 

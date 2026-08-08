@@ -1,8 +1,8 @@
 # Changelog
 
-## [0.4.8] - 2026-08-07
+## [0.5.0] - 2026-08-08
 
-**Review-of-reviews hardening and Codex distribution.** Corrected union validity, Serde duplicate-key, zeroization, and version-aware `serde_yaml` guidance; expanded audit scope to manifests, lockfiles, toolchains, CI, scripts, and FFI artifacts; added incomplete-coverage reporting that verifies artifacts were actually reviewed; made installers recursive so the evidence base ships; added deterministic positive/negative fixture checks; and added a Codex plugin manifest plus a strictly parsed `rust-intel-codex` installer.
+**Review-of-reviews hardening and Codex distribution.** This minor release changes enforceable BANNED/REQUIRED guidance and substantive audit/install behavior: corrected union validity, Serde duplicate-key, zeroization, and version-aware `serde_yaml` guidance; expanded audit scope to manifests, lockfiles, toolchains, CI, scripts, and FFI artifacts; added per-agent incomplete-coverage reporting; hardened installers against source/destination overlap; added deterministic positive/negative fixture checks; and added a Codex plugin manifest plus a strictly parsed `rust-intel-codex` installer.
 
 Format — [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning — [SemVer](https://semver.org/).
 

@@ -28,19 +28,20 @@ jobs:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Set version from tag
+        run: node dev/set-release-version.mjs "${GITHUB_REF_NAME#v}"
+
       - name: Sanity checks
         run: |
           node --check bin/install.js
           node --check bin/install-codex.js
+          node --check dev/set-release-version.mjs
           node --check skill/audit-project.workflow.js
           test -f skill/SKILL.md
           test -f skill/references/sources.md
           test -f .codex-plugin/plugin.json
           test -f commands/rust-intel-cc/audit.md
           node dev/validate.mjs
-
-      - name: Set version from tag
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
 
       - name: Smoke-test the installer
         run: |

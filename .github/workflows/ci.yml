@@ -15,7 +15,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Verify pinned Rust toolchain
+        shell: bash
+        run: |
+          rustc --version --verbose
+          cargo --version --verbose
+          rustc -vV | grep -q '^release: 1.97.0$'
+          rustc -vV | grep -q '^host: x86_64-unknown-linux-gnu$'
       - name: Validate docs, manifests, links, and fixtures
         run: node dev/validate.mjs
       - name: Run fixture expectations
@@ -29,6 +37,7 @@ jobs:
         run: |
           node --check bin/install.js
           node --check bin/install-codex.js
+          node --check dev/set-release-version.mjs
           node --check skill/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh

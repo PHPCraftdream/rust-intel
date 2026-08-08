@@ -42,17 +42,18 @@ const MODULES = [
 const AUDIT_UNITS = [
   { module: 'async.md', label: 'async/discipline', onlyCategories: 'B2, B3, B3a, B8, B11, B21, B22, B23' },
   { module: 'async.md', label: 'async/machinery', onlyCategories: 'B15a–e, C3, C9, E1' },
-  { module: 'concurrency-and-state.md', label: 'concurrency' },
-  { module: 'data-and-types.md', label: 'data-types' },
-  { module: 'security.md', label: 'security' },
-  { module: 'unsafe-and-ffi.md', label: 'unsafe-ffi' },
-  { module: 'drop-and-raii.md', label: 'drop-raii' },
-  { module: 'deps-macros-ergonomics.md', label: 'deps-macros' },
-  { module: 'lifetimes-and-api.md', label: 'lifetimes-api' },
-  { module: 'testing.md', label: 'testing' },
+  { module: 'concurrency-and-state.md', label: 'concurrency', requiredArtifactGroups: [] },
+  { module: 'data-and-types.md', label: 'data-types', requiredArtifactGroups: [] },
+  { module: 'security.md', label: 'security', requiredArtifactGroups: ['manifests', 'configs'] },
+  { module: 'unsafe-and-ffi.md', label: 'unsafe-ffi', requiredArtifactGroups: ['manifests', 'configs', 'scripts', 'ffi'] },
+  { module: 'drop-and-raii.md', label: 'drop-raii', requiredArtifactGroups: [] },
+  { module: 'deps-macros-ergonomics.md', label: 'deps-macros', requiredArtifactGroups: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts'] },
+  { module: 'lifetimes-and-api.md', label: 'lifetimes-api', requiredArtifactGroups: ['manifests', 'toolchains'] },
+  { module: 'testing.md', label: 'testing', requiredArtifactGroups: ['configs', 'ci', 'scripts'] },
   // §F1/§F2 need the project's own spec/README/docs, not just source — see scoper docsFiles + auditPrompt.
-  { module: 'semantics-and-conformance.md', label: 'semantics' },
+  { module: 'semantics-and-conformance.md', label: 'semantics', requiredArtifactGroups: [], requiresDocs: true },
 ]
+for (const unit of AUDIT_UNITS) unit.requiredArtifactGroups ||= []
 
 const SLICER_SCHEMA = {
   type: 'object',
@@ -103,9 +104,10 @@ const SCOPER_SCHEMA = {
 
 const FINDINGS_SCHEMA = {
   type: 'object',
-  required: ['module', 'findings', 'redInventory', 'artifactsReviewed', 'summary'],
+  required: ['module', 'label', 'findings', 'redInventory', 'artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'summary'],
   properties: {
     module: { type: 'string' },
+    label: { type: 'string', description: 'audit unit label; return exactly the label assigned in the prompt' },
     findings: {
       type: 'array',
       items: {
@@ -139,6 +141,16 @@ const FINDINGS_SCHEMA = {
       type: 'array',
       items: { type: 'string' },
       description: 'exact paths of non-Rust artifactFiles actually opened and reviewed; empty only when none are relevant',
+    },
+    sourceFilesReviewed: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'exact source file paths actually opened and reviewed by this unit',
+    },
+    docsReviewed: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'exact documentation paths actually opened and reviewed by this unit',
     },
     summary: { type: 'string' },
   },
@@ -194,6 +206,9 @@ Read the doc files directly if you need more than the digest. For §F1, fetch/lo
     : ''
   return `You are auditing ONE theme of rust-intel against real Rust code.
 
+Your audit unit label is exactly: ${unit.label}
+Return that exact value in the JSON label field. You are responsible for this unit's own evidence; another agent's review does not satisfy your obligations.
+
 Read the module: ${args.skillDir}/${unit.module}
 ${focus}${docs}
 TIER SEMANTICS:
@@ -227,7 +242,7 @@ METHOD:
 3. Read the surrounding context of each hit.
 4. Check it against the BANNED/REQUIRED text VERBATIM from the module — match the module's exact wording, not your prior.
 5. Honor every "don't flag X" / calibration note in the module.
-6. Return in artifactsReviewed the exact path of every non-Rust artifact you actually opened. Do not list inventory-only paths.
+6. Return in sourceFilesReviewed the exact source paths you actually opened, in artifactsReviewed the exact non-Rust artifact paths you actually opened, and in docsReviewed the exact documentation paths you actually opened. Do not list inventory-only paths.
 7. Do NOT invent findings — a short, honest report beats a synthetic one.
 
 Return FINDINGS_SCHEMA. redInventory MUST list EVERY occurrence of this module's 🔴 items (file:line + one-line status), INCLUDING justified ones — these feed the Post-flight summary.`
@@ -277,11 +292,40 @@ const expectedArtifacts = scoperResult && scoperResult.artifactFiles
   : []
 const reviewedArtifacts = new Set(auditResults.flatMap((result) => result.artifactsReviewed || []))
 const missingArtifacts = expectedArtifacts.filter((artifact) => !reviewedArtifacts.has(artifact))
+const reviewedSourceFiles = new Set(auditResults.flatMap((result) => result.sourceFilesReviewed || []))
+const missingSourceFiles = scoperResult && Array.isArray(scoperResult.files)
+  ? scoperResult.files.filter((file) => !reviewedSourceFiles.has(file))
+  : []
+const reviewedDocs = new Set(auditResults.flatMap((result) => result.docsReviewed || []))
+const missingDocs = scoperResult && Array.isArray(scoperResult.docsFiles)
+  ? scoperResult.docsFiles.filter((file) => !reviewedDocs.has(file))
+  : []
+const resultsByLabel = new Map(auditResults.map((result) => [result.label, result]))
+const missingUnitInputs = {}
+for (const unit of AUDIT_UNITS) {
+  const result = resultsByLabel.get(unit.label)
+  const missing = []
+  if (!result) missing.push('agent result')
+  const requiredGroups = unit.requiredArtifactGroups || []
+  for (const group of requiredGroups) {
+    const expected = scoperResult && scoperResult.artifactFiles ? (scoperResult.artifactFiles[group] || []) : []
+    const reviewed = new Set(result ? (result.artifactsReviewed || []) : [])
+    for (const artifact of expected) if (!reviewed.has(artifact)) missing.push(artifact)
+  }
+  if (unit.requiresDocs) {
+    const reviewed = new Set(result ? (result.docsReviewed || []) : [])
+    for (const doc of (scoperResult && scoperResult.docsFiles) || []) if (!reviewed.has(doc)) missing.push(doc)
+  }
+  if (missing.length) missingUnitInputs[unit.label] = missing
+}
 const coverageStatus = {
-  complete: missingScopeFields.length === 0 && missingSlices.length === 0 && missingArtifacts.length === 0 && dropped === 0,
+  complete: missingScopeFields.length === 0 && missingSlices.length === 0 && missingArtifacts.length === 0 && missingSourceFiles.length === 0 && missingDocs.length === 0 && Object.keys(missingUnitInputs).length === 0 && dropped === 0,
   missingScopeFields,
   missingSlices,
   missingArtifacts,
+  missingSourceFiles,
+  missingDocs,
+  missingUnitInputs,
   droppedAgents: dropped,
 }
 
@@ -293,6 +337,7 @@ MERGE + DEDUP:
 - Same file:line flagged by two agents -> keep ONE entry, prefer the more specific category, and note "also flagged by <other category>".
 - Group by severity: critical -> high -> medium -> info. Within a severity, order by tier letter (A -> B -> C -> D -> E -> F).
 - Do NOT invent findings not present in the input.
+- Coverage is COMPLETE only when coverageStatus.complete is true. Report every missingUnitInputs, missingSourceFiles, missingDocs, missingArtifacts, missing scope/slice, or dropped agent as INCOMPLETE; never infer coverage from another unit's evidence.
 
 Format the report EXACTLY like this:
 

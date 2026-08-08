@@ -21,7 +21,7 @@ Usage:
   node bin/install-codex.js --help             show this text
 
 The default target is CODEX_HOME/skills/rust-intel when CODEX_HOME is set,
-otherwise ~/.codex/skills/rust-intel. Only *.md and *.js skill files are copied.`);
+otherwise ~/.agents/skills/rust-intel. Only *.md and *.js skill files are copied.`);
 }
 
 function fail(message) {
@@ -36,6 +36,31 @@ function copyTree(src, dst) {
     const to = path.join(dst, entry.name);
     if (entry.isDirectory()) copyTree(from, to);
     else if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.js'))) fs.copyFileSync(from, to);
+  }
+}
+
+function canonicalCandidate(value) {
+  let current = path.resolve(value);
+  const tail = [];
+  while (!fs.existsSync(current)) {
+    tail.unshift(path.basename(current));
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return path.join(fs.realpathSync(current), ...tail);
+}
+
+function isWithin(child, parent) {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function assertNoOverlap(source, destination) {
+  const sourcePath = canonicalCandidate(source);
+  const destinationPath = canonicalCandidate(destination);
+  if (isWithin(destinationPath, sourcePath) || isWithin(sourcePath, destinationPath)) {
+    fail(`destination must not overlap source (source: ${sourcePath}, destination: ${destinationPath})`);
   }
 }
 
@@ -58,8 +83,9 @@ function main(argv) {
     }
   }
   if (!fs.existsSync(path.join(skillSrc, 'SKILL.md'))) fail(`skill/SKILL.md not found at ${skillSrc}`);
-  const skillsRoot = explicit || path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'skills');
+  const skillsRoot = explicit || path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.agents'), 'skills');
   const destination = path.join(skillsRoot, 'rust-intel');
+  assertNoOverlap(skillSrc, destination);
   if (uninstall) {
     fs.rmSync(destination, { recursive: true, force: true });
     console.log(`Removed ${destination}`);

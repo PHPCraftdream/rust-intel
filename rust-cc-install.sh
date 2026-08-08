@@ -79,6 +79,27 @@ if [[ ! -f "$REPO_DIR/skill/SKILL.md" ]]; then
     exit 1
 fi
 
+if ! command -v realpath >/dev/null 2>&1; then
+    echo "Error: realpath is required to verify installer source/destination boundaries." >&2
+    exit 1
+fi
+SOURCE_REAL="$(realpath -m "$REPO_DIR/skill")"
+DEST_REAL="$(realpath -m "$SKILL_DIR")"
+case "$DEST_REAL/" in
+    "$SOURCE_REAL/"*) echo "Error: destination must not be inside the source skill directory." >&2; exit 1 ;;
+esac
+case "$SOURCE_REAL/" in
+    "$DEST_REAL/"*) echo "Error: source skill directory must not be inside the destination." >&2; exit 1 ;;
+esac
+COMMANDS_SOURCE_REAL="$(realpath -m "$REPO_DIR/commands/rust-intel-cc")"
+COMMANDS_DEST_REAL="$(realpath -m "$COMMANDS_DIR")"
+case "$COMMANDS_DEST_REAL/" in
+    "$COMMANDS_SOURCE_REAL/"*) echo "Error: destination commands directory must not be inside the source commands directory." >&2; exit 1 ;;
+esac
+case "$COMMANDS_SOURCE_REAL/" in
+    "$COMMANDS_DEST_REAL/"*) echo "Error: source commands directory must not be inside the destination commands directory." >&2; exit 1 ;;
+esac
+
 echo "Installing rust-intel into $CLAUDE_DIR ..."
 
 # Sweep prior installation - all known layouts (current + every prior).
