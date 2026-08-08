@@ -324,30 +324,47 @@ for (const unit of AUDIT_UNITS) {
   }
   if (missing.length) missingUnitInputs[unit.label] = missing
 }
-// `complete` gates on what the RUN owed each unit: scope, slices, per-unit required inputs, and
-// every unit reporting back. It deliberately does NOT gate on total source/doc/artifact sweep —
-// a signal that is red on every real crate is a signal nobody reads, and it would drown the
-// per-unit gaps that actually invalidate a finding.
+// Two DIFFERENT questions, kept as two DIFFERENT signals so neither can hide behind the other:
+//   1. Orchestration: did every unit run, under its own label, with the scope/slice/required
+//      artifacts+docs it was owed? This is what "the run completed" means.
+//   2. Audit depth: did units that had candidates to look at actually open source files? A unit
+//      returning a well-formed empty result satisfies (1) while reviewing nothing — that is NOT
+//      coverage, and orchestration success must never be reported as if it were.
+const orchestrationComplete =
+  missingScopeFields.length === 0 &&
+  missingSlices.length === 0 &&
+  Object.keys(missingUnitInputs).length === 0 &&
+  strayLabels.length === 0 &&
+  dropped === 0
 const totalSourceFiles = scoperResult && Array.isArray(scoperResult.files) ? scoperResult.files.length : 0
 const sourceSampling = {
   total: totalSourceFiles,
   reviewed: totalSourceFiles - missingSourceFiles.length,
   unreviewed: missingSourceFiles,
-  note: 'Units grep for candidate patterns; unreviewed files are expected and describe sampling depth, not a failed run.',
+  note: 'Units grep for candidate patterns; some unreviewed files are expected and describe sampling depth, not by themselves a failed run.',
 }
+// Floor: a unit whose module had non-empty grep-candidate rows AND whose scope had at least one
+// source file to look at, but that returned zero sourceFilesReviewed, produced no source
+// evidence at all — distinct from "there was nothing relevant to find".
+const noSourceEvidence = AUDIT_UNITS.filter((unit) => {
+  const result = resultsByLabel.get(unit.label)
+  if (!result) return false
+  const slice = sliceFor(unit.module)
+  const hadCandidates = slice && ((slice.codePatternRows || '').trim().length > 0 || (slice.phraseRows || '').trim().length > 0)
+  const hadFiles = totalSourceFiles > 0
+  return hadCandidates && hadFiles && (result.sourceFilesReviewed || []).length === 0
+}).map((unit) => unit.label)
 const coverageStatus = {
-  complete:
-    missingScopeFields.length === 0 &&
-    missingSlices.length === 0 &&
-    Object.keys(missingUnitInputs).length === 0 &&
-    strayLabels.length === 0 &&
-    dropped === 0,
+  orchestrationComplete,
   missingScopeFields,
   missingSlices,
   missingUnitInputs,
   strayLabels,
   droppedAgents: dropped,
-  // Informational depth metrics — reported, never gating.
+  // Audit-depth signals — these describe HOW MUCH was reviewed, and noSourceEvidence is itself a
+  // failure (a unit with candidates and files to check that opened none), even though it does
+  // not gate orchestrationComplete.
+  noSourceEvidence,
   sourceSampling,
   missingArtifacts,
   missingDocs,
@@ -361,8 +378,9 @@ MERGE + DEDUP:
 - Same file:line flagged by two agents -> keep ONE entry, prefer the more specific category, and note "also flagged by <other category>".
 - Group by severity: critical -> high -> medium -> info. Within a severity, order by tier letter (A -> B -> C -> D -> E -> F).
 - Do NOT invent findings not present in the input.
-- Coverage is COMPLETE only when coverageStatus.complete is true — i.e. every unit reported back under its own label with the scope, slice, and required artifacts/docs it was owed. If it is false, write INCOMPLETE and name exactly what is missing (missingUnitInputs, missingScopeFields, missingSlices, strayLabels, droppedAgents). Never infer one unit's coverage from another unit's evidence.
-- coverageStatus.sourceSampling, missingArtifacts, and missingDocs are DEPTH metrics, not failures: report sourceSampling as "reviewed R of T source files (grep-candidate sampling)" and do NOT downgrade coverage to INCOMPLETE because of them. Do not list the unreviewed file paths in the report.
+- Report TWO SEPARATE coverage lines — do not merge them, and do not let one look like the other:
+  - **Orchestration** is COMPLETE only when coverageStatus.orchestrationComplete is true — i.e. every unit reported back under its own label with the scope, slice, and required artifacts/docs it was owed. If false, write INCOMPLETE and name exactly what is missing (missingUnitInputs, missingScopeFields, missingSlices, strayLabels, droppedAgents).
+  - **Audit depth** is a separate line, always present: report coverageStatus.sourceSampling as "reviewed R of T source files (grep-candidate sampling)"; if coverageStatus.noSourceEvidence is non-empty, name those units explicitly as having returned NO source evidence (a unit with candidates and files to check that opened none) — this is a real gap even when orchestration is COMPLETE. Do not list individual unreviewed file paths. Never infer one unit's coverage from another unit's evidence, and never let "Orchestration: COMPLETE" imply the audit reviewed all or most of the source.
 
 Format the report EXACTLY like this:
 
@@ -370,7 +388,8 @@ Format the report EXACTLY like this:
 
 **Scope:** ${args.target}
 **Pinned versions:** <from scoper / the versions seen in input>
-**Coverage:** <COMPLETE or INCOMPLETE per coverageStatus.complete — when INCOMPLETE, name the missing units/inputs; then always append the depth line "reviewed R of T source files (grep-candidate sampling)">
+**Orchestration:** <COMPLETE or INCOMPLETE per coverageStatus.orchestrationComplete — when INCOMPLETE, name the missing units/inputs>
+**Audit depth:** <"reviewed R of T source files (grep-candidate sampling)"; if coverageStatus.noSourceEvidence is non-empty, append "— NO source evidence from: <labels>">
 **Found:** N critical, M high, K medium, L info
 
 ---

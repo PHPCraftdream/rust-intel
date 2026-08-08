@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isValidSemver } from './semver.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const required = [
@@ -15,6 +16,8 @@ const required = [
   '.codex-plugin/plugin.json',
   'bin/install-codex.js',
   'dev/set-release-version.mjs',
+  'dev/check-release-version.mjs',
+  'dev/semver.mjs',
   'dev/validate-fixtures.mjs',
   'examples/fixtures/cases.json',
 ];
@@ -78,24 +81,53 @@ for (const module of ['async.md', 'concurrency-and-state.md', 'data-and-types.md
 // tokens are the same rule stated twice — the drift that creeps in when independently-written
 // releases each add a row for a pattern the other already covered. Compared per contiguous table
 // block so the phrase table and the code-pattern table never collide with each other.
+//
+// Markdown table cells escape a literal pipe as `\|` — including inside inline code, since
+// backticks do NOT protect table-cell delimiters in GFM. A naive `split('|')` truncates a cell
+// like `` `std::thread::scope(\|s\| ...)` `` at the first escaped pipe. Split respecting the
+// escape instead, then unescape `\|` back to `|` before extracting inline-code spans.
+function splitTableRow(line) {
+  const cells = [];
+  let current = '';
+  for (let i = 1; i < line.length; i += 1) {
+    if (line[i] === '\\' && line[i + 1] === '|') {
+      current += '|';
+      i += 1;
+    } else if (line[i] === '|') {
+      cells.push(current);
+      current = '';
+    } else {
+      current += line[i];
+    }
+  }
+  if (current.trim() !== '') cells.push(current);
+  return cells;
+}
 const skillSource = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8').split('\n');
 let tableBlock = new Map();
 function flushTableBlock() {
   for (const [signature, lines] of tableBlock) {
-    if (lines.length > 1) errors.push(`skill/SKILL.md: duplicate trigger rows for [${signature}] at lines ${lines.join(', ')}`);
+    if (lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${signature}] at lines ${lines.join(', ')}`);
   }
   tableBlock = new Map();
 }
 skillSource.forEach((line, index) => {
   if (!line.startsWith('|')) return flushTableBlock();
-  const firstCell = line.slice(1).split('|')[0];
+  const firstCell = splitTableRow(line)[0] || '';
   if (/^[\s:-]*$/.test(firstCell)) return; // header separator row
   const signature = [...new Set([...firstCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]))].sort().join(' + ');
-  if (!signature) return; // prose-only trigger cell — nothing mechanical to compare
+  if (!signature) return; // prose-only trigger cell (no inline code) — mechanical dedup doesn't cover it
   if (!tableBlock.has(signature)) tableBlock.set(signature, []);
   tableBlock.get(signature).push(index + 1);
 });
 flushTableBlock();
+
+// Regression cases for the SemVer check itself — a loose regex here would silently let a
+// malformed release tag through the gate that is supposed to catch it.
+const semverGood = ['0.5.0', '1.2.3', '1.2.3-alpha', '1.2.3-alpha.1', '1.2.3-0.3.7', '1.2.3+build.1', '1.2.3-beta+exp.sha.5114f85'];
+const semverBad = ['01.2.3', '1.02.3', '1.2.3-alpha.01', '1.2.3-alpha..1', '1.2.3-', '1.2', 'v1.2.3', '1.2.3.4'];
+for (const v of semverGood) if (!isValidSemver(v)) errors.push(`semver self-check: "${v}" should be valid but isValidSemver rejected it`);
+for (const v of semverBad) if (isValidSemver(v)) errors.push(`semver self-check: "${v}" should be invalid but isValidSemver accepted it`);
 
 const plugin = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -103,7 +135,7 @@ const claudePlugin = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/
 const allowedPluginFields = new Set(['id', 'name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'skills', 'apps', 'mcpServers', 'hooks', 'interface']);
 for (const field of Object.keys(plugin)) if (!allowedPluginFields.has(field)) errors.push(`unsupported Codex plugin field: ${field}`);
 for (const field of ['name', 'version', 'description']) if (typeof plugin[field] !== 'string' || !plugin[field].trim()) errors.push(`Codex plugin field ${field} must be a non-empty string`);
-if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(plugin.version || '')) errors.push('Codex plugin version must be strict semver');
+if (!isValidSemver(plugin.version || '')) errors.push('Codex plugin version must be strict semver');
 if (!plugin.author || typeof plugin.author.name !== 'string' || !plugin.author.name.trim()) errors.push('Codex plugin author.name is required');
 if (plugin.author && Object.keys(plugin.author).some((field) => !['name', 'email', 'url'].includes(field))) errors.push('Codex plugin author contains unsupported fields');
 if (plugin.skills !== './skills/') errors.push('Codex manifest must point skills at ./skills/');
@@ -131,7 +163,7 @@ if (plugin.apps !== undefined && !fs.existsSync(path.join(root, '.app.json'))) e
 if (typeof plugin.mcpServers === 'string' && !fs.existsSync(path.join(root, '.mcp.json'))) errors.push('Codex plugin declares mcpServers without .mcp.json');
 if (plugin.version !== packageJson.version || plugin.version !== claudePlugin.version) errors.push(`version mismatch: Codex=${plugin.version}, npm=${packageJson.version}, Claude=${claudePlugin.version}`);
 
-for (const token of ['artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'missingArtifacts', 'missingUnitInputs', "required: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts', 'ffi']"]) {
+for (const token of ['artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'missingArtifacts', 'missingUnitInputs', 'noSourceEvidence', 'orchestrationComplete', "required: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts', 'ffi']"]) {
   if (!workflow.includes(token)) errors.push(`workflow coverage contract is missing ${token}`);
 }
 

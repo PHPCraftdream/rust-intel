@@ -1,7 +1,12 @@
 # Publish rust-intel-cc to npm on every version tag (v*).
-# The package version is derived from the tag — package.json's version field
-# is informational and gets overwritten at publish time, so tagging is the
-# single release trigger and the two can never drift.
+#
+# The tag is the release trigger, but it does NOT set the version: a git tag is immutable and
+# points at a specific tree, so rewriting manifests in the runner's checkout after the tag exists
+# would publish a version the tagged tree itself never had. Instead: bump package.json,
+# .claude-plugin/plugin.json, and .codex-plugin/plugin.json locally with
+# `node dev/set-release-version.mjs <version>`, commit that, THEN tag `v<version>`. This workflow
+# only VERIFIES the tag matches what was committed (dev/check-release-version.mjs) and fails the
+# release otherwise — see that script's header for why verify-not-rewrite is the correct model.
 #
 # Requires the NPM_TOKEN repository secret (npm Granular Access Token with
 # read/write on the package, or a classic Automation token):
@@ -28,14 +33,16 @@ jobs:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Set version from tag
-        run: node dev/set-release-version.mjs "${GITHUB_REF_NAME#v}"
+      - name: Verify tag matches committed manifests
+        run: node dev/check-release-version.mjs "${GITHUB_REF_NAME#v}"
 
       - name: Sanity checks
         run: |
           node --check bin/install.js
           node --check bin/install-codex.js
           node --check dev/set-release-version.mjs
+          node --check dev/check-release-version.mjs
+          node --check dev/sync-mirror.mjs
           node --check skill/audit-project.workflow.js
           test -f skill/SKILL.md
           test -f skill/references/sources.md

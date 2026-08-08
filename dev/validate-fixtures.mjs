@@ -31,13 +31,13 @@ function detectUnionValidity(source) {
   return [...invalidFields].some((field) => new RegExp(`unsafe\\s*\\{[^}]*\\.${field}\\b`, 's').test(source));
 }
 
-// A runtime shift count is an identifier that is not a SCREAMING_CASE constant. `checked_shl`
-// and friends are method calls, so they never emit a `<<`/`>>` token and need no exclusion.
+// Crude textual probe, not a const-vs-runtime analysis: flags any `<<`/`>>` whose right-hand side
+// is an identifier. It cannot tell a `const`/literal count from a runtime one — SCREAMING_CASE is
+// a naming convention, not proof of constness, and a lowercase `const` would evade a name-based
+// filter — so it does not try to distinguish them. `.checked_shl(count)` and friends are method
+// calls and never emit a `<<`/`>>` token, so they are unaffected either way.
 function detectRuntimeShift(source) {
-  for (const match of source.matchAll(/\b[A-Za-z_]\w*\s*(?:<<|>>)\s*([A-Za-z_]\w*)/g)) {
-    if (!/^[A-Z0-9_]+$/.test(match[1])) return true;
-  }
-  return false;
+  return /\b[A-Za-z_]\w*\s*(?:<<|>>)\s*[A-Za-z_]\w*/.test(source);
 }
 
 const detectors = new Map([

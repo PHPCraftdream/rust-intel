@@ -39,9 +39,13 @@ jobs:
           node --check bin/install.js
           node --check bin/install-codex.js
           node --check dev/set-release-version.mjs
+          node --check dev/check-release-version.mjs
+          node --check dev/semver.mjs
           node --check dev/sync-mirror.mjs
           node --check skill/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
       - name: Pack smoke test
         run: npm pack --dry-run
+      - name: Verify a would-be release tag matches committed manifests
+        run: node dev/check-release-version.mjs "$(node -p "require('./package.json').version")"

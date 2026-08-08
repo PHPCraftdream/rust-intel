@@ -79,20 +79,42 @@ if [[ ! -f "$REPO_DIR/skill/SKILL.md" ]]; then
     exit 1
 fi
 
-if ! command -v realpath >/dev/null 2>&1; then
-    echo "Error: realpath is required to verify installer source/destination boundaries." >&2
-    exit 1
-fi
-SOURCE_REAL="$(realpath -m "$REPO_DIR/skill")"
-DEST_REAL="$(realpath -m "$SKILL_DIR")"
+# Portable canonical-path resolution for a possibly-not-yet-existing path: resolve the nearest
+# existing ancestor via `cd + pwd -P` (POSIX, no GNU-only flags) and re-append whatever tail
+# doesn't exist yet. Deliberately does NOT use `realpath -m` — that flag is GNU coreutils-specific
+# and is absent on stock macOS/BSD `realpath` and on minimal/BusyBox environments, both of which
+# this script is advertised for. Mirrors the equivalent helper in bin/install.js / rust-cc-install.ps1.
+canonical_candidate() {
+    local target="$1"
+    case "$target" in
+        /*) : ;;
+        *) target="$(pwd)/$target" ;;
+    esac
+    local tail=""
+    while [[ ! -e "$target" ]]; do
+        local base
+        base="$(basename "$target")"
+        if [[ -z "$tail" ]]; then tail="$base"; else tail="$base/$tail"; fi
+        local parent
+        parent="$(dirname "$target")"
+        if [[ "$parent" == "$target" ]]; then break; fi
+        target="$parent"
+    done
+    local resolved
+    resolved="$(cd "$target" && pwd -P)"
+    if [[ -n "$tail" ]]; then echo "$resolved/$tail"; else echo "$resolved"; fi
+}
+
+SOURCE_REAL="$(canonical_candidate "$REPO_DIR/skill")"
+DEST_REAL="$(canonical_candidate "$SKILL_DIR")"
 case "$DEST_REAL/" in
     "$SOURCE_REAL/"*) echo "Error: destination must not be inside the source skill directory." >&2; exit 1 ;;
 esac
 case "$SOURCE_REAL/" in
     "$DEST_REAL/"*) echo "Error: source skill directory must not be inside the destination." >&2; exit 1 ;;
 esac
-COMMANDS_SOURCE_REAL="$(realpath -m "$REPO_DIR/commands/rust-intel-cc")"
-COMMANDS_DEST_REAL="$(realpath -m "$COMMANDS_DIR")"
+COMMANDS_SOURCE_REAL="$(canonical_candidate "$REPO_DIR/commands/rust-intel-cc")"
+COMMANDS_DEST_REAL="$(canonical_candidate "$COMMANDS_DIR")"
 case "$COMMANDS_DEST_REAL/" in
     "$COMMANDS_SOURCE_REAL/"*) echo "Error: destination commands directory must not be inside the source commands directory." >&2; exit 1 ;;
 esac
