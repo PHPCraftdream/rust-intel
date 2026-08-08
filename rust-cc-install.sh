@@ -120,35 +120,58 @@ normalize_path_components() {
     printf '%s' "$out"
 }
 
-# Portable canonical-path resolution for a possibly-not-yet-existing path: resolve the nearest
-# existing ancestor via `cd + pwd -P` (POSIX, no GNU-only flags), then normalize the missing tail
-# against that ancestor's own components (above) before re-appending it. Deliberately does NOT use
-# `realpath -m` — that flag is GNU coreutils-specific and is absent on stock macOS/BSD `realpath`
-# and on minimal/BusyBox environments, both of which this script is advertised for.
+# Portable canonical-path resolution for a possibly-not-yet-existing path. Deliberately does NOT
+# use `realpath -m` — that flag is GNU coreutils-specific and is absent on stock macOS/BSD
+# `realpath` and on minimal/BusyBox environments, both of which this script is advertised for.
+#
+# Runs physical resolution and lexical normalization to a FIXPOINT rather than once each, because
+# the two steps feed each other: collapsing a `missing/..` pair can expose a component that was
+# unreachable during the physical walk (nothing can be traversed *through* a nonexistent
+# directory), and if that newly-exposed component is a symlink it would otherwise be returned
+# unresolved — letting `<somewhere>/missing/../link` compare as an unrelated path while the kernel
+# follows `link` straight into the source tree. Each iteration either converges or resolves at
+# least one more symlink, so the loop terminates; the iteration cap is a backstop for symlink
+# cycles (which `cd` would also reject, but not portably enough to rely on).
 canonical_candidate() {
     local target="$1"
     case "$target" in
         /*) : ;;
         *) target="$(pwd)/$target" ;;
     esac
-    local tail=""
-    while [[ ! -e "$target" ]]; do
-        local base
-        base="$(basename "$target")"
-        if [[ -z "$tail" ]]; then tail="$base"; else tail="$base/$tail"; fi
-        local parent
-        parent="$(dirname "$target")"
-        if [[ "$parent" == "$target" ]]; then break; fi
-        target="$parent"
+    local iteration=0
+    while :; do
+        iteration=$((iteration + 1))
+        if [[ "$iteration" -gt 64 ]]; then
+            echo "Error: could not canonicalize '$1' (symlink cycle?)." >&2
+            exit 1
+        fi
+        # Walk to the nearest existing *directory* ancestor. `-d` rather than `-e` so a plain file
+        # in the path never becomes a `cd` target (that would abort the script under `set -e`).
+        local probe="$target" tail=""
+        while [[ ! -d "$probe" ]]; do
+            local base parent
+            base="$(basename "$probe")"
+            if [[ -z "$tail" ]]; then tail="$base"; else tail="$base/$tail"; fi
+            parent="$(dirname "$probe")"
+            if [[ "$parent" == "$probe" ]]; then break; fi
+            probe="$parent"
+        done
+        local resolved
+        if ! resolved="$(cd "$probe" 2>/dev/null && pwd -P)"; then
+            resolved="$probe"
+        fi
+        local candidate
+        if [[ -z "$tail" ]]; then
+            candidate="$resolved"
+        else
+            candidate="$(normalize_path_components "$resolved" "$tail")"
+        fi
+        if [[ "$candidate" == "$target" ]]; then
+            echo "$candidate"
+            return
+        fi
+        target="$candidate"
     done
-    local resolved
-    resolved="$(cd "$target" && pwd -P)"
-    if [[ -z "$tail" ]]; then
-        echo "$resolved"
-    else
-        normalize_path_components "$resolved" "$tail"
-        echo
-    fi
 }
 
 SOURCE_REAL="$(canonical_candidate "$REPO_DIR/skill")"

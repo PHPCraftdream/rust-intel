@@ -88,7 +88,31 @@ jobs:
           fi
           grep -q "must not overlap\|must not be inside" /tmp/rci-err || fail "symlink-into-source overlap: wrong error"
 
-          rm -rf /tmp/rci-normal /tmp/rci-symlink-target /tmp/rci-err
+          # 6. COMPOSITION of 4 and 5: a missing component, then `..`, then an existing symlink
+          #    into the source. Each ingredient is rejected alone (cases 4 and 5); composed, a
+          #    resolver that normalizes only once returns the symlink UNRESOLVED, because the
+          #    physical walk could not traverse through the nonexistent component and the lexical
+          #    pass that removes it runs afterwards. Requires resolution to a fixpoint.
+          rm -rf /tmp/rci-compose
+          mkdir -p /tmp/rci-compose
+          ln -s "$REPO/skill" /tmp/rci-compose/link
+          if CLAUDE_CONFIG_DIR="/tmp/rci-compose/absent/../link" bash "$REPO/rust-cc-install.sh" 2>/tmp/rci-err; then
+            fail "missing-component-then-..-then-symlink overlap bypass was accepted"
+          fi
+          grep -q "must not overlap\|must not be inside" /tmp/rci-err || fail "composed traversal+symlink overlap: wrong error"
+
+          # 6b. Same composition aimed at the COMMANDS source tree, which has its own comparison.
+          #     Here the skill guard passes (the destination is nowhere near skill/) and only the
+          #     commands guard can catch it, so this exercises that second comparison specifically.
+          rm -rf /tmp/rci-compose-cmd
+          mkdir -p /tmp/rci-compose-cmd
+          ln -s "$REPO/commands/rust-intel-cc" /tmp/rci-compose-cmd/link
+          if CLAUDE_CONFIG_DIR="/tmp/rci-compose-cmd/absent/../link" bash "$REPO/rust-cc-install.sh" 2>/tmp/rci-err; then
+            fail "composed traversal+symlink into commands source was accepted"
+          fi
+          grep -q "must not overlap\|must not be inside" /tmp/rci-err || fail "composed commands overlap: wrong error"
+
+          rm -rf /tmp/rci-normal /tmp/rci-symlink-target /tmp/rci-compose /tmp/rci-compose-cmd /tmp/rci-err
           echo "installer overlap-guard execution tests passed"
       - name: Pack smoke test
         run: npm pack --dry-run
