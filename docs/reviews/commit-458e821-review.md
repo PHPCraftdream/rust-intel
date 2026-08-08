@@ -1,9 +1,9 @@
 # Review of commit `458e821`
 
-**Commit:** `458e821d5b2ebcc9f7edd03cd23e3f1e4ba71f5c`  
-**Parent:** `7929771b0f768e17002f1a199714f2433838232e`  
-**Reviewed:** 2026-08-08  
-**Verdict:** **REQUEST CHANGES**
+- **Commit:** `458e821d5b2ebcc9f7edd03cd23e3f1e4ba71f5c`
+- **Parent:** `7929771b0f768e17002f1a199714f2433838232e`
+- **Reviewed:** 2026-08-08
+- **Verdict:** **REQUEST CHANGES**
 
 This review covers the `458e821` delta and the resulting 0.5.0 release state. The branch moved from `7929771` to `458e821` while the review was in progress, so inherited release/install issues that remain observable at `HEAD` are included and identified as such.
 

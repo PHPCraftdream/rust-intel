@@ -23,6 +23,10 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
           rustc -vV | grep -q '^release: 1.97.0$'
+      - name: Check for trailing whitespace across the tracked tree
+        # Diffs the empty tree against the working tree so every tracked line is treated as an
+        # addition and checked — a whole-repo invariant, not just the current PR's diff.
+        run: git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -- .
       - name: Verify the Codex skill mirror is in sync
         run: node dev/sync-mirror.mjs --check
       - name: Validate docs, manifests, links, and fixtures
@@ -45,6 +49,47 @@ jobs:
           node --check skill/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
+      - name: Installer overlap-guard execution tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="$(pwd)"
+          fail() { echo "FAIL: $1" >&2; exit 1; }
+
+          # 1. Normal install into a fresh, unrelated target succeeds and lands files.
+          rm -rf /tmp/rci-normal
+          CLAUDE_CONFIG_DIR=/tmp/rci-normal bash "$REPO/rust-cc-install.sh"
+          [ -f /tmp/rci-normal/skills/rust-intel/SKILL.md ] || fail "normal install did not land SKILL.md"
+
+          # 2. Destination is an EXISTING directory inside the source skill/ tree -> rejected.
+          if CLAUDE_CONFIG_DIR="$REPO/skill" bash "$REPO/rust-cc-install.sh" 2>/tmp/rci-err; then
+            fail "existing-target overlap was accepted"
+          fi
+          grep -q "must not overlap\|must not be inside" /tmp/rci-err || fail "existing-target overlap: wrong error"
+
+          # 3. Destination is a FULLY MISSING path inside the source skill/ tree -> rejected.
+          if CLAUDE_CONFIG_DIR="$REPO/skill/does-not-exist-yet" bash "$REPO/rust-cc-install.sh" 2>/tmp/rci-err; then
+            fail "fully-missing-target overlap was accepted"
+          fi
+          grep -q "must not overlap\|must not be inside" /tmp/rci-err || fail "fully-missing-target overlap: wrong error"
+
+          # 4. Missing component followed by `..` that lexically lands inside skill/ -> rejected.
+          #    This is the exact bypass a non-normalizing canonical-path resolver lets through.
+          if CLAUDE_CONFIG_DIR="$REPO/.rci-does-not-exist/../skill" bash "$REPO/rust-cc-install.sh" 2>/tmp/rci-err; then
+            fail "missing-component-then-.. overlap bypass was accepted"
+          fi
+          grep -q "must not overlap\|must not be inside" /tmp/rci-err || fail "missing-component-then-.. overlap: wrong error"
+
+          # 5. An existing symlink whose target resolves inside skill/ -> rejected (physical resolution).
+          rm -rf /tmp/rci-symlink-target
+          ln -s "$REPO/skill" /tmp/rci-symlink-target
+          if CLAUDE_CONFIG_DIR=/tmp/rci-symlink-target bash "$REPO/rust-cc-install.sh" 2>/tmp/rci-err; then
+            fail "symlink-into-source overlap was accepted"
+          fi
+          grep -q "must not overlap\|must not be inside" /tmp/rci-err || fail "symlink-into-source overlap: wrong error"
+
+          rm -rf /tmp/rci-normal /tmp/rci-symlink-target /tmp/rci-err
+          echo "installer overlap-guard execution tests passed"
       - name: Pack smoke test
         run: npm pack --dry-run
       - name: Verify a would-be release tag matches committed manifests

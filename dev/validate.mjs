@@ -163,7 +163,7 @@ if (plugin.apps !== undefined && !fs.existsSync(path.join(root, '.app.json'))) e
 if (typeof plugin.mcpServers === 'string' && !fs.existsSync(path.join(root, '.mcp.json'))) errors.push('Codex plugin declares mcpServers without .mcp.json');
 if (plugin.version !== packageJson.version || plugin.version !== claudePlugin.version) errors.push(`version mismatch: Codex=${plugin.version}, npm=${packageJson.version}, Claude=${claudePlugin.version}`);
 
-for (const token of ['artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'missingArtifacts', 'missingUnitInputs', 'noSourceEvidence', 'orchestrationComplete', "required: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts', 'ffi']"]) {
+for (const token of ['artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'missingArtifacts', 'missingUnitInputs', 'noSourceEvidence', 'invalidSourceEvidence', 'orchestrationComplete', "required: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts', 'ffi']"]) {
   if (!workflow.includes(token)) errors.push(`workflow coverage contract is missing ${token}`);
 }
 

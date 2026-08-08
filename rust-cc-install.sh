@@ -79,11 +79,52 @@ if [[ ! -f "$REPO_DIR/skill/SKILL.md" ]]; then
     exit 1
 fi
 
+# Collapse `.` and `..` components in a slash-separated tail against an absolute base path,
+# printing the normalized absolute result. Passes the base and tail as plain strings (not
+# array-by-reference / namerefs) and avoids negative array indices — both are bash-4.3+ features
+# absent from the bash 3.2 that stock macOS still ships as /bin/bash. Used below to normalize the
+# re-appended missing tail so the overlap guard compares the same normalized path that
+# `mkdir -p`/`find`/the kernel will later actually operate on — an unnormalized tail (e.g. a
+# missing directory followed by `..`) can lexically walk back INTO an already-resolved prefix
+# while the plain string still looks like an unrelated sibling path.
+normalize_path_components() {
+    local base="$1" rest="$2"
+    local -a stack=()
+    local -a parts
+    local old_ifs="$IFS"
+    IFS='/'
+    read -ra parts <<< "$base"
+    IFS="$old_ifs"
+    local p
+    for p in ${parts[@]+"${parts[@]}"}; do
+        [[ -n "$p" ]] && stack+=("$p")
+    done
+    local comp
+    while [[ -n "$rest" ]]; do
+        comp="${rest%%/*}"
+        if [[ "$comp" == "$rest" ]]; then rest=""; else rest="${rest#*/}"; fi
+        case "$comp" in
+            ""|.) : ;;
+            ..)
+                if [[ ${#stack[@]} -gt 0 ]]; then unset "stack[$((${#stack[@]} - 1))]"; fi
+                ;;
+            *) stack+=("$comp") ;;
+        esac
+    done
+    if [[ ${#stack[@]} -eq 0 ]]; then
+        printf '/'
+        return
+    fi
+    local out="" s
+    for s in ${stack[@]+"${stack[@]}"}; do out="$out/$s"; done
+    printf '%s' "$out"
+}
+
 # Portable canonical-path resolution for a possibly-not-yet-existing path: resolve the nearest
-# existing ancestor via `cd + pwd -P` (POSIX, no GNU-only flags) and re-append whatever tail
-# doesn't exist yet. Deliberately does NOT use `realpath -m` — that flag is GNU coreutils-specific
-# and is absent on stock macOS/BSD `realpath` and on minimal/BusyBox environments, both of which
-# this script is advertised for. Mirrors the equivalent helper in bin/install.js / rust-cc-install.ps1.
+# existing ancestor via `cd + pwd -P` (POSIX, no GNU-only flags), then normalize the missing tail
+# against that ancestor's own components (above) before re-appending it. Deliberately does NOT use
+# `realpath -m` — that flag is GNU coreutils-specific and is absent on stock macOS/BSD `realpath`
+# and on minimal/BusyBox environments, both of which this script is advertised for.
 canonical_candidate() {
     local target="$1"
     case "$target" in
@@ -102,7 +143,12 @@ canonical_candidate() {
     done
     local resolved
     resolved="$(cd "$target" && pwd -P)"
-    if [[ -n "$tail" ]]; then echo "$resolved/$tail"; else echo "$resolved"; fi
+    if [[ -z "$tail" ]]; then
+        echo "$resolved"
+    else
+        normalize_path_components "$resolved" "$tail"
+        echo
+    fi
 }
 
 SOURCE_REAL="$(canonical_candidate "$REPO_DIR/skill")"

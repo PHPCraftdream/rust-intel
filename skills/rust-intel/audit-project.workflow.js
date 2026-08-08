@@ -344,15 +344,25 @@ const sourceSampling = {
   note: 'Units grep for candidate patterns; some unreviewed files are expected and describe sampling depth, not by themselves a failed run.',
 }
 // Floor: a unit whose module had non-empty grep-candidate rows AND whose scope had at least one
-// source file to look at, but that returned zero sourceFilesReviewed, produced no source
-// evidence at all — distinct from "there was nothing relevant to find".
+// source file to look at, but whose sourceFilesReviewed contains zero paths that are actually IN
+// scoperResult.files, produced no source evidence at all — distinct from "there was nothing
+// relevant to find". Checking raw length alone lets a unit dodge the floor with a stray README.md,
+// a typo'd path, or a hallucinated file that was never in scope, so every path is intersected
+// against the scoped set first; anything outside it is reported separately as invalid, not
+// silently counted as evidence.
+const scopedFileSet = scoperResult && Array.isArray(scoperResult.files) ? new Set(scoperResult.files) : new Set()
+const invalidSourceEvidence = {}
 const noSourceEvidence = AUDIT_UNITS.filter((unit) => {
   const result = resultsByLabel.get(unit.label)
   if (!result) return false
   const slice = sliceFor(unit.module)
   const hadCandidates = slice && ((slice.codePatternRows || '').trim().length > 0 || (slice.phraseRows || '').trim().length > 0)
   const hadFiles = totalSourceFiles > 0
-  return hadCandidates && hadFiles && (result.sourceFilesReviewed || []).length === 0
+  const reviewed = result.sourceFilesReviewed || []
+  const inScopeCount = reviewed.filter((file) => scopedFileSet.has(file)).length
+  const outOfScope = reviewed.filter((file) => !scopedFileSet.has(file))
+  if (outOfScope.length) invalidSourceEvidence[unit.label] = outOfScope
+  return hadCandidates && hadFiles && inScopeCount === 0
 }).map((unit) => unit.label)
 const coverageStatus = {
   orchestrationComplete,
@@ -365,6 +375,7 @@ const coverageStatus = {
   // failure (a unit with candidates and files to check that opened none), even though it does
   // not gate orchestrationComplete.
   noSourceEvidence,
+  invalidSourceEvidence,
   sourceSampling,
   missingArtifacts,
   missingDocs,
@@ -380,7 +391,7 @@ MERGE + DEDUP:
 - Do NOT invent findings not present in the input.
 - Report TWO SEPARATE coverage lines — do not merge them, and do not let one look like the other:
   - **Orchestration** is COMPLETE only when coverageStatus.orchestrationComplete is true — i.e. every unit reported back under its own label with the scope, slice, and required artifacts/docs it was owed. If false, write INCOMPLETE and name exactly what is missing (missingUnitInputs, missingScopeFields, missingSlices, strayLabels, droppedAgents).
-  - **Audit depth** is a separate line, always present: report coverageStatus.sourceSampling as "reviewed R of T source files (grep-candidate sampling)"; if coverageStatus.noSourceEvidence is non-empty, name those units explicitly as having returned NO source evidence (a unit with candidates and files to check that opened none) — this is a real gap even when orchestration is COMPLETE. Do not list individual unreviewed file paths. Never infer one unit's coverage from another unit's evidence, and never let "Orchestration: COMPLETE" imply the audit reviewed all or most of the source.
+  - **Audit depth** is a separate line, always present: report coverageStatus.sourceSampling as "reviewed R of T source files (grep-candidate sampling)"; if coverageStatus.noSourceEvidence is non-empty, name those units explicitly as having returned NO in-scope source evidence (a unit with candidates and files to check that reported zero paths actually present in the scoped file list — a stray README, a typo, or a hallucinated path does not count) — this is a real gap even when orchestration is COMPLETE. If coverageStatus.invalidSourceEvidence is non-empty, name those units and flag that they reported out-of-scope paths as evidence (do not treat those paths as reviewed source). Do not list individual unreviewed file paths. Never infer one unit's coverage from another unit's evidence, and never let "Orchestration: COMPLETE" imply the audit reviewed all or most of the source.
 
 Format the report EXACTLY like this:
 
@@ -389,7 +400,7 @@ Format the report EXACTLY like this:
 **Scope:** ${args.target}
 **Pinned versions:** <from scoper / the versions seen in input>
 **Orchestration:** <COMPLETE or INCOMPLETE per coverageStatus.orchestrationComplete — when INCOMPLETE, name the missing units/inputs>
-**Audit depth:** <"reviewed R of T source files (grep-candidate sampling)"; if coverageStatus.noSourceEvidence is non-empty, append "— NO source evidence from: <labels>">
+**Audit depth:** <"reviewed R of T source files (grep-candidate sampling)"; if coverageStatus.noSourceEvidence is non-empty, append "— NO in-scope source evidence from: <labels>"; if coverageStatus.invalidSourceEvidence is non-empty, append "— out-of-scope evidence reported by: <labels>">
 **Found:** N critical, M high, K medium, L info
 
 ---
