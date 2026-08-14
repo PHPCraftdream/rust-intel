@@ -274,7 +274,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | "reduce contention", "lock is slow", "scale across cores" | §E4 contention | a lock is a queue under load; read-mostly/sharding/atomic beats `Arc<Mutex>` |
 | "add tests", "unit tests for this", "increase coverage", "write a test" | §D1 vacuous tests | test a *postcondition that could break* or an external *contract* — never a tautology/constant/`derive` |
 | "extract a crate", "split into a library", "new workspace member", "make this its own crate" | §C10 crate boundaries | premature extraction freezes an unproven API (§C1) and forces version/feature coordination |
-| "benchmark this", "lock in the speedup", "guard against regression" | §E6 measure | a `criterion` regression bench turns a measured win into a standing invariant |
+| "benchmark this", "lock in the speedup", "guard against regression", "fail CI if it gets slower" | §E6 measure | lock the win in CI — but hard-fail on a *deterministic counter* (allocation bytes, query/syscall counts, instruction counts); wall-clock on shared CI is too noisy to gate on (Criterion's own FAQ), keep it as a trend |
 | "zip two lists", "iterate two sequences together", "deduplicate a vec", "split into chunks of N", "chunk size from config" | §B29 iterator/slice traps | `zip` truncates to shorter; `dedup` only adjacent; `chunks(0)`/`windows(0)`/`step_by(0)` panic; `collect` into map overwrites dup keys |
 | "implement RFC/spec X", "wire format", "protocol", "compatible with Y", "port of Z", "parser for <named format>" | §F1 spec conformance | code self-consistent but diverges from the named reference: wrong field order/width, incomplete state machine, edge cases the spec mandates and the code omits |
 | "per our README", "as documented", "the docs say", task touches code whose crate README/docs state guarantees (threat model, what counts as untrusted, durability/ordering promises) | §F2 documented guarantees | code silently violates a guarantee stated only in prose — never visible without reading the project docs first |
@@ -329,6 +329,7 @@ Before generating code, I scan the user's request for triggers below. If a trigg
 | `Arc::strong_count(...)` / `Rc::strong_count(...)` used in a conditional | §B13 (count TOCTOU — use `into_inner`/`try_unwrap`) |
 | `flag.store(_, Ordering::Relaxed)` after a payload write, paired with a `flag.load(Ordering::Relaxed)` then a read of that payload | §B13 (`Relaxed`-publish data race — needs `Release`/`Acquire`) |
 | `assert_eq!(...)` / `assert_ne!(...)` with an `f32`/`f64` operand | §D1 (float exact-equality) |
+| `assert!(t.elapsed() < Duration::…)` — any wall-clock threshold asserted inside a `#[test]` | §D1 (tight → flakes on a loaded runner; loose → vacuous; and `cargo test` is the debug profile, not what ships — §D3. Gate performance on a deterministic counter, §E6) |
 | `notify.notified()` / `Notify` | §B15e (lost wakeup — arm with `enable()` before check) |
 | `#[derive(Debug)]` on a struct with a `password`/`secret`/`token`/`key`/`seed` field | §B12 (Debug-leak of secrets) |
 | `impl Drop` whose body can `panic!`/`.unwrap()`/`.expect()` | §B4 (panic-in-Drop double-abort) |

@@ -6,6 +6,17 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.5.1] — 2026-08-09
+
+**Performance gates measure the wrong thing — §E6 + §D1.** **PATCH-shaped:** bullets, sub-clauses, two trigger rows and one source entry; numbered category count unchanged (still **58**).
+
+Triggered by an external profiling write-up, but the write-up's own figures are not the grounding — it is a vendor blog for a profiler crate, and its numbers are self-produced demos. Four of its six lessons were already covered, two of them by verbatim-matching examples (§E1 already illustrates serialized `.await`s with `let a = fetch_a().await; let b = fetch_b().await;`; §E5 already routes `Regex::new` in a hot function to `LazyLock`; the Substitution catalog already lists `Arc<str>` for cloned immutable payloads; §E4 already bans a critical section "spanning I/O, allocation, or `format!`"). What survived verification was a **contradiction inside this spec**, grounded in first-party documentation:
+
+- **`skill/testing.md` — §E6 "Lock the win".** The rule told the reader to "guard it with a `criterion` benchmark in CI that fails on regression" — which is precisely what Criterion's own FAQ advises against: cloud-CI virtualization (it names GitHub Actions) "introduces a great deal of noise into the benchmarking process, and Criterion.rs' statistical analysis can only do so much to mitigate that." Rewritten so *what* you gate on is the point: the **failing** gate must be a deterministic counter (allocation bytes/counts, query/syscall/comparison counts, or instruction counts from a Valgrind/callgrind harness — Linux CI only, Valgrind has no Windows support), with wall-clock kept as a trend rather than a red build unless it runs on dedicated hardware. Adds an §A1 pointer: Criterion's FAQ still recommends `iai`, unreleased since **2021** — the technique is stable, the crate name is not.
+- **`skill/testing.md` — §D1, new BANNED bullet: a wall-clock threshold asserted as a test.** `assert!(t.elapsed() < Duration::from_millis(100))` has no useful setting — **tight** flakes on a loaded runner or noisy co-tenant VM (the `sleep` failure above, wearing an assertion), **loose** is structurally unable to fail (the vacuous-test/coverage-theater bullet below it). And neither reading describes the shipped binary, because `cargo test` runs the **debug** profile (§D3) while production runs release. Calibrated against its legitimate twin: asserting that a *timeout fires* is a behavioural postcondition and stays allowed — driven by `tokio::time::pause()`/`advance()`, not real elapsed time. This is the §B26/§D3 shape reused — §E6 owns the discipline, §D1 is the testing-side enforcement.
+- **`skill/SKILL.md`** — the "benchmark this / lock in the speedup / guard against regression" phrase row previously restated the advice Criterion warns against; it now routes to the deterministic-counter gate. New code-pattern row for a wall-clock threshold inside a `#[test]`.
+- **`skill/references/sources.md`** — new entry quoting Criterion's FAQ and analysis chapters verbatim, with the `iai` staleness recorded as a live §A1 example of a documentation recommendation that rotted.
+
 ## [0.5.0] — 2026-08-08
 
 **Second distribution channel (Codex), a review-of-reviews pass over v0.4.7, and the repo's first CI.** **Numbered category count is unchanged (still 58)** — no category was added, split, or retired.
