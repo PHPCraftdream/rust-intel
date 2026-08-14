@@ -104,7 +104,7 @@ const SCOPER_SCHEMA = {
 
 const FINDINGS_SCHEMA = {
   type: 'object',
-  required: ['module', 'label', 'findings', 'redInventory', 'artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'summary'],
+  required: ['module', 'label', 'findings', 'unreachable', 'redInventory', 'artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'summary'],
   properties: {
     module: { type: 'string' },
     label: { type: 'string', description: 'audit unit label; return exactly the label assigned in the prompt' },
@@ -112,15 +112,37 @@ const FINDINGS_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['category', 'tier', 'severity', 'location', 'citation', 'why', 'fix'],
+        required: ['category', 'tier', 'severity', 'location', 'citation', 'evidence', 'reachedFrom', 'why', 'fix'],
         properties: {
           category: { type: 'string', description: '§id, e.g. §B15a' },
           tier: { type: 'string', description: '🔴 | 🟡 | 🟢' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'info'] },
           location: { type: 'string', description: 'file:line' },
           citation: { type: 'string', description: 'short quoted code or anchor proving the finding' },
+          evidence: {
+            type: 'string',
+            enum: ['pattern', 'traced', 'proven'],
+            description: 'HOW this was established, never how confident you feel, and never a sort key. pattern = the BANNED shape is present here and the module\'s calibration does not excuse it, but no caller path was followed (or none exists: for manifest/semver-shape/test-code/documented-guarantee categories this is COMPLETE evidence, not a candidate). traced = followed from a named entry point (public API, handler, accept loop, FFI export, CLI, build script) to this site, or the hazard sits inside that entry point itself. proven = a run demonstrated it (repro/test failing for the PREDICTED reason, miri/loom/sanitizer output) — a failure on compilation, on a setup panic, or on a wrong expectation is not proof. Do NOT claim proven without a run, or traced without naming the entry; a path that dead-ends before an entry point is pattern.',
+          },
+          reachedFrom: {
+            type: 'string',
+            description: 'for traced/proven: the entry point and the path to this site. For pattern: empty string — do not invent a path.',
+          },
           why: { type: 'string', description: 'one line: why this is a hazard, in the module\'s terms' },
           fix: { type: 'string', description: 'concrete remedy' },
+        },
+      },
+    },
+    unreachable: {
+      type: 'array',
+      description: 'Matched BANNED shapes that NO entry point can reach: production code whose sole live caller is a test, a cfg-disabled branch, a private fn with no live caller. NOT findings and never counted in the severity totals — but not silently dropped either: an unreachable match is a result, and hiding it makes the next audit re-derive it. Requires showing no path exists, not failing to find one — undetermined reachability (dyn dispatch, macro-generated calls) stays a finding labelled pattern. `cargo test` is an entry point, so a Tier D match in test code is never unreachable; in a library crate the pub API is an entry point too. A 🔴 occurrence listed here still appears in redInventory. Empty array is normal.',
+      items: {
+        type: 'object',
+        required: ['category', 'location', 'whyUnreachable'],
+        properties: {
+          category: { type: 'string', description: '§id' },
+          location: { type: 'string', description: 'file:line' },
+          whyUnreachable: { type: 'string', description: 'what you checked to conclude no entry point reaches it' },
         },
       },
     },
@@ -244,6 +266,17 @@ METHOD:
 5. Honor every "don't flag X" / calibration note in the module.
 6. Return in sourceFilesReviewed the exact source paths you actually opened, in artifactsReviewed the exact non-Rust artifact paths you actually opened, and in docsReviewed the exact documentation paths you actually opened. Do not list inventory-only paths.
 7. Do NOT invent findings — a short, honest report beats a synthetic one.
+
+EVIDENCE (how each finding was established — a grep hit is a candidate, not yet a finding):
+- Label every finding \`pattern\`, \`traced\`, or \`proven\`, and never label up. \`traced\` requires naming the entry point in reachedFrom (a public API, request handler, accept loop, FFI export, CLI arg, build script — something outside this crate's own code drives it); a hazard sitting *inside* an entry point (an \`extern "C"\` body, \`main\`, a handler body) is \`traced\` with that entry named. A path you followed but that dead-ended without reaching an entry point is \`pattern\`, not \`traced\`. \`proven\` requires an actual run whose failure matches the prediction: reading the code more carefully is not a run, and a failure on compilation, on a panic in setup, or on a wrong expectation in the repro is not proof either.
+- \`pattern\` is a normal, respectable result — mislabelling it \`traced\` is the one thing that makes this field worthless. **For categories with no caller path by nature — manifests/lockfiles/toolchains/CI (§A1, §C5–§C11), public-API and semver shape (§B1/§B1a/§B1b, §C1/§C1a), test code (Tier D), documented guarantees (§F2) — \`pattern\` is COMPLETE evidence, not a candidate:** the artifact itself establishes the finding, and there is no path to follow. Do not apologise for it and do not invent a path to upgrade it.
+- A candidate you can show NO entry point reaches goes in \`unreachable\` with what you checked — NOT in findings. Unreachability is a result, not a failure: report it rather than dropping it silently, so the next audit does not re-derive it. Three limits on this bucket:
+  - **\`cargo test\` is an entry point.** For Tier D categories the test code *is* the audit surface, so a match inside a test is never \`unreachable\`. "Test-only path" means **production** code whose sole live caller is a test.
+  - **In a library crate the public API is an entry point.** An item reachable from the crate root via \`pub\`/\`pub use\` is never \`unreachable\`, however few in-crate callers it has — the caller is a downstream user you cannot see.
+  - **\`unreachable\` requires showing no path exists, not failing to find one.** If reachability is undetermined (dyn dispatch, macro-generated calls, a plugin/registry lookup), it stays a finding labelled \`pattern\`.
+  - A 🔴 occurrence that is unreachable still goes in redInventory with that status — the unreachable bucket never removes an occurrence from the 🔴 inventory.
+- Severity ranks the hazard if it fires; evidence records what you established. They are independent axes and neither is a sort key for the other: a \`critical\`/\`pattern\` finding is legitimate and common. Do not deflate severity because evidence is \`pattern\`, and do not inflate evidence because severity is high.
+- Never weaken a check, widen a category, or stretch a calibration note to make something reportable. Finding less than you expected is an outcome; manufacturing a finding is a defect in the audit itself.
 
 Return FINDINGS_SCHEMA. redInventory MUST list EVERY occurrence of this module's 🔴 items (file:line + one-line status), INCLUDING justified ones — these feed the Post-flight summary.`
 }
@@ -383,12 +416,14 @@ const coverageStatus = {
 
 phase('Synthesize')
 const synthesis = await agent(
-  `You are merging the results of a fan-out Rust audit into a single report. Below is JSON containing scope, slices, expected audit units, and an array of per-unit audit results (module, findings[], redInventory[], summary).
+  `You are merging the results of a fan-out Rust audit into a single report. Below is JSON containing scope, slices, expected audit units, and an array of per-unit audit results (module, findings[], unreachable[], redInventory[], summary).
 
 MERGE + DEDUP:
 - Same file:line flagged by two agents -> keep ONE entry, prefer the more specific category, and note "also flagged by <other category>".
-- Group by severity: critical -> high -> medium -> info. Within a severity, order by tier letter (A -> B -> C -> D -> E -> F).
+- Group by severity: critical -> high -> medium -> info. Within a severity, order by tier letter (A -> B -> C -> D -> E -> F). **Evidence is NOT a sort key** — it labels how a finding was established, not how much it matters, and many categories (manifests, semver shape, test code, documented guarantees) are fully established at \`pattern\` because no caller path exists to follow. Sorting by it would rank those below a traced guess.
 - Do NOT invent findings not present in the input.
+- **Carry each finding's \`evidence\` label through verbatim — never upgrade it.** Merging must not turn two \`pattern\` reports into a \`traced\` one: agreement between graders is not a caller path. When two units report the same site, the surviving entry keeps **the evidence and \`reachedFrom\` of the report whose category survived** — never the stronger label from the report you discarded, because that label was earned for a different category and proves nothing about this one. Note the other unit's category and label in the "also flagged by" line.
+- **Aggregate every unit's \`unreachable\` entries into the dedicated section** — they are not findings and must never be counted in the **Found:** line, but they are also not dropped. A 🔴 occurrence that is unreachable still appears in the Post-flight 🔴 inventory with that status; the unreachable bucket never removes an occurrence from the 🔴 inventory.
 - Report TWO SEPARATE coverage lines — do not merge them, and do not let one look like the other:
   - **Orchestration** is COMPLETE only when coverageStatus.orchestrationComplete is true — i.e. every unit reported back under its own label with the scope, slice, and required artifacts/docs it was owed. If false, write INCOMPLETE and name exactly what is missing (missingUnitInputs, missingScopeFields, missingSlices, strayLabels, droppedAgents).
   - **Audit depth** is a separate line, always present: report coverageStatus.sourceSampling as "reviewed R of T source files (grep-candidate sampling)"; if coverageStatus.noSourceEvidence is non-empty, name those units explicitly as having returned NO in-scope source evidence (a unit with candidates and files to check that reported zero paths actually present in the scoped file list — a stray README, a typo, or a hallucinated path does not count) — this is a real gap even when orchestration is COMPLETE. If coverageStatus.invalidSourceEvidence is non-empty, name those units and flag that they reported out-of-scope paths as evidence (do not treat those paths as reviewed source). Do not list individual unreviewed file paths. Never infer one unit's coverage from another unit's evidence, and never let "Orchestration: COMPLETE" imply the audit reviewed all or most of the source.
@@ -401,12 +436,13 @@ Format the report EXACTLY like this:
 **Pinned versions:** <from scoper / the versions seen in input>
 **Orchestration:** <COMPLETE or INCOMPLETE per coverageStatus.orchestrationComplete — when INCOMPLETE, name the missing units/inputs>
 **Audit depth:** <"reviewed R of T source files (grep-candidate sampling)"; if coverageStatus.noSourceEvidence is non-empty, append "— NO in-scope source evidence from: <labels>"; if coverageStatus.invalidSourceEvidence is non-empty, append "— out-of-scope evidence reported by: <labels>">
-**Found:** N critical, M high, K medium, L info
+**Found:** N critical, M high, K medium, L info  (evidence: P proven, T traced, C pattern — P+T+C must equal N+M+K+L)
 
 ---
 
 ## CRITICAL
-### [§XX] file:line — title
+### [§XX] file:line — title  ·  evidence: <the label the unit supplied>
+<for traced/proven: "Reached from: <entry point → path>" — omit the line entirely for pattern, do not write "unknown">
 <citation, why, fix>
 
 ## HIGH
@@ -417,6 +453,12 @@ Format the report EXACTLY like this:
 
 ## INFO
 ...
+
+---
+
+## Unreachable matches (not findings)
+
+<aggregate every unit's `unreachable` entries: §id, file:line, and what was checked to conclude no entry point reaches it. These are recorded so the next audit does not re-derive them; they are NOT counted in **Found:**. Write "none" if every unit returned an empty list.>
 
 ---
 

@@ -163,8 +163,27 @@ if (plugin.apps !== undefined && !fs.existsSync(path.join(root, '.app.json'))) e
 if (typeof plugin.mcpServers === 'string' && !fs.existsSync(path.join(root, '.mcp.json'))) errors.push('Codex plugin declares mcpServers without .mcp.json');
 if (plugin.version !== packageJson.version || plugin.version !== claudePlugin.version) errors.push(`version mismatch: Codex=${plugin.version}, npm=${packageJson.version}, Claude=${claudePlugin.version}`);
 
-for (const token of ['artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'missingArtifacts', 'missingUnitInputs', 'noSourceEvidence', 'invalidSourceEvidence', 'orchestrationComplete', "required: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts', 'ffi']"]) {
+// Pin the whole `required: [...]` literals, not just the property names: the realistic regression
+// is a field quietly dropping out of `required` (which makes it optional for the structured-output
+// agent, so the axis vanishes from real reports) while every property definition stays in place.
+for (const token of [
+  'artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed',
+  'missingArtifacts', 'missingUnitInputs', 'noSourceEvidence', 'invalidSourceEvidence', 'orchestrationComplete',
+  'reachedFrom', 'whyUnreachable',
+  "enum: ['pattern', 'traced', 'proven']",
+  "required: ['category', 'tier', 'severity', 'location', 'citation', 'evidence', 'reachedFrom', 'why', 'fix']",
+  "required: ['module', 'label', 'findings', 'unreachable', 'redInventory', 'artifactsReviewed', 'sourceFilesReviewed', 'docsReviewed', 'summary']",
+  "required: ['category', 'location', 'whyUnreachable']",
+  "required: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts', 'ffi']",
+]) {
   if (!workflow.includes(token)) errors.push(`workflow coverage contract is missing ${token}`);
+}
+
+// The serial /rust-cc-audit command is a second, independent path with the same vocabulary and no
+// mirror check of its own. Pin the shared terms so the two paths cannot drift apart on wording.
+const auditCommand = fs.readFileSync(path.join(root, 'commands/rust-intel-cc/audit.md'), 'utf8');
+for (const token of ['`pattern`', '`traced`', '`proven`', 'Unreachable matches', 'Reached from']) {
+  if (!auditCommand.includes(token)) errors.push(`commands/rust-intel-cc/audit.md is missing the evidence-axis term ${token}`);
 }
 
 const canonicalFiles = relativeFiles(canonicalSkill);
