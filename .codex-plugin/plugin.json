@@ -1,6 +1,6 @@
 {
   "name": "rust-intel",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Defensive Rust review skill covering correctness, async, unsafe/FFI, security, dependencies, testing, and conformance.",
   "author": {
     "name": "Marat K",

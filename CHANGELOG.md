@@ -6,7 +6,7 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
-## [Unreleased]
+## [0.5.2] — 2026-08-14
 
 **Audit findings gain an evidence axis — `pattern` / `traced` / `proven`, plus honest unreachable matches.** **PATCH-shaped:** audit-harness and command changes only; no category was added, changed, or retired, and no BANNED/REQUIRED wording moved. Numbered category count unchanged (still **58**).
 
