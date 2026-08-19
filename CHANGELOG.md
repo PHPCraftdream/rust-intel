@@ -6,6 +6,18 @@ Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
 Minor = new categories or substantive additions.
 Patch = wording refinements, fixes, new sources.
 
+## [0.5.3] — 2026-08-19
+
+**`cargo-semver-checks` closes the one tier with no tool in Post-flight — plus a scope-line correction.** **PATCH-shaped:** one Post-flight bullet, one scope-line clause, one source entry; no BANNED/REQUIRED wording moved, no category added, retired, or renumbered. Numbered category count unchanged (still **58**).
+
+Triggered by a first-party account of `cargo-semver-checks` gaining stdlib stability-attribute awareness (`http://predr.ag/blog/protecting-the-rust-stdlib-from-breakage`), citing three historical incidents: an unstable required trait method breaking `async-std` (2020), a `BuildHasher` method reaching beta before its object-safety break was caught (2021), and an Iterator soundness fix that silently dropped `Send`/`Sync` (2022). The stdlib-specific plumbing (rustdoc-JSON stability attributes) does not transfer — ordinary crates carry no `#[unstable]`/`#[rustc_const_unstable]` attributes — so no category was written from it. What transfers is narrower and was verified independently against the tool's own lint catalog (`src/lints`, ~200 files) before being cited: `trait_method_added`, `trait_no_longer_dyn_compatible`, and `auto_trait_impl_removed` exist as named lints today, so all three incident shapes are mechanically caught, not just plausible.
+
+Every other tier in this spec has a tool in Post-flight — `miri` for §B5, `loom` for §B9/§B13, `cargo audit`/`cargo deny` for §A1, `cargo-mutants` for §D1a, `tokio-console`/`heaptrack` for §B9–§B11 — except semver (§C1/§C1a/§A3), which had none. Per the spec's own tier discipline, a mechanically-checked pattern is 🟢 (delegate, don't hand-report) — so the fix is a Post-flight gate, not a new §C-category; adding one would be exactly the noise the tier system exists to prevent.
+
+- **`skill/SKILL.md` Post-flight checklist** — `cargo semver-checks` added as a publish gate alongside `cargo audit`/`cargo deny`, with the same honesty caveat those two already carry: the tool documents its own gaps (generics, lifetimes, feature/target-specific breakage), so §C1/§C1a/§A3's write-time discipline still covers what it doesn't.
+- **`skill/SKILL.md` scope line** — added a second stated exception (alongside the existing §B18a variance one): a trait method added without `where Self: Sized` in a published library's public trait loses object-safety only at the *consumer's* `dyn Trait` call site, so `rustc` cannot flag it in the author's own crate. The scope line's blanket claim ("rustc already catches them and the LLM cannot ship them") was inaccurate for this specific case; the exception corrects it without changing the omission's conclusion — this shape stays out of scope as a hand-written category, same as before, now for the right reason.
+- **`skill/references/sources.md`** — new entry citing the tool's verified lint names and the blog post, with the transfer boundary stated explicitly (lint coverage and the delayed-blast framing transfer; the rustdoc-JSON stability-attribute mechanism does not).
+
 ## [0.5.2] — 2026-08-14
 
 **Audit findings gain an evidence axis — `pattern` / `traced` / `proven`, plus honest unreachable matches.** **PATCH-shaped:** audit-harness and command changes only; no category was added, changed, or retired, and no BANNED/REQUIRED wording moved. Numbered category count unchanged (still **58**).
