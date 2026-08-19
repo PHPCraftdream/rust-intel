@@ -1,7 +1,7 @@
 # Rust Intel — Dependencies, Macros & Ergonomics (supply-chain, clone, proc-macro, features, workspace, Deref, recompute cost)
 
-> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §A1, §C5, §C6, §C7, §C10, §C11, §E5. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
-> **Tiers in this module:** §A1 🔴 (unverified/unnamed dependency; stale-API remainder is 🟡) · §C5 🟡 · §C6 🟡 · §C7 🟡 (typo'd cfg — 🟢 via unexpected_cfgs) · §C10 🟡 · §C11 🟡 · §E5 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
+> Module of the **rust-intel** skill. Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This module holds the category bodies for §A1, §C5, §C6, §C7, §C10, §C11, §C12 (and §C12a), §E5. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
+> **Tiers in this module:** §A1 🔴 (unverified/unnamed dependency; stale-API remainder is 🟡) · §C5 🟡 · §C6 🟡 · §C7 🟡 (typo'd cfg — 🟢 via unexpected_cfgs) · §C10 🟡 · §C11 🟡 · §C12 🟡 (HTML sanitization and Markdown-rendering rows only are 🔴) · §C12a 🟡 · §E5 🟡/🟢. Derived from SKILL.md → Enforcement tiers (canonical).
 > **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
 ---
@@ -16,6 +16,7 @@ The class here is **APIs that compile but are wrong**, not APIs that don't exist
 - **Deprecated-not-removed APIs.** `#[deprecated]` emits a warning, not an error. LLMs routinely ignore the warning channel and ship deprecated calls. Each deprecated call is a future break.
 - **Wrong-version-of-crate APIs.** `serde_json::from_str` exists in every version, but `serde_json::Value::take` did not exist before a specific point. The compile succeeds against the pinned version *because the version pinned is recent enough*, but the LLM has no proof of that — it guessed and was lucky.
 - **Slopsquatting (supply-chain).** Hallucinated crate names that an adversary has registered on crates.io. Compiles, runs, exfiltrates secrets, and `cargo build --offline` would not have helped (the malicious payload lives inside a dependency the build script reaches for). Published "package-import hallucination" studies (Lanyado / Spracklen) report elevated hallucination rates for Rust crate names relative to other ecosystems; precise figures require checking against the primary source.
+- **Default-of-an-earlier-era crates.** A crate the training corpus is saturated with, that still works and has no advisory, but stopped being the recognized default before the corpus's cutoff caught up: `structopt` (folded into `clap`'s derive API — RUSTSEC-2022-0104, "structopt is in maintenance mode"), `serde_yaml` (archived by its author, no successor named here — verify the current recommendation at write time), `lazy_static`/`once_cell::sync::Lazy` (superseded by std `LazyLock`/`OnceLock`, stable since Rust 1.80 — see Version pins). Verify against the same "current default" question §C12 asks, not against whether the crate still compiles.
 
 **REQUIRED**:
 - Before calling any method on a third-party type, check that it exists *with the documented semantics* in the **exact version pinned in `Cargo.toml`**. "It compiled" is not proof — semantics drift across minor versions in pre-1.0 crates.
@@ -123,6 +124,72 @@ Concrete defenses:
 - `Deref` is reserved for smart pointers: `Box`, `Rc`, `Arc`, `Cow`, `MutexGuard`, `RwLockReadGuard`, `String → str`, `Vec<T> → [T]`, custom guards (`MyHandle<'a, T>` where `T` is the pointee). The relationship must be *pointer-like* (the wrapper owns/references the pointee; the wrapper is morally transparent to the pointee).
 - For composition without inheritance, write explicit accessors: `impl UserAdmin { fn user(&self) -> &User { &self.0 } }`. This keeps the API surface of `UserAdmin` separate from `User` and makes the composition explicit at every call site.
 - Cite the Rust API Guidelines **C-DEREF** rule in code review when this pattern appears: *"Only smart pointers implement `Deref` and `DerefMut` (C-DEREF). ... The traits should be used only for that purpose."*
+
+## §C12. Reinventing a solved problem instead of reaching for the world-recognized crate
+
+**The trap**: asked for a task with a well-known, high-adoption crate solution, the LLM writes a few lines of hand-rolled logic instead — `split(',')` for CSV, `format!` for JSON/URLs, a hardcoded character-replace table for HTML escaping. The hand-rolled version compiles and passes a plausible unit test built from the same mental model that wrote it. It is silently wrong on an input that model never considered — a quoted field, a non-ASCII path, a leap-second, a crossed antimeridian — and that input shows up in production, not in the test the LLM wrote for itself.
+
+**Membership gate — every row below earned its place the same way, and any addition must clear the same bar**: a row exists only when a **concrete input or scenario** can be named where the hand-rolled version compiles, passes a plausible test, and is silently wrong — not merely "less idiomatic" (style, out of scope), not merely "slower" (performance, → the Substitution catalog in `data-and-types.md`, Tier E). "Silently wrong" means wrong output, data corruption, a security hole, or a crash on a real input a naive test would not cover — a loud panic on the same input is a different (and lesser) defect than a silent wrong answer. A task without a nameable silent-failure input is not a finding here even when a popular crate exists for it (`clap` for argument parsing, `anyhow`/`thiserror` for error types) — that is engineering taste, and per this spec's own acceptance standard, a category exists only where LLMs demonstrably err more than a careful human would, not wherever a preference exists.
+
+**Why this is not a supply-chain shortcut around §A1**: every crate named below is independently verified to exist and carries real, checkable adoption (a download count, cited per row) — but that verification is *this document's*, done once, at write time of this category, not a license to skip §A1's own verification when the rule is applied. §A1 still governs how a suggested crate reaches `Cargo.toml`.
+
+**REQUIRED**:
+- On recognizing one of the tasks below, **propose** the named crate — subject to §A1's own verification and the user's approval — rather than silently hand-rolling the naive version. This is the same "suggestion to verify, not a fait accompli" posture §A1 already requires for any new dependency; §C12 does not create an exception to it.
+- If the user has a stated zero-dependency constraint, or declines the suggestion, hand-rolling is the user's informed choice, not a defect — write it, and name the specific input(s) from the row below that the hand-rolled version will not handle, in a comment at the point it matters, so the gap is a documented decision instead of a silent one.
+- Escalate a row to 🔴 (surface every occurrence) when its silent-failure shape is a security hole, not merely a correctness bug — currently: HTML sanitization (XSS bypass) and Markdown-to-HTML rendering (unescaped-HTML XSS). Every other row is 🟡: get it right, or document the gap, while writing; do not enumerate routine hits in the audit summary.
+
+**BANNED**:
+- Hand-rolling one of the tasks below **without** proposing the named alternative first, when there is no stated zero-dependency constraint.
+- Hand-rolling one of the tasks below **silently** even under a zero-dependency constraint — i.e., without naming in a comment which concrete input(s) from the row the hand-rolled code does not handle.
+
+**Utility-level catalog** — one task, one silent-failure input, one verified crate (all-time crates.io downloads at time of writing):
+
+| Task | Hand-rolled shape | Input where it is silently wrong | Crate (downloads) |
+|---|---|---|---|
+| CSV | `line.split(',')` | a quoted field containing `,` or `\n` | `csv` (228M) |
+| Version comparison | `split('.')` + tuple compare | `1.0.0-alpha` must sort *before* `1.0.0` | `semver` (921M) |
+| URL construction/parsing | `format!`/`split('/')` | missing percent-encoding on reserved/non-ASCII bytes; `@` in userinfo → SSRF (→ §C2) | `url` (808M) |
+| Money / decimal arithmetic | `f64` | accumulated rounding error; half-even vs half-up policy | `rust_decimal` (132M) |
+| Retry with backoff | `sleep(n * base)` in a loop | no jitter → thundering herd on a shared dependency; no attempt cap | maintained backoff crate — verify current maintenance status before naming one at write time |
+| Rate limiting | fixed-window counter | up to 2× burst at a window boundary | `governor` (71M) |
+| Glob matching | manual `*`/`starts_with` | `**` recursive semantics, `[a-z]` classes, escaping | `glob` (561M) |
+| Directory traversal | recursion over `read_dir` | symlink cycles | `walkdir` (571M) |
+| Base64 | hand-rolled lookup table | URL-safe alphabet, padding strictness | `base64` (1.45B) |
+| Temp file creation | `/tmp/{pid}` | predictable name → symlink attack (→ §C2 TOCTOU) | `tempfile` (746M) |
+| HTML escaping (output) | `replace('<', "&lt;")` | attribute-context escaping; `&` must be escaped first | an auto-escaping template engine (`askama`, `tera`) |
+| Date/time arithmetic | manual offset math | DST transition — nonexistent and ambiguous local time | `jiff` / `chrono` / `time` — verify current recommendation at write time |
+| JSON construction/parsing | `format!`/`split` | unescaped `"`, `\`, or newline in a value → invalid or injected JSON | `serde_json` (1.19B) |
+| HTTP client | raw `TcpStream` | chunked transfer-encoding, redirects, compressed responses | `reqwest` / `ureq` (652M) |
+| Config/cache directory path | hardcoded `~/.config` | no `$HOME`/XDG on Windows; XDG overrides ignored | `dirs` / `directories` (300M) |
+| String equality / dedup key | `==` on `String` | NFC vs NFD forms of the same visible string (`"café"` as U+00E9 vs `e`+combining-acute) compare unequal | `unicode-normalization` (534M) |
+| XML parsing | string search for tags | entity refs (`&lt;`), CDATA, self-closing tags | `quick-xml` (375M) |
+| Text wrap/truncate by character count | `chars().take(n)` | wide (CJK) characters count as 2 display columns, combining marks as 0 — `unicode-width` (744M) is the mechanism `textwrap` (407M) already applies | `textwrap` (407M) |
+| Form/query-string decoding | `split('&')`/`split('=')` | `+` means literal space in `application/x-www-form-urlencoded`, not `%20` | `form_urlencoded` (732M) |
+| Splitting a command string into argv | `.split_whitespace()` | `--name "John Doe"` splits into two arguments | `shlex` (739M) |
+| Big/little-endian integer decode | manual shift-and-mask | sign-extension on a negative value; short buffer silently zero-pads instead of erroring | `byteorder` / `bytes` (749M / 952M) |
+| CIDR / IP-prefix containment | string-prefix or hand bitmask | boundary case (`/8`: `9.255.255.255` vs `10.0.0.1`); IPv6 masks | `ipnet` (529M) |
+| Great-circle distance/bearing | naive delta-longitude haversine | crossing the antimeridian (178°E ↔ −179°W) or a pole | `geo` (21M) |
+| HTML sanitization of untrusted content | blocklist regex on `<script>` | `<img onerror=…>` and malformed/nested tags bypass the blocklist — XSS | `ammonia` (14M) — 🔴 |
+| Markdown rendering | regex substitution (`**bold**` → `<b>`) | nested/overlapping emphasis; unescaped literal `<`/`>`/`&` passed through as raw HTML — XSS | `pulldown-cmark` (137M) — 🔴 |
+| Content-Type / MIME parsing | `"type/subtype; …".split('/')` | parameters (`; charset=…`) not stripped from the subtype | `mime` (563M) |
+| In-process cache eviction (a *bounded* cache whose eviction logic is wrong — distinct from §B14's *unbounded* cache with no eviction at all) | hand-rolled LRU/TTL over a `HashMap` | LRU: `get()` (a read) forgets to bump recency, silently degrading to FIFO; TTL: a sweep that picks "oldest" by iterating a `HashMap` (no ordering guarantee) evicts the wrong entry at scale | `lru` (314M) / `moka` (113M) |
+
+**Considered and deliberately excluded from this catalog** (reviewed against the same gate; kept out of scope rather than silently dropped so a future pass does not re-litigate them): `clap`/argument parsing, `anyhow`/`thiserror`, logging-framework choice, `itertools`, `bitflags`, linear algebra (`nalgebra`), statistics, edit-distance (`strsim`), language/locale detection, `tokio` (already the assumed runtime baseline, not an omitted alternative), full-text search (`tantivy` — performance-shaped, not correctness-shaped, → Substitution catalog), connection pooling (`deadpool`/`bb8` — adjacent to §B14/§C8, deferred pending its own gated verification), consistent-hashing/sharding (`hashring` — real defect shape but weak adoption evidence), HTTP response caching with `Vary` handling (`http-cache` — weak adoption evidence, atypical LLM-authored trigger), Bloom filters (real defect shape, niche audience — deferred), UUID generation, HTML scraping, IP-range matching beyond CIDR containment.
+
+## §C12a. Reinventing infrastructure instead of an established subsystem
+
+**The trap**: one altitude above §C12 — not a missed function call but a missed *subsystem*. The LLM is asked for something that sounds like "just write a file" or "just keep this in memory" and reaches for the naive primitive, when the actual requirement (survives a crash, survives more than one instance of the process) needed engineering the naive primitive does not have.
+
+**Utility-level catalog membership gate applies identically** — a concrete input/scenario, not "the established option is more robust in general."
+
+| Task | Hand-rolled shape | Input where it is silently wrong | Option (downloads) |
+|---|---|---|---|
+| Persistent key-value/document storage | `fs::write(path, json)` on every update, or an in-memory map flushed periodically | process killed mid-write (crash, OOM-kill, power loss) leaves a truncated/corrupt file — next read loads partial or wrong data, not an error; concurrent writers race on read-modify-write (→ §C2 TOCTOU family) | `rusqlite` (94M, SQL) / `sled` (14M), `redb` (9.4M), `fjall` (1.4M) (pure KV) |
+| Any in-process coordination state (cache, dedup set, rate limiter, pub/sub) with no external store | a `static`/`OnceLock`-held in-memory structure as the sole source of truth | the process is horizontally scaled to more than one instance — state silently diverges between replicas: duplicate work, missed events, inconsistent rate-limit counts, no compiler or test signal anywhere | externalize the state (`redis` (94M) is one verified, widely-used option) when multi-instance is a stated requirement — not a blanket mandate to add it otherwise |
+
+**REQUIRED**: same posture as §C12 — propose the named option (subject to §A1 verification and user approval) when one of these shapes is recognized; a user's informed zero-dependency or single-instance decision is not a defect, an undocumented one is.
+
+🟡, escalate to 🔴 only where the specific instance is a stated durability or security guarantee (cross-reference §F1/§F2 documented-guarantee divergence when the project's own docs promise durability or consistency the hand-rolled version does not deliver).
 
 ---
 

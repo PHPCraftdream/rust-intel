@@ -18,6 +18,8 @@ const skillText = fs.readFileSync(path.join(root, 'skill', 'SKILL.md'), 'utf8');
 const moduleFor = {
   B5: 'unsafe-and-ffi.md',
   B26: 'data-and-types.md',
+  C12: 'deps-macros-ergonomics.md',
+  C12a: 'deps-macros-ergonomics.md',
 };
 
 function detectUnionValidity(source) {
