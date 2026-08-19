@@ -134,6 +134,29 @@ for (const file of workflowModuleCategories.keys()) {
   if (!specModuleCategories.has(file)) errors.push(`workflow MODULES has an entry for ${file}, but SKILL.md's category map never routes anything to it`);
 }
 
+// Third leg: the category-map table itself, checked against the actual "## §<id>." / "### §<id>."
+// headers in each module file. The table<->MODULES check above only catches drift BETWEEN those
+// two — it cannot see a category whose body exists (a real heading, real BANNED/REQUIRED text) but
+// was never added to the table OR to MODULES, which is the same incident one level further back:
+// a category can go live in the file system while staying invisible to both routing paths. This
+// closes headers -> table -> MODULES as one loop instead of one checked link.
+const moduleHeaderCategories = new Map();
+for (const file of relativeFiles(canonicalSkill).filter((f) => f.endsWith('.md') && f !== 'SKILL.md' && !f.startsWith('references' + path.sep))) {
+  const body = fs.readFileSync(path.join(canonicalSkill, file), 'utf8');
+  const ids = new Set();
+  for (const m of body.matchAll(/^#{2,3} §([A-Z]\d+[a-z]*)\.\s/gm)) ids.add(m[1]);
+  if (ids.size) moduleHeaderCategories.set(file, ids);
+}
+for (const [file, headerIds] of moduleHeaderCategories) {
+  const specIds = specModuleCategories.get(file);
+  if (!specIds) { errors.push(`${file} has § category headings but SKILL.md's category map never routes anything to it`); continue; }
+  for (const id of headerIds) if (!specIds.has(id)) errors.push(`${file} has a "§${id}." heading, but SKILL.md's category map does not route §${id} to this file`);
+}
+for (const [file, specIds] of specModuleCategories) {
+  const headerIds = moduleHeaderCategories.get(file) || new Set();
+  for (const id of specIds) if (!headerIds.has(id)) errors.push(`SKILL.md's category map routes §${id} to ${file}, but no "§${id}." heading exists there`);
+}
+
 // Numbered-category count, derived rather than hand-maintained. A category is "numbered" per the
 // spec's own counting rule (SKILL.md: lettered sub-sections count under their parent, not
 // separately) — its body opens with a level-2 "## §<LETTER><DIGITS>." heading with NO trailing
@@ -162,6 +185,7 @@ const categoryCountWord = numberToWords(numberedCategoryCount);
 const categoryCountMentions = [
   { file: 'package.json', pattern: new RegExp(`\\b${numberedCategoryCount} categories\\b`) },
   { file: '.claude-plugin/plugin.json', pattern: new RegExp(`\\b${numberedCategoryCount} categories\\b`) },
+  { file: '.claude-plugin/marketplace.json', pattern: new RegExp(`\\b${numberedCategoryCount} categories\\b`) },
   { file: 'skill/SKILL.md', pattern: new RegExp(`\\b${categoryCountWord} categories\\b`, 'i') },
   { file: 'skill/SKILL.md', pattern: new RegExp(`~${numberedCategoryCount} categories\\b`) },
   { file: 'skill/SKILL.md', pattern: new RegExp(`\\ball ${numberedCategoryCount} categories\\b`) },
