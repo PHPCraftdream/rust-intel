@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# This job is pure validation (no external side effects), so a duplicate/stale run for the same
+# ref is safe to cancel outright — unlike npm-publish.yml's queue-don't-cancel policy.
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   repository-checks:
     runs-on: ubuntu-latest

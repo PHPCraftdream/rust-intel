@@ -22,6 +22,14 @@ permissions:
   contents: read
   id-token: write # npm --provenance
 
+# A tag push has occasionally been observed firing this workflow twice for the same ref (both
+# runs targeting the same immutable tag). Serialize same-tag runs instead of racing them — a
+# concurrent second `npm publish` for a version the first run just published is not a new
+# problem, but running it in parallel rather than after is what turned it into a failed run.
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -67,6 +75,16 @@ jobs:
           test -f /tmp/codex-sandbox/rust-intel/references/sources.md
 
       - name: Publish
-        run: npm publish --provenance --access public
+        # Idempotent: a queued duplicate run (see the concurrency group above) reaches this step
+        # after the first run already published the same immutable tag's version. That is a
+        # no-op, not a failure — check the registry before publishing instead of letting
+        # `npm publish` fail the run on "cannot publish over".
+        run: |
+          PKG_VERSION="${GITHUB_REF_NAME#v}"
+          if npm view "rust-intel-cc@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "rust-intel-cc@$PKG_VERSION is already on the registry — skipping (duplicate run for this tag)."
+            exit 0
+          fi
+          npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
