@@ -13,6 +13,12 @@ desktop.ini
 # Claude Code local state
 .claude/settings.local.json
 
+# Session checkpoints (/checkpoint skill): local, machine-specific session state
+# (absolute paths, in-progress narrative) — deliberately untracked per
+# docs/reviews/README.md's review-quality-gate rationale. A commit obligation
+# belongs in CHANGELOG.md, not here.
+/docs/checkpoints/
+
 # Project-local install target (when install.sh / install.ps1 are run without
 # --user from inside the repo, files land here). The repo source of truth is
 # rust-intel.md + commands/, not this dir.

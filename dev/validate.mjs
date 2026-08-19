@@ -77,6 +77,100 @@ for (const module of ['async.md', 'concurrency-and-state.md', 'data-and-types.md
   if (!workflow.includes(`file: '${module}'`)) errors.push(`workflow missing module: ${module}`);
 }
 
+// Category-id parity between SKILL.md's "Category map" table and the workflow's MODULES list.
+// The workflow's slicer routes trigger rows and 🔴 items to each audit unit using ONLY the
+// category ids listed in MODULES (skill/audit-project.workflow.js) — SKILL.md's table is the
+// spec of record, but nothing enforced that a category added there also reached the workflow.
+// That is exactly the gap that let §C12/§C12a ship invisible to the fan-out audit in v0.6.0:
+// the category existed, its module file was already wired, but its id was absent from the
+// module's category list, so the slicer never extracted its trigger rows or 🔴 items for it.
+function expandCategoryCell(cellText) {
+  // Two DIFFERENT notations for a lettered sub-section appear in the table, and both must be
+  // handled: written out as its own token directly against the digits ("§B3a", no separator —
+  // matched by the optional trailing [a-z] below), or compacted into a parenthetical suffix on
+  // the base id ("§B4 (a)", "§B1 (a, b)", "§B15 (a–e)" with an en dash range).
+  const ids = [];
+  const re = /§([A-Z]\d+)([a-z])?(?:\s*\(([^)]+)\))?/g;
+  let m;
+  while ((m = re.exec(cellText))) {
+    const [, base, trailingLetter, parenSuffix] = m;
+    if (trailingLetter) { ids.push(base + trailingLetter); continue; }
+    ids.push(base);
+    if (!parenSuffix) continue;
+    for (const rawPart of parenSuffix.split(',')) {
+      const part = rawPart.trim();
+      const range = part.match(/^([a-z])[–-]([a-z])$/); // – = en dash, as used in "a–e"
+      if (range) {
+        for (let c = range[1].charCodeAt(0); c <= range[2].charCodeAt(0); c += 1) ids.push(base + String.fromCharCode(c));
+      } else if (/^[a-z]$/.test(part)) {
+        ids.push(base + part);
+      }
+    }
+  }
+  return ids;
+}
+const skillMdText = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
+const categoryMapSection = skillMdText.split('# Category map — which module holds each §')[1];
+const categoryMapTable = categoryMapSection ? categoryMapSection.split('**Cross-reference note:**')[0] : '';
+const specModuleCategories = new Map();
+for (const row of categoryMapTable.matchAll(/^\|\s*(§[^|]+?)\s*\|\s*`([^`]+)`\s*\|$/gm)) {
+  const [, cell, file] = row;
+  if (!specModuleCategories.has(file)) specModuleCategories.set(file, new Set());
+  for (const id of expandCategoryCell(cell)) specModuleCategories.get(file).add(id);
+}
+if (specModuleCategories.size === 0) errors.push('category-map parity check found zero rows in SKILL.md — the table anchor text may have moved');
+const workflowModuleCategories = new Map();
+for (const entry of workflow.matchAll(/\{\s*file:\s*'([^']+)',\s*categories:\s*\[([^\]]*)\]\s*\}/g)) {
+  const [, file, list] = entry;
+  workflowModuleCategories.set(file, new Set(list.split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean)));
+}
+for (const [file, specIds] of specModuleCategories) {
+  const workflowIds = workflowModuleCategories.get(file);
+  if (!workflowIds) { errors.push(`workflow MODULES has no entry for ${file}, but SKILL.md's category map routes categories to it`); continue; }
+  for (const id of specIds) if (!workflowIds.has(id)) errors.push(`workflow MODULES entry for ${file} is missing §${id} (present in SKILL.md's category map)`);
+  for (const id of workflowIds) if (!specIds.has(id)) errors.push(`workflow MODULES entry for ${file} lists §${id}, which SKILL.md's category map does not route to it`);
+}
+for (const file of workflowModuleCategories.keys()) {
+  if (!specModuleCategories.has(file)) errors.push(`workflow MODULES has an entry for ${file}, but SKILL.md's category map never routes anything to it`);
+}
+
+// Numbered-category count, derived rather than hand-maintained. A category is "numbered" per the
+// spec's own counting rule (SKILL.md: lettered sub-sections count under their parent, not
+// separately) — its body opens with a level-2 "## §<LETTER><DIGITS>." heading with NO trailing
+// lowercase letter directly on the digits (a lettered sub-section's heading, wherever it is a
+// level-2 heading rather than nested under its parent as level-3, carries that trailing letter and
+// is correctly excluded here). v0.6.0 added §C12 and updated SKILL.md's own count in one place
+// but left four other live mentions on the old number — this check computes the number once and
+// requires every stated occurrence to agree with it, rather than trusting five hand edits to stay
+// in sync on every future release.
+const numberedCategoryIds = new Set();
+for (const file of relativeFiles(canonicalSkill).filter((f) => f.endsWith('.md') && f !== 'SKILL.md' && !f.startsWith('references' + path.sep))) {
+  const body = fs.readFileSync(path.join(canonicalSkill, file), 'utf8');
+  for (const m of body.matchAll(/^## §([A-Z]\d+)\.\s/gm)) numberedCategoryIds.add(m[1]);
+}
+const numberedCategoryCount = numberedCategoryIds.size;
+const NUMBER_WORDS_ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const NUMBER_WORDS_TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+function numberToWords(n) {
+  if (n < 20) return NUMBER_WORDS_ONES[n];
+  const tens = Math.floor(n / 10);
+  const ones = n % 10;
+  return ones === 0 ? NUMBER_WORDS_TENS[tens] : `${NUMBER_WORDS_TENS[tens]}-${NUMBER_WORDS_ONES[ones]}`;
+}
+if (numberedCategoryCount === 0) errors.push('numbered-category count came out as 0 — the "## §<id>." heading pattern may have changed');
+const categoryCountWord = numberToWords(numberedCategoryCount);
+const categoryCountMentions = [
+  { file: 'package.json', pattern: new RegExp(`\\b${numberedCategoryCount} categories\\b`) },
+  { file: '.claude-plugin/plugin.json', pattern: new RegExp(`\\b${numberedCategoryCount} categories\\b`) },
+  { file: 'skill/SKILL.md', pattern: new RegExp(`\\b${categoryCountWord} categories\\b`, 'i') },
+  { file: 'skill/SKILL.md', pattern: new RegExp(`~${numberedCategoryCount} categories\\b`) },
+  { file: 'skill/SKILL.md', pattern: new RegExp(`\\ball ${numberedCategoryCount} categories\\b`) },
+];
+for (const mention of categoryCountMentions) {
+  const text = fs.readFileSync(path.join(root, mention.file), 'utf8');
+  if (!mention.pattern.test(text)) errors.push(`${mention.file}: does not state the current numbered-category count (${numberedCategoryCount}, "${categoryCountWord}") where expected (pattern: ${mention.pattern}) — count is derived from "## §<id>." headers across skill/*.md, not hand-maintained`);
+}
+
 // Duplicate trigger rows. Two rows in the same table that key off the SAME set of inline-code
 // tokens are the same rule stated twice — the drift that creeps in when independently-written
 // releases each add a row for a pattern the other already covered. Compared per contiguous table

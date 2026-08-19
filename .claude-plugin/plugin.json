@@ -2,7 +2,7 @@
   "name": "rust-intel",
   "displayName": "Rust Intel",
   "version": "0.6.0",
-  "description": "Defense against LLM Rust failure modes: 58 categories of bugs that survive rustc, clippy, and cargo test — async cancellation, unsafe/FFI, concurrency, crypto, supply-chain, tests-that-pass-by-luck, semantic conformance, and systemic performance cost. Ships the rust-intel skill plus /rust-intel:audit, /rust-intel:fix, /rust-intel:plan commands.",
+  "description": "Defense against LLM Rust failure modes: 59 categories of bugs that survive rustc, clippy, and cargo test — async cancellation, unsafe/FFI, concurrency, crypto, supply-chain, tests-that-pass-by-luck, semantic conformance, and systemic performance cost. Ships the rust-intel skill plus /rust-intel:audit, /rust-intel:fix, /rust-intel:plan commands.",
   "author": {
     "name": "Marat K",
     "email": "phpcraftdream@gmail.com"

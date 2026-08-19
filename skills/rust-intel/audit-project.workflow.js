@@ -32,7 +32,7 @@ const MODULES = [
   { file: 'security.md', categories: ['B12','B24','C2'] },
   { file: 'unsafe-and-ffi.md', categories: ['B5','B7','B18','B18a','B25','B25a'] },
   { file: 'drop-and-raii.md', categories: ['B4','B4a'] },
-  { file: 'deps-macros-ergonomics.md', categories: ['A1','C5','C6','C7','C10','C11','E5'] },
+  { file: 'deps-macros-ergonomics.md', categories: ['A1','C5','C6','C7','C10','C11','C12','C12a','E5'] },
   { file: 'lifetimes-and-api.md', categories: ['B1','B1a','B1b','C1','C1a','A3'] },
   { file: 'testing.md', categories: ['D1','D1a','D2','D3','D4','D5','E6'] },
   { file: 'semantics-and-conformance.md', categories: ['F1','F2','F3','F4'] },

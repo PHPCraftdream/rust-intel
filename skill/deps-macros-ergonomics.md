@@ -150,7 +150,7 @@ Concrete defenses:
 | Version comparison | `split('.')` + tuple compare | `1.0.0-alpha` must sort *before* `1.0.0` | `semver` (921M) |
 | URL construction/parsing | `format!`/`split('/')` | missing percent-encoding on reserved/non-ASCII bytes; `@` in userinfo → SSRF (→ §C2) | `url` (808M) |
 | Money / decimal arithmetic | `f64` | accumulated rounding error; half-even vs half-up policy | `rust_decimal` (132M) |
-| Retry with backoff | `sleep(n * base)` in a loop | no jitter → thundering herd on a shared dependency; no attempt cap | maintained backoff crate — verify current maintenance status before naming one at write time |
+| Retry with backoff | `sleep(n * base)` in a loop | no jitter → thundering herd on a shared dependency; no attempt cap | `backon` (72M, actively maintained — last publish Oct 2025) over `backoff` (98M downloads but last published Dec 2021; verify current maintenance status before relying on either name, per §A1) |
 | Rate limiting | fixed-window counter | up to 2× burst at a window boundary | `governor` (71M) |
 | Glob matching | manual `*`/`starts_with` | `**` recursive semantics, `[a-z]` classes, escaping | `glob` (561M) |
 | Directory traversal | recursion over `read_dir` | symlink cycles | `walkdir` (571M) |
@@ -168,9 +168,9 @@ Concrete defenses:
 | Splitting a command string into argv | `.split_whitespace()` | `--name "John Doe"` splits into two arguments | `shlex` (739M) |
 | Big/little-endian integer decode | manual shift-and-mask | sign-extension on a negative value; short buffer silently zero-pads instead of erroring | `byteorder` / `bytes` (749M / 952M) |
 | CIDR / IP-prefix containment | string-prefix or hand bitmask | boundary case (`/8`: `9.255.255.255` vs `10.0.0.1`); IPv6 masks | `ipnet` (529M) |
-| Great-circle distance/bearing | naive delta-longitude haversine | crossing the antimeridian (178°E ↔ −179°W) or a pole | `geo` (21M) |
+| Great-circle distance/bearing | flat/equirectangular approximation from an unnormalized longitude delta (`R * sqrt((Δlat)² + (Δlon·cos(lat))²)`) — **not** haversine itself, which is periodic in longitude and handles this input correctly | crossing the antimeridian (178°E ↔ −179°W): the unnormalized Δlon is ~357° instead of the true ~3°, giving a distance off by roughly two orders of magnitude; same failure at a pole, where a longitude delta stops meaning anything | `geo` (21M) |
 | HTML sanitization of untrusted content | blocklist regex on `<script>` | `<img onerror=…>` and malformed/nested tags bypass the blocklist — XSS | `ammonia` (14M) — 🔴 |
-| Markdown rendering | regex substitution (`**bold**` → `<b>`) | nested/overlapping emphasis; unescaped literal `<`/`>`/`&` passed through as raw HTML — XSS | `pulldown-cmark` (137M) — 🔴 |
+| Markdown rendering of untrusted content | regex substitution (`**bold**` → `<b>`) | nested/overlapping emphasis silently mis-renders; a single crate does not close this row — `pulldown-cmark` alone still lets `<script>`/`<img onerror=…>` through unchanged, since it is a parser+renderer, not a sanitizer, and by design preserves raw HTML in its `Html`/`InlineHtml` events (parses correctly, still XSS) | `pulldown-cmark` (137M) to parse **and** either drop its `Html`/`InlineHtml` events or pipe the rendered output through `ammonia` (row above) before untrusted content reaches a page — plus reject `javascript:`-scheme link/image URLs — 🔴 |
 | Content-Type / MIME parsing | `"type/subtype; …".split('/')` | parameters (`; charset=…`) not stripped from the subtype | `mime` (563M) |
 | In-process cache eviction (a *bounded* cache whose eviction logic is wrong — distinct from §B14's *unbounded* cache with no eviction at all) | hand-rolled LRU/TTL over a `HashMap` | LRU: `get()` (a read) forgets to bump recency, silently degrading to FIFO; TTL: a sweep that picks "oldest" by iterating a `HashMap` (no ordering guarantee) evicts the wrong entry at scale | `lru` (314M) / `moka` (113M) |
 

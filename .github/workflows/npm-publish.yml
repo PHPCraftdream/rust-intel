@@ -76,14 +76,25 @@ jobs:
 
       - name: Publish
         # Idempotent: a queued duplicate run (see the concurrency group above) reaches this step
-        # after the first run already published the same immutable tag's version. That is a
-        # no-op, not a failure — check the registry before publishing instead of letting
-        # `npm publish` fail the run on "cannot publish over".
+        # after the first run already published the same tag's version. That is a no-op, not a
+        # failure — BUT "a package with this version exists" is not proof it is the SAME package:
+        # this repo does not have GitHub immutable releases / tag protection enabled, so a tag is
+        # technically movable. Don't take "version exists" on faith — compare the local tarball's
+        # integrity hash against what the registry actually has, and fail loudly on a mismatch
+        # instead of silently treating a different artifact as this run's own duplicate.
         run: |
           PKG_VERSION="${GITHUB_REF_NAME#v}"
           if npm view "rust-intel-cc@$PKG_VERSION" version >/dev/null 2>&1; then
-            echo "rust-intel-cc@$PKG_VERSION is already on the registry — skipping (duplicate run for this tag)."
-            exit 0
+            REGISTRY_INTEGRITY="$(npm view "rust-intel-cc@$PKG_VERSION" dist.integrity)"
+            LOCAL_INTEGRITY="$(npm pack --dry-run --json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>console.log(JSON.parse(d)[0].integrity))')"
+            if [ "$REGISTRY_INTEGRITY" = "$LOCAL_INTEGRITY" ]; then
+              echo "rust-intel-cc@$PKG_VERSION already on the registry and matches the local tarball (duplicate run for this tag) — skipping."
+              exit 0
+            fi
+            echo "::error::rust-intel-cc@$PKG_VERSION is on the registry but its integrity does NOT match the local build for this tag."
+            echo "registry: $REGISTRY_INTEGRITY"
+            echo "local:    $LOCAL_INTEGRITY"
+            exit 1
           fi
           npm publish --provenance --access public
         env:
