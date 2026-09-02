@@ -16,6 +16,7 @@
 - Verifying conformance by round-tripping against your own implementation only (`assert_eq!(decode(encode(x)), x)` proves inverse-consistency — §F4 — not conformance; both halves can share the same misreading).
 - "Compatible with X" in docs/README when no test exchanges bytes with X itself, X's reference implementation, or X's published test vectors.
 - Silently extending or restricting the spec ("we also accept...", "we never send...") without a `// DEVIATION from <spec §>: <what and why>` comment. Undocumented deviation is indistinguishable from a bug.
+- Treating **your crate's own previously-released encoding** as exempt from conformance. For a positional, non-self-describing format — `bincode`, `postcard`, `rkyv`, `borsh`: enums encoded as a bare variant index in declaration order, structs as unnamed fields in order — the byte layout of every released version *is* a spec that already-persisted data depends on. Inserting a new enum variant "in a sensible place" (not at the end) or reordering fields silently reinterprets every stored value of a later variant as the new one (`Created`, `Deleted`, then `Updated` inserted between them → every stored `Deleted` now decodes as `Updated`), and the §F4 round-trip property stays **green**: both encoder and decoder were regenerated from the same new declaration, so the test never exercises old, already-stored bytes. The same class wears a serde-free face: a `#[derive(PartialOrd)]` field reorder silently changes ordering semantics — declaration order is load-bearing. REQUIRED: treat the crate's own previous release as a reference spec — cite the version whose layout you must stay conformant with, ship a golden-bytes decode fixture captured from the prior release, and gate any variant/field insertion, reorder, or removal on that fixture still decoding correctly; for anything with more than one deployed layout, carry an explicit format/version byte. `prost`/`capnp` used per their own documented evolution rules are the designed-for-this alternative.
 
 **REQUIRED**:
 - Cite the reference at the implementation site: `// RFC 9293 §3.5.2` / a link to the upstream function being ported. Uncited conformance claims are unreviewable.
@@ -66,14 +67,15 @@ let mut buf = Vec::with_capacity(n as usize);  // violates the documented guaran
 
 **BANNED**:
 - Cleanup that runs only on the `Ok` path — any teardown reachable from fewer paths than the acquisition. If the resource needs teardown, it needs an RAII guard (§B4) or a single exit funnel; "I'll remember to clean up before each `return`" does not survive the next `?` someone adds.
-- `.read()` / `read_exact` / `next()` on a stream from an untrusted peer without an enclosing `tokio::time::timeout` or an idle-deadline mechanism. (Connect-then-silence is the cheapest DoS there is. 🔴 when peer-extendable.)
-- Treating `read() == Ok(0)` as anything other than EOF: retrying it (busy-loop), erroring on it when the protocol allows half-close, or tearing down the write direction that may still have data to flush.
+- `.read()` / `read_exact` / `next()` on a stream from an untrusted peer without a whole-frame/whole-handshake deadline or an idle-deadline mechanism — a fresh `timeout(dur, read_exact(..))` around each individual read is *not* such a mechanism (see the REQUIRED list below for why). (Connect-then-silence is the cheapest DoS there is. 🔴 when peer-extendable.)
+- Treating `read() == Ok(0)` as anything other than EOF: retrying it (busy-loop), erroring on it when the protocol allows half-close, or tearing down the write direction that may still have data to flush. (Qualification: `Ok(0)` means EOF only when the destination buffer was non-empty — std's `Read::read` docs list "the buffer specified was 0 bytes in length" as an independent second scenario for `Ok(0)` — so `.read(&mut [])` legitimately returns `Ok(0)` with no EOF implication; don't apply this rule to a zero-length-buffer call.)
 - In a bidirectional byte proxy: an unbounded buffer between the two directions (§B14 applies — the slow side must backpressure the fast side, not grow a Vec), and copy loops that don't propagate shutdown — when one direction EOFs, the proxy must `shutdown()` the corresponding write side, not just drop the loop.
 - Spawning a per-connection sibling task (heartbeat, writer half) without aborting/joining it on every exit path of the main handler — the `Err` path included (§B21 twin, scoped to the connection lifecycle).
 
 **REQUIRED**:
 - For every acquired boundary resource, name the release point and verify it is reached from *every* exit: each `?`, each `select!` arm losing the race (§B3/§B23), panic (does Drop suffice?). The review move is path enumeration, not pattern recognition.
-- Idle/read deadlines on all untrusted-peer reads; document the chosen timeout and what happens on expiry.
+- Idle/read deadlines on all untrusted-peer reads, documented together with what happens on expiry. The deadline shape matters: a whole-frame/whole-handshake deadline (one budget covering the entire frame or handshake, or one idle budget for the whole connection) or a minimum-progress-rate check — never a fresh timeout around each individual read, which a peer defeats by emitting one byte just before each per-read window expires (slowloris-shaped: no single read ever times out, so the connection stays open forever).
+- A fired read deadline is TERMINAL for the connection — close it; never retry the read in place. This is what makes a deadline wrapped around `read_exact` safe despite its cancel-unsafety (§B3): `tokio::time::timeout` cancels (drops) the inner future on expiry, and a cancelled `read_exact` has already consumed socket bytes into the dropped future's buffer — tokio's own docs: "This method is not cancel safe... some data may already have been read into buf" — so a retry resumes misaligned, in the middle of the partially-consumed frame. If reads must survive cancellation instead, use the cancellation-safe `read()` (never `read_exact`: tokio docs — "it is guaranteed that no data was read") into a persistent framing buffer that resumes without losing consumed bytes.
 - Explicit EOF policy per stream: on `Ok(0)` — flush and `shutdown()` write side? close both? Document it; "whatever the code happens to do" is where the bug lives.
 - Tests must include the rude peer: connects and stalls, sends a partial frame and dies, half-closes mid-stream. An in-memory duplex that always behaves is the §D1a stub-oracle trap.
 
@@ -82,13 +84,16 @@ let mut buf = Vec::with_capacity(n as usize);  // violates the documented guaran
 async fn handle(mut client: TcpStream) -> io::Result<()> {
     let upstream = TcpStream::connect(UPSTREAM).await?;
     register_conn(&client).await;            // metrics: conn count +1
-    let creds = read_handshake(&mut client).await?;  // early `?`: upstream leaked
+    let creds = read_handshake(&mut client).await?;  // early `?`: +1 never unregistered; no graceful close of upstream
     proxy(client, upstream, creds).await?;           // until Drop, conn count never -1:
     unregister_conn().await;                         // skipped on every error path
     Ok(())
 }
 // Tests use a polite in-memory peer: handshake always succeeds, count always balanced.
 // In prod, a scanner that connects and disconnects drifts the gauge upward forever.
+// Not a socket leak: the owned `TcpStream`s drop and close on the early return.
+// The real defects: the +1 registration never balances (unmatched unregister) and
+// upstream gets no graceful protocol shutdown (close frame/half-close) — just an abrupt drop.
 ```
 
 ## §F4. Property obligations for inverse pairs — *encode/decode written together, never proven inverse*
@@ -100,11 +105,12 @@ async fn handle(mut client: TcpStream) -> io::Result<()> {
 - Round-trip over literals only, when the input domain has structure: empty input, max-length, every escape-worthy character, boundary sizes (block size ± 1 for crypto/compression), non-ASCII/UTF-8 multi-byte (§B28), `Option`/default-collapsing values (§B20). Hand-picked literals encode the author's blind spots — `proptest` doesn't have them.
 - Asserting the round-trip in the wrong direction only. `decode(encode(x)) == x` (full domain of `x`) and `encode(decode(b)) == b` (canonical-form question — often *legitimately false* when multiple encodings normalize) are different laws; know which one your format promises and test that one. Don't let a failing canonical-form test get "fixed" by weakening the real law.
 - Letting a round-trip property substitute for §F1 conformance: round-trip proves the pair agrees with *itself*, not with the spec. Both are required for a wire format; neither implies the other.
+- Citing a green `prop_decode_encode_roundtrip` as proof that persisted data still decodes after a variant/field insertion or reorder in a positional format (`bincode`/`postcard`/`rkyv`/`borsh`) — both halves of the pair were regenerated from the same new declaration, so the property cannot observe the stored bytes it broke. The §F1 golden-bytes fixture captured from the prior release is the negative control this property lacks.
 
 **REQUIRED**:
 - One `proptest`/`quickcheck` round-trip property per inverse pair, named for the law (`prop_decode_encode_roundtrip`), generating over the realistic input domain — shipped in the same change as the pair (Pre-flight item 9).
 - For fallible decode: also a corpus of *invalid* inputs asserting `Err` (a decoder that never rejects accepts garbage — the negative control, §D1a).
-- For `FromStr`/`Display` pairs: the round-trip property *is* the API contract users assume (`x.to_string().parse() == Ok(x)`); breaking it is a semver-relevant behavior change — flag inline.
+- For `FromStr`/`Display` pairs: the round-trip property is the API contract *only when the type's own docs establish it* — i.e. `Display` is documented as lossless and machine-parseable. There, `x.to_string().parse() == Ok(x)` is the law users assume; breaking it is a semver-relevant behavior change — flag inline. Where `Display` is documented as human-readable/lossy output, no round-trip guarantee applies — std explicitly permits `Display` to be lossy or unparseable — so test the law the type's docs actually state (if any) instead of leaving the pair silently untested.
 - When the pair is intentionally non-inverse (lossy compression, normalizing parser), state the actual law in a doc comment and test *that* (`parse(display(parse(s))) == parse(s)` — idempotence) instead of silently testing nothing.
 
 **Example — compiles, green, wrong**:

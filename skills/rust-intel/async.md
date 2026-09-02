@@ -56,15 +56,41 @@
 
 **Pattern for the not-cancel-safe boundary**:
 ```rust
+// Framing state must live OUTSIDE the future whose cancellation must be
+// survivable: a read_message built on read_exact is NOT cancel-safe
+// (cancellation after a partial read loses framing progress — it inherits
+// read_exact's property, see the look-alike list below). Here partial reads
+// accumulate in the caller-owned `buf`, so cancelling `handle` mid-frame
+// loses nothing — the next call resumes decoding where the last one stopped.
 /// cancel-safe: yes (read is cancel-safe, write+ack is detached via spawn)
-async fn handle(stream: TcpStream, db: Arc<Db>) -> Result<()> {
-    let data = read_message(&stream).await?;  // cancel-safe up to here
+async fn handle(stream: TcpStream, db: Arc<Db>, buf: &mut Vec<u8>) -> Result<()> {
+    let data = read_message(&stream, buf).await?;  // cancel-safe up to here
     // Critical section detached from caller cancellation:
     tokio::spawn(async move {
         db.insert(&data).await?;
         send_ack(&stream).await?;
         Ok::<_, Error>(())
     }).await?
+}
+
+// Cancel-safe because its only await is `read` (cancel-safe per tokio: if a
+// select! branch loses, no data was read) and the framing state lives in the
+// caller-owned `buf`, not in this future — cancelling mid-frame keeps every
+// byte already read. The same function built on `read_exact` would NOT be.
+async fn read_message(stream: &TcpStream, buf: &mut Vec<u8>) -> io::Result<Bytes> {
+    loop {
+        if let Some(len) = try_frame_len(buf)? {  // complete frame buffered?
+            let msg = Bytes::copy_from_slice(&buf[..len]);
+            buf.drain(..len);                     // next call resumes here
+            return Ok(msg);
+        }
+        let mut chunk = [0u8; 8192];
+        let n = stream.read(&mut chunk).await?;   // cancel-safe
+        if n == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
 }
 ```
 
@@ -134,10 +160,12 @@ A spawned task that *did* run but produced a result the caller never observes is
 - `reqwest::blocking::*`  →  `reqwest::Client` (async)
 - `rusqlite`, synchronous `postgres` crate  →  `sqlx`, `tokio-postgres`, or wrap in `tokio::task::spawn_blocking`
 - CPU-bound work long enough to starve the worker *and* infrequent enough that thread-handoff + the bounded blocking pool is worth paying — wrap in `tokio::task::spawn_blocking` (the ~100µs figure is a rough floor, not a trigger to offload every burst). For short, frequent bursts prefer `consume_budget`/`yield_now` (see below); for data-parallel CPU work prefer `rayon`. Do not substitute `yield_now` for genuinely blocking work.
+- Treating `tokio::time::timeout(dur, tokio::task::spawn_blocking(closure))` (or `JoinHandle::abort()`) as a way to **stop** a running blocking closure — neither can. The future returned by `spawn_blocking` resolves only when the closure returns, so `timeout` returns `Err(Elapsed)` (your 504 is sent) while the closure keeps running on a blocking-pool thread; tokio's own docs state that aborting a *running* blocking task "will not have any effect, and the task will continue running normally" (the only exception is a task that has not started yet). Every timed-out request leaves a zombie blocking thread; under attacker-shaped input (a slow regex, a large decompression — §B16, §B7) the bounded pool (512 threads, below) fills with work nobody is waiting for and every new `spawn_blocking` *and* every `tokio::fs::*` call queues behind it (§B14 queueing). Tests are green because the test's work finishes before the timeout. 🔴 when the work's duration is attacker-influenced (the §B14/§F3 escalation).
 
 **REQUIRED**:
 - For genuinely CPU-bound work (compression, hashing, parsing large blobs, calling a sync C library, using a sync crate that has no async equivalent): wrap in `tokio::task::spawn_blocking(|| { ... }).await?`. This dispatches to a *separate* blocking-task thread pool, freeing the async worker thread for other tasks.
 - The blocking pool is itself **bounded** (default `max_blocking_threads` = **512**). It is for *short* blocking operations: a task that blocks forever — a `loop { recv() }` actor, a permanent listener, a `std::sync::mpsc` drain — pins one of those threads for the process lifetime. Enough such tasks exhaust the pool, after which every new `spawn_blocking` *and* every `tokio::fs::*` call (those run on the same pool) **silently queues** in an **unbounded** queue waiting for a free thread (no backpressure — see §B14): latency rises and, if producers outpace drain, memory grows without bound. Long-lived blocking loops belong on a dedicated `std::thread`, not on `spawn_blocking`.
+- For blocking work that must observe a deadline or shutdown: **cooperative cancellation inside the closure** — check an `AtomicBool` (or `tokio_util::sync::CancellationToken::is_cancelled()`) between bounded chunks of work and return early when the caller gave up — or route the work through something the OS can kill outright (a subprocess), not through `timeout`/`abort` (they only detach; see the BANNED bullet above). Pass the flag/token into the closure at spawn time; a closure that never polls a channel does not "get" cancellation either.
 - `tokio::task::yield_now().await` is **not** an alternative to `spawn_blocking` for CPU-bound work. `yield_now` only gives *other tasks already on the same worker thread* a chance to make progress; when your task resumes, the worker is still occupied by you. It does not solve "starving the executor" because the worker count is fixed (typically the CPU core count). Use `yield_now` only for cooperative fairness inside an IO-bound task that occasionally does a small CPU burst.
 - For modern tokio, `consume_budget().await` is the explicit *budget-aware* primitive: it yields *only when the task's coop budget is exhausted*, otherwise returns immediately. Prefer it to `yield_now` inside a tight async loop that wants to be cooperative without paying the unconditional re-schedule cost. Path note: the function lives at `tokio::task::consume_budget` through tokio 1.43, and moved to `tokio::task::coop::consume_budget` in **1.44.0** (the old path is `#[deprecated]` since 1.44.0). Use whichever path matches your pinned tokio.
 - Verify with `tokio-console` or `tracing` spans that no task holds a worker thread longer than its budget.
@@ -159,7 +187,7 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 |---|---|
 | Internal trait, no `tokio::spawn`, single executor | Plain **AFIT** (`async fn bar(&self) -> T`). |
 | Method must be `Send` for `tokio::spawn` | **RPITIT** with explicit `+ Send`. |
-| Library trait, want both Send-bounded and non-Send variants | `#[trait_variant::make(Send)]` from `trait-variant` — generates a Send-bounded variant alongside the original. |
+| Library trait, want both Send-bounded and non-Send variants | `#[trait_variant::make(SendName: Send)]` from `trait-variant` — the **two-name form** generates a Send-bounded variant alongside the original, which stays untouched (plus a blanket impl `SendVariant: Original`). The one-name form `#[trait_variant::make(Send)]` instead **rewrites the original trait in place** (every `async fn`/`-> impl Trait` method becomes Send-bounded; no separate non-Send trait remains). |
 | Need `dyn Trait` (trait objects) for async methods | `async-trait`. As of stable Rust through mid-2026, AFIT and RPITIT traits are not generally `dyn`-compatible without workarounds; stabilization of `dyn`-compatible RPITIT is an in-flight RFC, so verify the current status against your `rustc --version` before relying on a `dyn` async trait without `async-trait`. `async-trait` boxes every call (heap allocation per invocation) but remains the well-supported way to get `dyn` async traits today. |
 
 **REQUIRED**:
@@ -184,7 +212,10 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 
 ### §B15c. Sync↔async bridging
 
-**`block_on` inside an async runtime**: `tokio::runtime::Handle::block_on` (or `futures::executor::block_on`) called from code already running inside a tokio runtime panics with "Cannot start a runtime from within a runtime". This happens when LLM writes a sync-looking helper that internally calls `block_on`, then invokes it from async code.
+**`block_on` inside an async runtime** — the two functions people reach for behave differently, and the difference is the trap:
+- `tokio::runtime::Handle::block_on` (and `Runtime::block_on`) called from code already running inside a tokio runtime **panics on every flavor** — current_thread and multi_thread alike, from a spawned task and from inside `Drop` on a worker: "Cannot start a runtime from within a runtime. This happens because a function (like `block_on`) attempted to block the current thread while the thread is being used to drive asynchronous tasks." Loud, at least — a test catches it.
+- `futures::executor::block_on` is a **different function from a different crate** and knows nothing of tokio's runtime context — it **does not panic at all**. On a multi-thread runtime it usually completes by luck (the timer/I/O it awaits is driven by another worker); on `current_thread` it **deadlocks silently** — no panic, no error, just a hang. That is the worse outcome: the opposite of the loud failure a test would catch.
+This happens when an LLM writes a sync-looking helper that internally calls `block_on`, then invokes it from async code.
 
 - Inside async code, use `.await`, not `block_on`.
 - For running blocking/CPU-bound work from inside async, use `tokio::task::spawn_blocking` (separate blocking-thread pool) or `tokio::task::block_in_place` (runs blocking code on the current worker without starving sibling tasks — note this is for async-calls-blocking-code, *not* a sync-to-async bridge; you still cannot `.await` inside it without a `Handle`). **`block_in_place` panics on a current-thread runtime — it requires the multi-threaded runtime** (it works by handing the worker's other tasks to a sibling thread, of which a current-thread runtime has none). Since `#[tokio::main(flavor = "current_thread")]` and `#[tokio::test]` both default to current-thread, this panic is easy to hit; use `spawn_blocking` (works on both flavors) when the runtime flavor is not guaranteed multi-threaded. Never use nested `block_on`.
@@ -199,12 +230,12 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 - Choosing the extension trait matters: `tokio_stream::StreamExt::next` returns the same shape as `futures::StreamExt::next`, but `tokio_stream` adds tokio-specific combinators (`.timeout(...)`, `.chunks_timeout(...)`). Pick one per module and stick with it.
 
 **BANNED**:
-- Dropping a half-consumed `Stream` without explicit acknowledgement that the buffered items are lost. For `tokio::sync::mpsc::ReceiverStream`, dropping the stream signals the sender side; for `BroadcastStream`, in-flight items are gone. Document the drop semantics or wrap the stream in a `Drop` that drains.
+- Dropping a half-consumed `Stream` without explicit acknowledgement that the buffered items are lost. For `tokio::sync::mpsc::ReceiverStream`, dropping the stream signals the sender side; for `BroadcastStream`, in-flight items are gone. Document the drop semantics. Where the remaining items must be consumed rather than lost, do **not** wrap the stream in a `Drop` that drains — draining is an async operation and cannot run inside a synchronous `Drop::drop` (§B22: `async Drop` is not real). Require an explicit awaited close-and-drain API instead — `async fn close(self)` that marks the stream closed and then drains with `.next().await` until it returns `None` — the same shape §B22 requires of async resources (tokio's own `mpsc::Receiver` is the model: a synchronous `close()` plus "after calling `close()`, `recv()` must be called until `None` is returned").
 
 ### §B15e. tokio sync / timing primitives
 
 **BANNED**:
-- `notify.notified().await` without first checking the condition the notification represents — wakeups can race with `notify_one()` and be lost. Simply creating + `pin!`-ing a `Notified` future does **not** arm it for wakeups; only `.enable()` (or the first poll) adds it to the notify list. The canonical lost-wakeup-free pattern:
+- `notify.notified().await` in the **concurrent-waiters + condition-check** shape — wakeups can race with `notify_one()` and be lost: two concurrent waiters each check the condition, both `notify_one()` calls fire but only a single permit is stored, one waiter consumes it and proceeds, and the other sleeps forever with its predicate already true. Simply creating + `pin!`-ing a `Notified` future does **not** arm it for wakeups; only `.enable()` (or the first poll) adds it to the notify list. The canonical lost-wakeup-free pattern for that race:
   ```rust
   let notified = notify.notified();
   tokio::pin!(notified);
@@ -214,9 +245,11 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
   }
   ```
   The `enable()` call is load-bearing: it is what actually arms the wakeup before you inspect the condition, so a `notify_one()` that lands between the check and the await is not lost.
+  Scope the ceremony to the race it closes — plain single-consumer usage needs none of it. With at most one waiter, `notified().await` is correct as-is: a `notify_one()` that lands before the await stores a permit in the `Notify`, and the next `notified().await` consumes it, so no wakeup can be lost (tokio's own single-consumer channel example is exactly check-then-`notified().await` in a loop, no `enable()` — the docs state this lost-wakeup failure "can only happen if there are two concurrent calls to `recv`"). Two shapes still require the ceremony (or equivalent care): multiple concurrent waiters competing for the single permit (above), and `notify_waiters()`, which stores no permit at all — it wakes only the `Notified` futures already created at the instant it fires, so a `notify_waiters()` before any waiter exists wakes nobody.
 - `tokio::select! { ... }` without a `biased;` directive when arm-priority matters (e.g., shutdown signal must win over data-availability when both are ready). The default behavior is pseudo-random per poll, which surfaces as occasional starvation under load.
 - `tokio::time::interval(period)` used as `loop { iv.tick().await; do_work().await; }` assuming the first `do_work` runs after `period`. The **first** `.tick().await` returns **immediately** (at creation time), not after one period — so the loop body fires once right away. Worse, the default `MissedTickBehavior::Burst` makes a delayed interval fire all missed ticks back-to-back to "catch up", producing a load spike. Compiles, passes a single-iteration test, surprises in production.
 - `tokio::sync::watch::Receiver::borrow()` assuming it returns the latest *sent* value — a freshly created receiver's `borrow()` returns the **initial** value passed to `watch::channel(initial)` before any `send`. The initial value is marked **seen** at receiver creation, so `changed().await` on a fresh receiver is **pending until the next `send`** — it does *not* fire for the initial value. In a `while changed().await.is_ok() { let v = rx.borrow_and_update().clone(); ... }` loop, use `borrow_and_update()` (not bare `borrow()`) so each observed value is marked seen and you don't reprocess it. Note: this `while changed().await` shape **intentionally skips the initial value** (the first `changed()` pends until the next `send`); if the initial value must also be processed, use a do-while shape — `borrow_and_update()` once before the first `changed().await`.
+- Re-polling a completed future across `loop { tokio::select! { ... } }` iterations — `pin!(op); loop { select! { r = &mut op => ..., _ = tick.tick() => ... } }` where the loop keeps running after `op` resolved: the next iteration re-polls `&mut op` and panics with `'async fn' resumed after completion`. The sibling shape: a `select!` whose arms are *all* disabled by false preconditions and that has no `else =>` branch panics immediately (`all branches are disabled and there is no else branch`). Fix: guard each run-once arm with a `done` flag and the arm precondition syntax `, if !done` (tokio's own pattern), hold the future in an `Option` and `take()` it (or `fuse()` it), or `break` out of the loop when it completes.
 
 **REQUIRED**:
 - For arm-priority, use `tokio::select! { biased; _ = shutdown.notified() => ..., msg = rx.recv() => ..., }` — left-to-right priority is now deterministic.
@@ -237,9 +270,10 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 **REQUIRED**:
 - If you spawn for fire-and-forget, document the intent at the spawn site: `// fire-and-forget: detached by design — task self-terminates within N seconds`. The comment is load-bearing — it tells the next reader that the missing `.await` is intentional.
 - If you spawn for joinable work, hold the `JoinHandle` and call `.await` on it (or use `tokio::task::JoinSet` for fan-in across many tasks).
-- For graceful shutdown, hold an `AbortHandle` (via `JoinHandle::abort_handle()`) and call `.abort()` on shutdown; then `.await` the `JoinHandle` to observe `JoinError::is_cancelled()`.
+- For graceful shutdown, hold an `AbortHandle` (via `JoinHandle::abort_handle()`) and call `.abort()` on shutdown; then `.await` the `JoinHandle` to observe `JoinError::is_cancelled()`. (Caveat: `.abort()` cancels *async* tasks only — on a `spawn_blocking` handle it cannot stop a closure that already started running (§B11); the blocking body needs cooperative cancellation.)
 - Surface every `tokio::spawn(...)` whose returned `JoinHandle` is dropped (not held, not awaited, not detached-by-design) in the post-flight summary.
 - A spawned **periodic** task (timer-driven flush/reaper/sweeper) whose lifetime should track its owner's must hold a `Weak<T>`, not a strong `Arc<T>`, and exit when `upgrade()` returns `None`. A strong clone keeps the owner alive forever (its `Drop` never runs), inverting RAII. Pair it with a `..._exits_on_drop` test: drop the last strong ref, then assert the task terminated (no hang). This is the "stop when nobody needs me" shape; when shutdown is *explicit/supervised*, use the `AbortHandle`/`CancellationToken` path above instead — `Weak` and a cancellation signal answer different questions and are not interchangeable.
+- Using a `clone()` of a shared `CancellationToken` as the handle by which a sub-scope cancels *itself*: a clone is the *same* token node, so `child.cancel()` inside one connection's local error path cancels the whole service — the parent and every sibling holding that token included. For a scope that may cancel itself, spawn with `token.child_token()` (a real child node: its `cancel()` does not touch the parent, but the parent's cancellation still reaches it); reserve `clone()`s for pure observers that only listen for cancellation.
 
 ## §B22. `async Drop` is not real (yet)
 
@@ -249,13 +283,13 @@ A cluster of narrow but high-impact traps that appear in non-trivial async code.
 
 **BANNED**:
 - `impl Drop` that calls `tokio::spawn(async move { ... self.close().await ... })` from the `drop` method — the spawned task may outlive the drop (fine but irrelevant) and may not run before runtime shutdown (lethal). The async cleanup is **fire-and-forget**, not RAII.
-- `tokio::runtime::Handle::block_on(...)` inside `Drop::drop` for resources owned by a tokio runtime — re-entering the runtime from a sync context held by the runtime causes "Cannot start a runtime from within a runtime" panic (current_thread flavor) or a deadlock (multi_thread, if the only available worker is the one running drop).
-- `futures::executor::block_on(...)` in `Drop::drop` — different runtime, but the same logical issue: any `.await` inside that wants to talk to the tokio runtime cannot, and any I/O bound on the tokio runtime hangs.
+- `tokio::runtime::Handle::block_on(...)` inside `Drop::drop` for resources owned by a tokio runtime — re-entering the runtime from a sync context held by the runtime panics with "Cannot start a runtime from within a runtime" **on every flavor** (current_thread and multi_thread alike; measured in a `Drop` running on a multi-thread worker). There is no "deadlock instead" branch to bet on.
+- `futures::executor::block_on(...)` in `Drop::drop` — different runtime, but the same logical issue: any `.await` inside that wants to talk to the tokio runtime cannot, and any I/O bound on the tokio runtime hangs. Unlike the two `block_on`s above it **never panics**: on a multi-thread runtime it can even appear to work by luck (another worker drives the awaited I/O), and on `current_thread` it deadlocks the drop silently — precisely because tests can pass, this is the more insidious variant.
 - Treating `Drop` as a place to "flush the buffer" or "send the close frame" — `Drop` cannot do async work, period.
 
 **REQUIRED**:
 - Provide an explicit `async fn close(self) -> Result<...>` and require callers to call it. Mark the type `#[must_use = "call .close().await to release resources cleanly"]` so the unused-handle is at least a warning.
-- For RAII-like ergonomics, return a `CloseGuard` (or analog) that, when dropped without explicit `.close().await`, **logs an error in production and panics in debug**. This is a discipline pattern, not a guarantee; document it.
+- For RAII-like ergonomics, return a `CloseGuard` (or analog) that, when dropped without explicit `.close().await`, **logs an error and emits a metric — and never panics**. A `panic!` from `Drop::drop` is a defect in its own right (§B4's panic-in-`Drop` rule): the guard's `Drop` runs most often while an error or panic is already in flight, and a panic during unwinding is a double panic that aborts the process. Enforce the explicit-close discipline with type-level and process tools instead — `#[must_use = "call .close().await to release resources cleanly"]` (bullet above), a consuming `async fn close(self)` that turns post-close use into a compile error, code review, or tests that fail the *test* on an unclosed guard — never a panic from `Drop`. This is a discipline pattern, not a guarantee; document it.
 - Document on the type: *"This type cannot release its resources via `Drop` alone — call `.close().await` explicitly. Dropping without close leaks the underlying handle and may stall connection pools."*
 - For the rare case where a sync `Drop` is acceptable (e.g., the resource has a sync close path that is best-effort), call the sync close in `Drop` and document that the async path is preferred.
 
@@ -284,14 +318,15 @@ This category is the `select!`-specific application of §B3. The general rule (`
   }
   ```
 - For arms that must do side effects internally, wrap them in `tokio::spawn(async move { ... })` and store the `JoinHandle` to detach from the cancellation tree (§B21 still applies).
+- When one arm of a `select!` inside a loop is a run-once future (a handshake, a first read) while the loop keeps ticking, carry a `done` flag and disable the arm on later iterations with the precondition syntax (`r = &mut op, if !done`), plus an `else => break` (or equivalent) for the case where every arm can be disabled — re-polling the completed arm future panics, and an all-arms-disabled `select!` without `else` panics too (§B15e).
 
 ## §C3. Async runtime and ecosystem coherence
 
-**The trap**: mixing `async-std` types with `tokio` dependencies, or generating code that uses `tokio::fs` on `wasm32-unknown-unknown`. The compilation may succeed if features align, but behavior at runtime is broken.
+**The trap**: mixing `async-std` types with `tokio` dependencies — against a runtime that is itself discontinued (RUSTSEC-2025-0052), so code on it should migrate, not just segregate — or generating code that uses `tokio::fs` on `wasm32-unknown-unknown`. The compilation may succeed if features align, but behavior at runtime is broken.
 
 **REQUIRED**:
-- Verify the runtime once at the start (read `Cargo.toml`). Do not mix `tokio` and `async-std` in the same crate without explicit reason.
-- For `wasm32` targets: no threads, no blocking I/O, no `tokio::time::sleep` (use `gloo-timers` or equivalent).
+- Verify the runtime once at the start (read `Cargo.toml`). Do not mix `tokio` and `async-std` in the same crate without explicit reason. Note `async-std` itself is **discontinued** (RUSTSEC-2025-0052, "has been discontinued"; the advisory names `smol` as the alternative): the fix for async-std code is migration, not merely avoiding mixing it with tokio.
+- For `wasm32` targets: no threads, no blocking I/O, no `tokio::time::sleep` (use `gloo-timers` or equivalent). Also no `std::time::Instant::now()`/`SystemTime::now()` — both **panic** on `wasm32-unknown-unknown` (§B27); use `web_time::{Instant, SystemTime}` (re-exports `std::time` on non-wasm targets). `wasm32-wasip1`/`wasip2` are unaffected.
 - For `#![no_std]` crates: no `String` or `Vec` without `extern crate alloc`; no `std::*` paths.
 - For embedded with `embassy` or `embedded-hal-async`: do not mix with `tokio`-flavored APIs.
 - `Pin<Box<dyn Future>>` is rarely the right answer — usually `impl Future` works. When using `pin_project`, use it correctly (the macro, not manual `Pin::new_unchecked`).
@@ -306,7 +341,8 @@ This category is the `select!`-specific application of §B3. The general rule (`
 - Using `tokio::task::spawn_blocking` and assuming the parent span is preserved — `spawn_blocking` moves work to a separate blocking-pool thread; the span is lost there too.
 - Storing per-request context in a `thread_local!`, writing it before an `.await` and reading it after, on a multi-thread runtime. This is the *general* form of the span hazard above (which is one instance of it): a task can migrate to a **different worker thread** at any `.await`, so the value read after the await belongs to *whatever other task last ran on the new worker* — or the thread-local default — not to this task. The corruption is silent (wrong request-id / tenant / locale / auth context propagated), compiles, and passes single-threaded tests. Use `tokio::task_local!` (the value travels *with the task* across awaits and thread hops) for per-task context; or confine the task to one thread via a current-thread runtime / `LocalSet` when a true thread-local is unavoidable.
 - Logging PII through `{:?}` / `#[derive(Debug)]` / `tracing` fields — email, full name, phone, address, government ID, card number, IP. §B12 covers cryptographic *secrets* by field name, but PII is a separate compliance class (GDPR / PCI / CCPA): it compiles, tests pass, and the leak surfaces only in production logs at audit time. Classify PII fields and redact them (a redacting newtype, `tracing` field filtering, or skip via `#[derive(Debug)]` customization).
-- Untrusted input logged via `tracing::info!("... {} ...", user_input)` or `format!`/`println!` passes raw control characters (ANSI escapes, newlines) through unescaped — only `{:?}` escapes them. Into a **plain-text or terminal** log sink this lets an attacker forge log lines, clear the terminal, or inject ANSI (a structured/JSON sink is largely immune). For values reaching such a sink as free text, log via `{:?}` or sanitize control characters, and keep the logging/subscriber stack patched against known log-injection advisories.
+- `#[tracing::instrument]` (or `#[instrument(ret)]`/`#[instrument(err)]`) on a function whose parameters or return/error values are secret material or a full request body, without `skip`/`skip_all`: by default the macro records **every argument as a span field, formatted with `fmt::Debug`** — `#[instrument] async fn login(pool, email, password)` puts the plaintext password into every span-aware log line and trace exporter; `(ret)` records the return value (a minted token); `(err)` records the error's `Display` (e.g. one embedding a connection string). It compiles, tests are green (nothing asserts on log content), and the leak surfaces in production logs/trace backends. REQUIRED: `#[instrument(skip(password))]`, or `#[instrument(skip_all, fields(user = %email))]` keeping only explicit, non-sensitive fields, or a self-redacting type (`"<redacted>"` `Debug` newtype, `secrecy::SecretBox` — §B12). 🔴 when a parameter is secret material (same class as §B12's Debug-leak, arrived at through a different formatter); 🟡 for PII/payload size (a multi-MB body also materializes into every span — a §E5 log-volume cost).
+- Untrusted input logged via `tracing::info!("... {} ...", user_input)` or `format!`/`println!` passes raw control characters (ANSI escapes, newlines) through unescaped — only `{:?}` escapes them. Into a **plain-text or terminal** log sink this lets an attacker forge log lines, clear the terminal, or inject ANSI (a structured/JSON sink is largely immune). For values reaching such a sink as free text, log via `{:?}` or sanitize control characters, and keep the logging/subscriber stack patched against known log-injection advisories — the worked instance is tracing-subscriber RUSTSEC-2025-0055 (ANSI escape injection via logged input; patched ≥ 0.3.20).
 
 **REQUIRED**:
 - Wrap spawned futures with the parent span: `tokio::spawn(my_fut.in_current_span())` (requires `use tracing::Instrument;` in scope). The `in_current_span()` adapter binds the *current* span to the future at spawn time, so it is restored when the future is polled.
