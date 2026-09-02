@@ -227,7 +227,12 @@ for (const file of new Set(categoryCountMentions.map((mention) => mention.file))
   // has nothing to do with this spec's numbered-category count. Neither is staleness. Cap the
   // scan to the top banner paragraph — the one place README.md asserts the CURRENT count — so
   // accurate history and unrelated prose can't be mistaken for a stale mention.
-  const scanText = file === 'README.md' ? (fileText.split('# rust-intel')[1] || '').split('## What this is')[0] : fileText;
+  const bannerText = file === 'README.md' ? (fileText.split('# rust-intel')[1] || '').split('## What this is')[0] : fileText;
+  // Strip Markdown bold markers before matching: "**58** categories" has `**` sitting between the
+  // digit and the required whitespace, which the `\d+\s+categories` pattern below cannot cross —
+  // an emphasized stale count would otherwise slip past silently. `**` carries no meaning for this
+  // check either way, so stripping it never hides a genuine mismatch.
+  const scanText = bannerText.replace(/\*\*/g, '');
   categoryCountFileTexts.set(file, scanText);
 }
 for (const [file, text] of categoryCountFileTexts) {
