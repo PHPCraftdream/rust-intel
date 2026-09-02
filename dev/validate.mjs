@@ -195,6 +195,40 @@ for (const mention of categoryCountMentions) {
   if (!mention.pattern.test(text)) errors.push(`${mention.file}: does not state the current numbered-category count (${numberedCategoryCount}, "${categoryCountWord}") where expected (pattern: ${mention.pattern}) — count is derived from "## §<id>." headers across skill/*.md, not hand-maintained`);
 }
 
+// The expected-phrase loop above only proves the CURRENT count is stated where required — it is
+// blind to an ADDITIONAL stale mention coexisting in the same file: "contains 58 categories" can
+// sit right next to correct "59 categories" phrases and stay green. Scan those same files for
+// every "<number> categories" mention and reject any whose number is not the current derived
+// count — digits generically, plus English-word forms ("fifty-nine categories", the style
+// SKILL.md spells its count in), matched from the same word tables and decoded with wordsToNumber.
+// The word form exempts "…categories below": it scopes the number to the subset enumerated after
+// it (tier sections state counts like "twenty-nine categories below"), never to the spec's total.
+function wordsToNumber(words) {
+  const [tens, ones] = words.toLowerCase().split('-');
+  if (ones === undefined) {
+    const tensIndex = NUMBER_WORDS_TENS.indexOf(tens);
+    return tensIndex >= 0 ? tensIndex * 10 : NUMBER_WORDS_ONES.indexOf(tens);
+  }
+  return NUMBER_WORDS_TENS.indexOf(tens) * 10 + NUMBER_WORDS_ONES.indexOf(ones);
+}
+const numberWordAlternation = [...NUMBER_WORDS_TENS.filter(Boolean), ...NUMBER_WORDS_ONES].join('|');
+const staleCategoryCountPatterns = [
+  { pattern: /\b(\d+)\s+categories\b/gi, stated: (m) => Number.parseInt(m[1], 10) },
+  { pattern: new RegExp(`\\b((?:${numberWordAlternation})(?:-(?:${numberWordAlternation}))?)\\s+categories\\b(?!\\s+below\\b)`, 'gi'), stated: (m) => wordsToNumber(m[1]) },
+];
+const categoryCountFileTexts = new Map();
+for (const file of new Set(categoryCountMentions.map((mention) => mention.file))) {
+  categoryCountFileTexts.set(file, fs.readFileSync(path.join(root, file), 'utf8'));
+}
+for (const [file, text] of categoryCountFileTexts) {
+  for (const { pattern, stated } of staleCategoryCountPatterns) {
+    for (const m of text.matchAll(pattern)) {
+      const statedCount = stated(m);
+      if (statedCount !== numberedCategoryCount) errors.push(`${file}: states numbered-category count ${statedCount} ("${m[0]}") alongside the current count (${numberedCategoryCount}, "${categoryCountWord}") — count is derived from "## §<id>." headers across skill/*.md, not hand-maintained`);
+    }
+  }
+}
+
 // Duplicate trigger rows. Two rows in the same table that key off the SAME set of inline-code
 // tokens are the same rule stated twice — the drift that creeps in when independently-written
 // releases each add a row for a pattern the other already covered. Compared per contiguous table

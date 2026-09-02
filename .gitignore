@@ -31,3 +31,6 @@ desktop.ini
 # Stray Rust build artifacts (e.g. from ad-hoc test compiles in the repo root)
 *.rlib
 *.rmeta
+
+# /wrush task worktrees — always created here, in-tree
+/worktrees/

@@ -1,7 +1,7 @@
 # Publish rust-intel-cc to npm on every version tag (v*).
 #
-# The tag is the release trigger, but it does NOT set the version: a git tag is immutable and
-# points at a specific tree, so rewriting manifests in the runner's checkout after the tag exists
+# The tag is the release trigger, but it does NOT set the version: the tag names a committed
+# tree for this run, so rewriting manifests in the runner's checkout after the tag exists
 # would publish a version the tagged tree itself never had. Instead: bump package.json,
 # .claude-plugin/plugin.json, and .codex-plugin/plugin.json locally with
 # `node dev/set-release-version.mjs <version>`, commit that, THEN tag `v<version>`. This workflow
@@ -23,7 +23,7 @@ permissions:
   id-token: write # npm --provenance
 
 # A tag push has occasionally been observed firing this workflow twice for the same ref (both
-# runs targeting the same immutable tag). Serialize same-tag runs instead of racing them — a
+# runs targeting the same tag ref). Serialize same-tag runs instead of racing them — a
 # concurrent second `npm publish` for a version the first run just published is not a new
 # problem, but running it in parallel rather than after is what turned it into a failed run.
 concurrency:
