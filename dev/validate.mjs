@@ -189,6 +189,7 @@ const categoryCountMentions = [
   { file: 'skill/SKILL.md', pattern: new RegExp(`\\b${categoryCountWord} categories\\b`, 'i') },
   { file: 'skill/SKILL.md', pattern: new RegExp(`~${numberedCategoryCount} categories\\b`) },
   { file: 'skill/SKILL.md', pattern: new RegExp(`\\ball ${numberedCategoryCount} categories\\b`) },
+  { file: 'README.md', pattern: new RegExp(`Numbered categories now \\*\\*${numberedCategoryCount}\\*\\*`) },
 ];
 for (const mention of categoryCountMentions) {
   const text = fs.readFileSync(path.join(root, mention.file), 'utf8');
@@ -218,7 +219,16 @@ const staleCategoryCountPatterns = [
 ];
 const categoryCountFileTexts = new Map();
 for (const file of new Set(categoryCountMentions.map((mention) => mention.file))) {
-  categoryCountFileTexts.set(file, fs.readFileSync(path.join(root, file), 'utf8'));
+  const fileText = fs.readFileSync(path.join(root, file), 'utf8');
+  // README.md is not a current-state-only file like the others here: its "## Status" section is
+  // a running changelog that legitimately restates each PAST release's own category count at the
+  // time it shipped ("56 categories", "58 categories", ...), and its intro prose cites an
+  // unrelated "two categories" classification from a third-party benchmark (Rust-SWE-Bench) that
+  // has nothing to do with this spec's numbered-category count. Neither is staleness. Cap the
+  // scan to the top banner paragraph — the one place README.md asserts the CURRENT count — so
+  // accurate history and unrelated prose can't be mistaken for a stale mention.
+  const scanText = file === 'README.md' ? (fileText.split('# rust-intel')[1] || '').split('## What this is')[0] : fileText;
+  categoryCountFileTexts.set(file, scanText);
 }
 for (const [file, text] of categoryCountFileTexts) {
   for (const { pattern, stated } of staleCategoryCountPatterns) {
@@ -344,8 +354,14 @@ if (JSON.stringify(canonicalFiles) !== JSON.stringify(codexFiles)) errors.push('
 for (const rel of canonicalFiles) {
   if (fs.readFileSync(path.join(canonicalSkill, rel), 'utf8') !== fs.readFileSync(path.join(codexSkill, rel), 'utf8')) errors.push(`Codex skill mirror is out of sync: ${rel}`);
 }
-const fixtureRun = spawnSync(process.execPath, [path.join(root, 'dev/validate-fixtures.mjs')], { encoding: 'utf8' });
-if (fixtureRun.status !== 0) errors.push(`fixture validation failed: ${(fixtureRun.stderr || fixtureRun.stdout).trim()}`);
+// RUST_INTEL_SKIP_NESTED_FIXTURES breaks a self-spawn cycle: validate-fixtures.mjs's README.md
+// negative control spawns this script against a deliberately mutated repo state to prove the
+// category-count check fails — and this script would otherwise spawn validate-fixtures.mjs right
+// back, which runs that same negative control again, spawning this script again, without end.
+if (!process.env.RUST_INTEL_SKIP_NESTED_FIXTURES) {
+  const fixtureRun = spawnSync(process.execPath, [path.join(root, 'dev/validate-fixtures.mjs')], { encoding: 'utf8' });
+  if (fixtureRun.status !== 0) errors.push(`fixture validation failed: ${(fixtureRun.stderr || fixtureRun.stdout).trim()}`);
+}
 const invalidCli = spawnSync(process.execPath, [path.join(root, 'bin/install-codex.js'), '--user-dir', '--uninstall'], { encoding: 'utf8' });
 if (invalidCli.status === 0 || !invalidCli.stderr.includes('--user-dir requires a path')) errors.push('Codex installer accepted a missing --user-dir value');
 const duplicateCli = spawnSync(process.execPath, [path.join(root, 'bin/install-codex.js'), '--user-dir', 'one', '--user-dir', 'two'], { encoding: 'utf8' });

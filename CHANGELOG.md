@@ -3,8 +3,8 @@
 Format — [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning — [SemVer](https://semver.org/).
 
 Major = breaking changes to BANNED/REQUIRED wording that tooling depends on.
-Minor = new categories or substantive additions.
-Patch = wording refinements, fixes, new sources.
+Minor = a wholly new numbered category — or another change to the spec's shape (a category retired, split, or renumbered).
+Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichments added within existing categories — however many, and however substantive — as long as they refine or extend coverage without adding a new numbered category or changing the BANNED/REQUIRED shape tooling depends on.
 
 ## [Unreleased]
 

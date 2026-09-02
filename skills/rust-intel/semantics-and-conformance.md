@@ -102,7 +102,7 @@ async fn handle(mut client: TcpStream) -> io::Result<()> {
 
 **BANNED**:
 - Shipping one half of an inverse pair without a round-trip test of the composition (`decode(encode(x)) == x`, or for parse/Display: `parse(display(x)) == x`) in the same change. The pair is one unit; testing the halves separately tests two functions and zero laws.
-- Round-trip over literals only, when the input domain has structure: empty input, max-length, every escape-worthy character, boundary sizes (block size ± 1 for crypto/compression), non-ASCII/UTF-8 multi-byte (§B28), `Option`/default-collapsing values (§B20). Hand-picked literals encode the author's blind spots — `proptest` doesn't have them.
+- Round-trip over literals only, when the input domain has structure: empty input, max-length, every escape-worthy character, boundary sizes (block size ± 1 for crypto/compression), non-ASCII/UTF-8 multi-byte (§B28), `Option`/default-collapsing values (§B20). Hand-picked literals encode the author's blind spots — but a `proptest::Strategy` is author-written too and can encode the same blind spots (e.g., a strategy that only generates ASCII when the real bug is in non-ASCII handling): review the strategy's own coverage, and keep the explicit escape/boundary/invalid-input corpora alongside the generated cases rather than letting generation replace them.
 - Asserting the round-trip in the wrong direction only. `decode(encode(x)) == x` (full domain of `x`) and `encode(decode(b)) == b` (canonical-form question — often *legitimately false* when multiple encodings normalize) are different laws; know which one your format promises and test that one. Don't let a failing canonical-form test get "fixed" by weakening the real law.
 - Letting a round-trip property substitute for §F1 conformance: round-trip proves the pair agrees with *itself*, not with the spec. Both are required for a wire format; neither implies the other.
 - Citing a green `prop_decode_encode_roundtrip` as proof that persisted data still decodes after a variant/field insertion or reorder in a positional format (`bincode`/`postcard`/`rkyv`/`borsh`) — both halves of the pair were regenerated from the same new declaration, so the property cannot observe the stored bytes it broke. The §F1 golden-bytes fixture captured from the prior release is the negative control this property lacks.
@@ -127,7 +127,8 @@ impl FromStr for Tag {
     }
 }
 // Unit tests: Display tested on ("env", "prod"), FromStr on "env=prod". Both green.
-// Tag { key: "k", value: "a=b" } round-trips to value "a=b"... but
-// Tag { key: "k", value: "x;y" } corrupts the *containing* list format — and
+// Tag { key: "k", value: "a=b" } round-trips fine — the value's '=' survives intact. But
+// Tag { key: "a=b", value: "c" } round-trips to Tag { key: "a", value: "b=c" }: the
+// key's '=' is exactly where "first '=' wins" breaks — and
 // no test composes the two halves over generated values, so nothing ever fails.
 ```
