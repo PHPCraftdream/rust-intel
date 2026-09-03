@@ -2,11 +2,14 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: these are two hand-written controls and two crude source probes. They
-// verify that the seed still discriminates positive from negative and that the categories it
-// cites still exist and are still routed — nothing more. They are NOT a recall measurement of
-// the audit, and they deliberately do not assert the wording of any rule: pinning prose in CI
-// turns every legitimate rewrite into a red build and freezes whichever phrasing shipped first.
+// Scope, stated honestly: seven hand-written controls (README count wrong-value + two coexistence
+// variants, a temp-path junction/symlink alias, and the leading-pipe table convention in three
+// GFM-legal width variants), two rule-text presence controls (§B2 map-guard types, §B14 JoinSet
+// cap), and two crude source probes (B5/B26). They verify that the seed still discriminates
+// positive from negative and that the categories it cites still exist and are still routed —
+// nothing more. They are NOT a recall measurement of the audit, and the rule-text controls pin
+// greppable API/type signatures, not whole paragraphs: pinning prose in CI turns every legitimate
+// rewrite into a red build and freezes whichever phrasing shipped first.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -109,16 +112,36 @@ function makeTempRootOutside(sourceRoot) {
   throw new Error(`could not find a temp root physically outside ${sourcePhysical} — both os.tmpdir() and the sibling-of-repo fallback resolve inside it`);
 }
 
+// Explicit allowlist of what dev/validate.mjs reads or spawns (verified against its source):
+// link/header scans over skill/ and skills/, count mentions in README.md/package.json/
+// .claude-plugin/, the plugin manifests, commands/rust-intel-cc/audit.md, the spawned
+// installer + fixture script, and the `required` existence list. Copying only these — not the
+// whole tree — means an unrelated locked/generated/untracked worktree directory can never
+// break or slow the run; the growing exclusion list this replaces was that failure class
+// repeating.
+const validateInputs = [
+  'skill',
+  'skills',
+  'README.md',
+  'package.json',
+  '.claude-plugin',
+  '.codex-plugin',
+  'bin',
+  'commands',
+  'dev/validate.mjs',
+  'dev/semver.mjs',
+  'dev/set-release-version.mjs',
+  'dev/check-release-version.mjs',
+  'dev/validate-fixtures.mjs',
+  'examples/fixtures/cases.json',
+];
+
 function runValidateAgainstMutatedFiles(relativePaths, mutate) {
   const tmpRoot = makeTempRootOutside(root);
   try {
-    // `.rush/` is AI-harness session state (lock files held open without share-read while the
-    // copy runs — EBUSY on Windows), same class of tool-internal tree as the exclusions below.
-    // It does not exist outside that harness, so excluding it never changes normal runs.
-    fs.cpSync(root, tmpRoot, {
-      recursive: true,
-      filter: (src) => !/[\\/]\.git([\\/]|$)/.test(src) && !/[\\/]\.claude[\\/]worktrees([\\/]|$)/.test(src) && !/[\\/]node_modules([\\/]|$)/.test(src) && !/[\\/]\.rush([\\/]|$)/.test(src),
-    });
+    for (const rel of validateInputs) {
+      fs.cpSync(path.join(root, rel), path.join(tmpRoot, rel), { recursive: true });
+    }
     for (const rel of relativePaths) {
       const filePath = path.join(tmpRoot, ...rel.split('/'));
       const mutated = mutate(fs.readFileSync(filePath, 'utf8'));
@@ -239,6 +262,53 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
   if (result.skipped) failures.push('SKILL.md leading-pipe control: could not find the `Rc<RefCell<...>>` trigger row at the start of a line to strip');
   else if (result.status === 0) failures.push('SKILL.md leading-pipe control: dev/validate.mjs still passed after a trigger-table row lost its leading `|`');
   else if (!result.output.includes('missing its leading `|`')) failures.push(`SKILL.md leading-pipe control: dev/validate.mjs failed but its output did not name the missing leading \`|\` — got: ${result.output.trim()}`);
+}
+
+// Controls 6-7 (sibling width variants of Control 5): a pipe-less body row is GFM-legal at any
+// width — fewer cells are padded with empties, excess cells ignored — so the historical
+// exact-cell-count match flagged only the equal-width case. Strip the leading `|` AND make the
+// row one cell narrower / one cell wider than its neighbor; both must be flagged like Control 5.
+for (const [name, mutateRow] of [
+  ['fewer-cell', (row) => row.slice(1, row.lastIndexOf('|', row.length - 2))],
+  ['excess-cell', (row) => `${row.slice(1)}extra cell |`],
+]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = original.indexOf(marker);
+    if (at === -1 || original[at - 1] !== '\n') return null;
+    const lineEnd = original.indexOf('\n', at);
+    return original.slice(0, at) + mutateRow(original.slice(at, lineEnd)) + original.slice(lineEnd);
+  });
+  if (result.skipped) failures.push(`SKILL.md ${name} leading-pipe control: could not find the \`Rc<RefCell<...>>\` trigger row at the start of a line to strip`);
+  else if (result.status === 0) failures.push(`SKILL.md ${name} leading-pipe control: dev/validate.mjs still passed after a trigger-table row lost its leading \`|\` (GFM-valid different-width row)`);
+  else if (!result.output.includes('missing its leading `|`')) failures.push(`SKILL.md ${name} leading-pipe control: dev/validate.mjs failed but its output did not name the missing leading \`|\` — got: ${result.output.trim()}`);
+}
+
+// Rule-text presence controls for the corrected high-risk rules: a revert of the correction in
+// the canonical file must go red. The checks pin greppable API/type signatures and the stated
+// invariant token, not whole paragraphs; the Codex mirror needs no separate check —
+// dev/validate.mjs enforces byte identity between the two trees.
+function sectionOf(text, header) {
+  const start = text.indexOf(header);
+  if (start === -1) return '';
+  const next = text.indexOf('\n## §', start + 1);
+  return next === -1 ? text.slice(start) : text.slice(start, next);
+}
+const ruleTextControls = [
+  { name: 'B2 map-guard types (skill/async.md §B2)', file: 'skill/async.md', section: '## §B2.', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one'] },
+  { name: 'B2 map-guard trigger rows (skill/SKILL.md)', file: 'skill/SKILL.md', section: null, require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one'] },
+  { name: 'B14 JoinSet admission-gated drain (skill/concurrency-and-state.md §B14)', file: 'skill/concurrency-and-state.md', section: '## §B14.', require: ['poll_join_next', 'len() <= N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
+  { name: 'B14 JoinSet trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', section: null, require: ['poll_join_next', 'len() <= N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
+];
+for (const control of ruleTextControls) {
+  const text = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const scoped = control.section ? sectionOf(text, control.section) : text;
+  for (const token of control.require || []) {
+    if (!scoped.includes(token)) failures.push(`${control.name}: required signature "${token}" absent — the round-13 correction looks reverted or reworded past its greppable signature`);
+  }
+  for (const token of control.forbid || []) {
+    if (scoped.includes(token)) failures.push(`${control.name}: forbidden signature "${token}" present — the corrected rule text looks reverted`);
+  }
 }
 
 for (const fixture of cases) {

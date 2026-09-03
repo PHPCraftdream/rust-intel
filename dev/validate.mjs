@@ -273,35 +273,38 @@ function splitTableRow(line) {
 }
 const skillSource = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8').split('\n');
 let tableBlock = new Map();
-let tableCellCount = 0;
+let tableColumns = 0;
 let inTable = false;
 function flushTableBlock() {
   for (const [signature, lines] of tableBlock) {
     if (lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${signature}] at lines ${lines.join(', ')}`);
   }
   tableBlock = new Map();
-  tableCellCount = 0;
+  tableColumns = 0;
   inTable = false;
 }
 skillSource.forEach((line, index) => {
   // Project convention: every trigger-table row in SKILL.md is written with a LEADING pipe,
-  // even though GFM makes outer pipes optional. A row that lost its leading pipe is still a
-  // valid GFM row, so silently ending the table there both skips the row from the duplicate
-  // scan below and hides the convention violation. Fail loudly instead when the pipe-less
-  // line still parses as a row of the open table (same cell count when a leading `|` is
-  // restored); anything else (blank line, prose, code fence) genuinely ends the table.
+  // even though GFM makes outer pipes optional. A pipe-less row stays a valid GFM row at ANY
+  // width (fewer cells are padded, excess ignored), so a reconstructed cell count can never
+  // decide this — matching the previous row's count missed narrower/wider pipe-less rows.
+  // GFM keeps the table open across any body row (a blank line is what ends it), so with the
+  // table established (header + delimiter seen), any non-blank pipe-less line that does not
+  // itself start another GFM block element (heading, fence, blockquote, list, thematic break)
+  // is a row that lost its pipe.
   if (!line.startsWith('|')) {
-    const asRow = inTable && line.trim() !== '' ? splitTableRow(`|${line}`) : [];
-    if (tableCellCount > 0 && asRow.length === tableCellCount) {
+    if (inTable && tableColumns > 0 && line.trim() !== '' && !/^\s{0,3}(#{1,6}\s|```|~~~|>|[-*+]\s|\d{1,9}[.)]\s|((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$)/.test(line)) {
       errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so without this check the row silently ends the table and is skipped)`);
     }
     return flushTableBlock();
   }
   inTable = true;
   const cells = splitTableRow(line);
-  tableCellCount = cells.length;
   const firstCell = cells[0] || '';
-  if (/^[\s:-]*$/.test(firstCell)) return; // header separator row
+  if (/^[\s:-]*$/.test(firstCell)) {
+    tableColumns = cells.length; // delimiter row fixes the column count for the whole table
+    return;
+  }
   const signature = [...new Set([...firstCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]))].sort().join(' + ');
   if (!signature) return; // prose-only trigger cell (no inline code) — mechanical dedup doesn't cover it
   if (!tableBlock.has(signature)) tableBlock.set(signature, []);
