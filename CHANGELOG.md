@@ -8,6 +8,8 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+> Every `docs/reviews/*.md` citation below points to a file tracked in this **repository** (stable via a commit-pinned link, e.g. `https://github.com/PHPCraftdream/rust-intel/tree/1591d39/docs/reviews`) — not to a file included in the **npm package**: `package.json`'s `files` field ships only `bin/`, `skill/`, `skills/`, `.codex-plugin/`, `commands/rust-intel-cc/`, and this changelog. Clone or browse the repository for the underlying reports.
+
 **Three independent audits of the shipped spec (completeness, correctness, currency), synthesized into one fix plan and landed.** No new category, no BANNED/REQUIRED semantics changed beyond precision fixes — **PATCH-shaped** despite the size. Full evidence for every item lives in `docs/reviews/`: `gap-audit-completeness-2026-08.md`, `correctness-audit-2026-08.md`, `currency-audit-2026-08.md`, and the synthesized `fix-plan-2026-08.md` (70 entries, §1–§7); this entry summarizes by group rather than repeating each item's evidence.
 
 This release also closes out two prior commits that shipped without a changelog entry: `eca76bf` (7 findings from an independent review of v0.6.0) and `3bce0e1` (6 second-pass findings from @oh's review of `eca76bf` — a factually-wrong dyn-compatibility claim among them, corrected and re-verified against `rustc`).
