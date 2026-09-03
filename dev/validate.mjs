@@ -273,18 +273,34 @@ function splitTableRow(line) {
 }
 const skillSource = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8').split('\n');
 let tableBlock = new Map();
+let tableCellCount = 0;
+let inTable = false;
 function flushTableBlock() {
   for (const [signature, lines] of tableBlock) {
     if (lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${signature}] at lines ${lines.join(', ')}`);
   }
   tableBlock = new Map();
+  tableCellCount = 0;
+  inTable = false;
 }
 skillSource.forEach((line, index) => {
   // Project convention: every trigger-table row in SKILL.md is written with a LEADING pipe,
-  // even though GFM makes outer pipes optional. This parser relies on that — a row without
-  // a leading pipe is treated as the end of the table (and skipped). Keep rows leading-pipe'd.
-  if (!line.startsWith('|')) return flushTableBlock();
-  const firstCell = splitTableRow(line)[0] || '';
+  // even though GFM makes outer pipes optional. A row that lost its leading pipe is still a
+  // valid GFM row, so silently ending the table there both skips the row from the duplicate
+  // scan below and hides the convention violation. Fail loudly instead when the pipe-less
+  // line still parses as a row of the open table (same cell count when a leading `|` is
+  // restored); anything else (blank line, prose, code fence) genuinely ends the table.
+  if (!line.startsWith('|')) {
+    const asRow = inTable && line.trim() !== '' ? splitTableRow(`|${line}`) : [];
+    if (tableCellCount > 0 && asRow.length === tableCellCount) {
+      errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so without this check the row silently ends the table and is skipped)`);
+    }
+    return flushTableBlock();
+  }
+  inTable = true;
+  const cells = splitTableRow(line);
+  tableCellCount = cells.length;
+  const firstCell = cells[0] || '';
   if (/^[\s:-]*$/.test(firstCell)) return; // header separator row
   const signature = [...new Set([...firstCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]))].sort().join(' + ');
   if (!signature) return; // prose-only trigger cell (no inline code) — mechanical dedup doesn't cover it

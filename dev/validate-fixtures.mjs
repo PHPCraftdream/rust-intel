@@ -109,18 +109,22 @@ function makeTempRootOutside(sourceRoot) {
   throw new Error(`could not find a temp root physically outside ${sourcePhysical} — both os.tmpdir() and the sibling-of-repo fallback resolve inside it`);
 }
 
-function runValidateAgainstMutatedCopy(mutateReadme) {
+function runValidateAgainstMutatedFiles(relativePaths, mutate) {
   const tmpRoot = makeTempRootOutside(root);
   try {
+    // `.rush/` is AI-harness session state (lock files held open without share-read while the
+    // copy runs — EBUSY on Windows), same class of tool-internal tree as the exclusions below.
+    // It does not exist outside that harness, so excluding it never changes normal runs.
     fs.cpSync(root, tmpRoot, {
       recursive: true,
-      filter: (src) => !/[\\/]\.git([\\/]|$)/.test(src) && !/[\\/]\.claude[\\/]worktrees([\\/]|$)/.test(src) && !/[\\/]node_modules([\\/]|$)/.test(src),
+      filter: (src) => !/[\\/]\.git([\\/]|$)/.test(src) && !/[\\/]\.claude[\\/]worktrees([\\/]|$)/.test(src) && !/[\\/]node_modules([\\/]|$)/.test(src) && !/[\\/]\.rush([\\/]|$)/.test(src),
     });
-    const tmpReadmePath = path.join(tmpRoot, 'README.md');
-    const original = fs.readFileSync(tmpReadmePath, 'utf8');
-    const mutated = mutateReadme(original);
-    if (mutated === null) return { skipped: true };
-    fs.writeFileSync(tmpReadmePath, mutated);
+    for (const rel of relativePaths) {
+      const filePath = path.join(tmpRoot, ...rel.split('/'));
+      const mutated = mutate(fs.readFileSync(filePath, 'utf8'));
+      if (mutated === null) return { skipped: true };
+      fs.writeFileSync(filePath, mutated);
+    }
     const run = spawnSync(process.execPath, [path.join(tmpRoot, 'dev', 'validate.mjs')], {
       encoding: 'utf8',
       env: { ...process.env, RUST_INTEL_SKIP_NESTED_FIXTURES: '1' },
@@ -129,6 +133,10 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
+}
+
+function runValidateAgainstMutatedCopy(mutateReadme) {
+  return runValidateAgainstMutatedFiles(['README.md'], mutateReadme);
 }
 
 // Control 1: mutate the banner's required count to a wrong number outright.
@@ -214,6 +222,23 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
     fs.rmSync(aliasPath, { recursive: true, force: true });
     fs.rmSync(physicalTarget, { recursive: true, force: true });
   }
+}
+
+// Control 5: strip the leading `|` from one known trigger-table row of SKILL.md — in BOTH the
+// canonical file and its Codex mirror, so the mirror-sync check stays quiet and the missing-
+// leading-pipe error is the only failure. The row stays a valid GFM table row (outer pipes are
+// optional), so the historical behavior was to silently end the table there and skip the row
+// from the duplicate-trigger scan; this proves the validator now fails loudly instead.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = original.indexOf(marker);
+    if (at === -1 || original[at - 1] !== '\n') return null;
+    return original.slice(0, at) + original.slice(at + 1); // drop exactly the leading `|`
+  });
+  if (result.skipped) failures.push('SKILL.md leading-pipe control: could not find the `Rc<RefCell<...>>` trigger row at the start of a line to strip');
+  else if (result.status === 0) failures.push('SKILL.md leading-pipe control: dev/validate.mjs still passed after a trigger-table row lost its leading `|`');
+  else if (!result.output.includes('missing its leading `|`')) failures.push(`SKILL.md leading-pipe control: dev/validate.mjs failed but its output did not name the missing leading \`|\` — got: ${result.output.trim()}`);
 }
 
 for (const fixture of cases) {
