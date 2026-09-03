@@ -136,11 +136,19 @@ const validateInputs = [
   'examples/fixtures/cases.json',
 ];
 
+// Optional validator inputs: dev/validate.mjs reads .app.json/.mcp.json only when plugin.json
+// declares apps/mcpServers, so they may legitimately not exist — copy them only when present or
+// every mutated-copy control would diverge from the real repo once a manifest starts using them.
+const optionalValidateInputs = ['.app.json', '.mcp.json'];
+
 function runValidateAgainstMutatedFiles(relativePaths, mutate) {
   const tmpRoot = makeTempRootOutside(root);
   try {
     for (const rel of validateInputs) {
       fs.cpSync(path.join(root, rel), path.join(tmpRoot, rel), { recursive: true });
+    }
+    for (const rel of optionalValidateInputs) {
+      if (fs.existsSync(path.join(root, rel))) fs.cpSync(path.join(root, rel), path.join(tmpRoot, rel), { recursive: true });
     }
     for (const rel of relativePaths) {
       const filePath = path.join(tmpRoot, ...rel.split('/'));
@@ -224,23 +232,36 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
   const prevTmp = process.env.TMP;
   let tmpRootFromAlias = null;
   try {
-    fs.symlinkSync(physicalTarget, aliasPath, 'junction'); // 'junction' type is Windows-only, ignored (plain symlink) elsewhere
-    process.env.TEMP = aliasPath;
-    process.env.TMP = aliasPath;
-    tmpRootFromAlias = makeTempRootOutside(root);
-    const resolvedTmpRoot = resolvePhysical(tmpRootFromAlias);
-    const resolvedRoot = resolvePhysical(root);
-    if (isInside(resolvedTmpRoot, resolvedRoot)) {
-      failures.push(`junction/symlink alias control: makeTempRootOutside returned ${tmpRootFromAlias} (physically ${resolvedTmpRoot}), which is still inside the repo (${resolvedRoot}) despite the alias's own lexical path pointing outside it`);
+    let aliasCreated = false;
+    try {
+      fs.symlinkSync(physicalTarget, aliasPath, 'junction'); // 'junction' type is Windows-only, ignored (plain symlink) elsewhere
+      aliasCreated = true;
+    } catch (e) {
+      // Creating a directory symlink/junction can fail on a locked-down environment (e.g. a
+      // Windows account without SeCreateSymbolicLinkPrivilege and no Developer Mode). That is an
+      // environment limitation, not evidence the fix works — skip rather than false-pass. Only
+      // link creation is skip-worthy; any later exception is a real regression in this control's
+      // own logic and must surface as a test failure, not an environmental skip.
+      console.log(`(skipped junction/symlink alias control: could not create the alias — ${e.message})`);
     }
-  } catch (e) {
-    // Creating a directory symlink/junction can fail on a locked-down environment (e.g. a
-    // Windows account without SeCreateSymbolicLinkPrivilege and no Developer Mode). That is an
-    // environment limitation, not evidence the fix works — skip rather than false-pass.
-    console.log(`(skipped junction/symlink alias control: could not create the alias — ${e.message})`);
+    if (aliasCreated) {
+      try {
+        process.env.TEMP = aliasPath;
+        process.env.TMP = aliasPath;
+        tmpRootFromAlias = makeTempRootOutside(root);
+        const resolvedTmpRoot = resolvePhysical(tmpRootFromAlias);
+        const resolvedRoot = resolvePhysical(root);
+        if (isInside(resolvedTmpRoot, resolvedRoot)) {
+          failures.push(`junction/symlink alias control: makeTempRootOutside returned ${tmpRootFromAlias} (physically ${resolvedTmpRoot}), which is still inside the repo (${resolvedRoot}) despite the alias's own lexical path pointing outside it`);
+        }
+      } catch (e) {
+        failures.push(`junction/symlink alias control: failed after the alias was created — a regression in the containment logic, not an environment limitation: ${e.message}`);
+      } finally {
+        restoreEnv('TEMP', prevTemp);
+        restoreEnv('TMP', prevTmp);
+      }
+    }
   } finally {
-    restoreEnv('TEMP', prevTemp);
-    restoreEnv('TMP', prevTmp);
     if (tmpRootFromAlias) fs.rmSync(tmpRootFromAlias, { recursive: true, force: true });
     fs.rmSync(aliasPath, { recursive: true, force: true });
     fs.rmSync(physicalTarget, { recursive: true, force: true });
@@ -284,6 +305,46 @@ for (const [name, mutateRow] of [
   else if (!result.output.includes('missing its leading `|`')) failures.push(`SKILL.md ${name} leading-pipe control: dev/validate.mjs failed but its output did not name the missing leading \`|\` — got: ${result.output.trim()}`);
 }
 
+// Controls 8-11 (round-14): a table's HEADER row and DELIMITER row can lose their leading pipe
+// too — both were invisible to the old two-variable state machine — while GFM block-level
+// starts that immediately follow a table (HTML blocks, link reference definitions) are NOT rows
+// and must stay quiet.
+for (const [name, marker] of [
+  ['header-row', '| Code pattern in user input | Activates |'],
+  ['delimiter-row', '|---|---|'],
+]) {
+  const before = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
+  const markerAt = before.indexOf(marker);
+  const expectedLine = markerAt === -1 ? -1 : before.slice(0, markerAt).split('\n').length;
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
+    const at = original.indexOf(marker);
+    if (at === -1 || original[at - 1] !== '\n') return null;
+    return original.slice(0, at) + original.slice(at + 1); // drop exactly the leading `|`
+  });
+  if (result.skipped) failures.push(`SKILL.md ${name} leading-pipe control: could not find the ${name} row at the start of a line to strip`);
+  else if (result.status === 0) failures.push(`SKILL.md ${name} leading-pipe control: dev/validate.mjs still passed after the ${name} of a trigger table lost its leading \`|\``);
+  else if (!result.output.includes('missing its leading `|`')) failures.push(`SKILL.md ${name} leading-pipe control: dev/validate.mjs failed but its output did not name the missing leading \`|\` — got: ${result.output.trim()}`);
+  // The header case is the regression-prone one: a header confirmed by a LATER delimiter row must
+  // be cited by its OWN line, not the delimiter's — catches exactly the bug this control's first
+  // version (round-14 pre-fix) missed by only checking for the substring, not the line number.
+  else if (expectedLine !== -1 && !result.output.includes(`skill/SKILL.md:${expectedLine}:`)) failures.push(`SKILL.md ${name} leading-pipe control: dev/validate.mjs cited the wrong line for the ${name} — expected skill/SKILL.md:${expectedLine}, got: ${result.output.trim()}`);
+}
+
+for (const [name, inserted] of [
+  ['HTML-block-start', '<div>probe</div>'],
+  ['link-reference-definition', '[probe]: https://example.invalid/x'],
+]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = original.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = original.indexOf('\n', at);
+    return original.slice(0, lineEnd + 1) + inserted + original.slice(lineEnd);
+  });
+  if (result.skipped) failures.push(`SKILL.md ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the block-start line after`);
+  else if (result.status !== 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs flagged a GFM block-level start (${name}) immediately after a table as a pipe-less table row — got: ${result.output.trim()}`);
+}
+
 // Rule-text presence controls for the corrected high-risk rules: a revert of the correction in
 // the canonical file must go red. The checks pin greppable API/type signatures and the stated
 // invariant token, not whole paragraphs; the Codex mirror needs no separate check —
@@ -294,15 +355,25 @@ function sectionOf(text, header) {
   const next = text.indexOf('\n## §', start + 1);
   return next === -1 ? text.slice(start) : text.slice(start, next);
 }
+
+function rowOf(text, anchor) {
+  const line = text.split('\n').find((row) => row.includes(anchor));
+  return line === undefined ? '' : line;
+}
 const ruleTextControls = [
-  { name: 'B2 map-guard types (skill/async.md §B2)', file: 'skill/async.md', section: '## §B2.', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one'] },
-  { name: 'B2 map-guard trigger rows (skill/SKILL.md)', file: 'skill/SKILL.md', section: null, require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one'] },
-  { name: 'B14 JoinSet admission-gated drain (skill/concurrency-and-state.md §B14)', file: 'skill/concurrency-and-state.md', section: '## §B14.', require: ['poll_join_next', 'len() <= N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
-  { name: 'B14 JoinSet trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', section: null, require: ['poll_join_next', 'len() <= N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
+  { name: 'B2 map-guard types (skill/async.md §B2)', file: 'skill/async.md', section: '## §B2.', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one', 'MappedRef', 'RefMulti', 'get_sync`/`get_async` return `Option<OccupiedEntry>`'] },
+  { name: 'B2 map-guard phrase-trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'DashMap/concurrent-map lazy init + await', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one', 'MappedRef', 'RefMulti', 'owns or contains a map guard'] },
+  { name: 'B2 map-guard code-pattern trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'a guard of a concurrent map (`DashMap`/`scc::HashMap`) live across a later `.await`', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one', 'MappedRef', 'RefMutMulti', 'owns or contains a map guard'] },
+  { name: 'B14 JoinSet admission-gated drain (skill/concurrency-and-state.md §B14)', file: 'skill/concurrency-and-state.md', section: '## §B14.', require: ['poll_join_next', 'len() < N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
+  { name: 'B14 JoinSet trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'constructed or grown by any operation that adds tasks', require: ['poll_join_next', 'len() < N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
+  { name: 'C12 either-defense Markdown row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'Markdown-to-HTML renderer', require: ['Event::Html', 'Event::InlineHtml', 'either one alone satisfies this obligation'] },
+  { name: 'C12 either-defense catalog row (skill/deps-macros-ergonomics.md)', file: 'skill/deps-macros-ergonomics.md', rowAnchor: 'Markdown rendering of untrusted content', require: ['either drop', '`Html`/`InlineHtml` events or'] },
+  { name: 'F1 decode-observable corpus oracle (skill/semantics-and-conformance.md §F1)', file: 'skill/semantics-and-conformance.md', section: '## §F1.', require: ['finite graph of distinct serialized type/variant definitions', 'two representatives, not every runtime depth', 'decode-observable, not typed-value-level', 'schema-mutation negative control'] },
+  { name: 'F1 corpus trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'golden-bytes decode **corpus**', require: ['finite graph of distinct serialized type/variant definitions', 'two representatives, not every runtime depth', 'decode-observable, not typed-value-level', 'schema-mutation negative control'] },
 ];
 for (const control of ruleTextControls) {
   const text = fs.readFileSync(path.join(root, control.file), 'utf8');
-  const scoped = control.section ? sectionOf(text, control.section) : text;
+  const scoped = control.section ? sectionOf(text, control.section) : control.rowAnchor ? rowOf(text, control.rowAnchor) : text;
   for (const token of control.require || []) {
     if (!scoped.includes(token)) failures.push(`${control.name}: required signature "${token}" absent — the round-13 correction looks reverted or reworded past its greppable signature`);
   }

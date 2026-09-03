@@ -273,42 +273,119 @@ function splitTableRow(line) {
 }
 const skillSource = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8').split('\n');
 let tableBlock = new Map();
-let tableColumns = 0;
-let inTable = false;
+// Three-state table machine: 'none' -> 'header' (a row that could be a table header is pending,
+// waiting for the delimiter row that confirms a real table) -> 'body'. The old two-variable
+// state (inTable/tableColumns) was set only once a pipe-prefixed row existed, so a pipe-less
+// header row (inTable still false) and a pipe-less delimiter row (tableColumns still 0) both
+// escaped detection; the delimiter row must also match the header's cell count or GFM
+// recognizes no table at all — that fact needs an explicit pending-header state.
+let tableState = 'none';
+let headerHadPipe = false;
+let headerCells = 0;
+let headerLine = 0; // 1-based line of the pending header candidate — errors about IT must cite this, not the confirming delimiter's line
 function flushTableBlock() {
   for (const [signature, lines] of tableBlock) {
     if (lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${signature}] at lines ${lines.join(', ')}`);
   }
   tableBlock = new Map();
-  tableColumns = 0;
-  inTable = false;
+  tableState = 'none';
+  headerHadPipe = false;
+  headerCells = 0;
+  headerLine = 0;
+}
+// GFM §4.10: a pipe-less row stays a row of the open table (outer pipes are optional) — the
+// risk this check guards is the row escaping THIS project's leading-pipe convention and the
+// duplicate-trigger scan built on it, not GFM misparsing. §4.1–4.8: a blank line, or a line
+// starting a heading, fence, blockquote, list, thematic break, HTML block (all seven GFM start
+// conditions begin with '<' after ≤3 spaces of indent), or a link reference definition
+// ('[label]:', also ≤3 spaces), breaks the table instead of joining it as a row.
+const blockStartRe = /^\s{0,3}(#{1,6}\s|```|~~~|>|[-*+]\s|\d{1,9}[.)]\s|((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$|<|\[[^\]]*\]:)/;
+// Delimiter row: ≥2 cells, each only hyphens with an optional leading/trailing colon (GFM
+// §4.10). A lone '---' is a thematic break (or setext underline), never a delimiter, and this
+// project's tables all have ≥2 columns.
+function splitRowCells(line) {
+  const from = line.startsWith('|') ? 1 : 0;
+  const cells = [];
+  let current = '';
+  for (let i = from; i < line.length; i += 1) {
+    if (line[i] === '\\' && line[i + 1] === '|') {
+      current += '|';
+      i += 1;
+    } else if (line[i] === '|') {
+      cells.push(current);
+      current = '';
+    } else {
+      current += line[i];
+    }
+  }
+  cells.push(current);
+  if (cells.length > 1 && cells[cells.length - 1].trim() === '') cells.pop(); // trailing pipe, same as splitTableRow
+  return cells.map((cell) => cell.trim());
+}
+function isDelimiterRow(cells) {
+  return cells.length >= 2 && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
 skillSource.forEach((line, index) => {
-  // Project convention: every trigger-table row in SKILL.md is written with a LEADING pipe,
-  // even though GFM makes outer pipes optional. A pipe-less row stays a valid GFM row at ANY
-  // width (fewer cells are padded, excess ignored), so a reconstructed cell count can never
-  // decide this — matching the previous row's count missed narrower/wider pipe-less rows.
-  // GFM keeps the table open across any body row (a blank line is what ends it), so with the
-  // table established (header + delimiter seen), any non-blank pipe-less line that does not
-  // itself start another GFM block element (heading, fence, blockquote, list, thematic break)
-  // is a row that lost its pipe.
-  if (!line.startsWith('|')) {
-    if (inTable && tableColumns > 0 && line.trim() !== '' && !/^\s{0,3}(#{1,6}\s|```|~~~|>|[-*+]\s|\d{1,9}[.)]\s|((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$)/.test(line)) {
-      errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so without this check the row silently ends the table and is skipped)`);
+  if (line.startsWith('|')) {
+    const cells = splitTableRow(line);
+    if (isDelimiterRow(cells.map((cell) => cell.trim()))) {
+      if (tableState === 'header' && headerCells === cells.length) {
+        if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
+        tableState = 'body';
+      }
+      else if (tableState !== 'body') { // cell-count mismatch: GFM §4.10 — no table recognized
+        tableState = 'header';
+        headerHadPipe = true;
+        headerCells = cells.length;
+        headerLine = index + 1;
+      }
+    } else if (tableState !== 'body') {
+      if (tableState === 'none') flushTableBlock(); // fresh candidate: dedup scope restarts
+      tableState = 'header';
+      headerHadPipe = true;
+      headerCells = cells.length;
+      headerLine = index + 1;
     }
-    return flushTableBlock();
-  }
-  inTable = true;
-  const cells = splitTableRow(line);
-  const firstCell = cells[0] || '';
-  if (/^[\s:-]*$/.test(firstCell)) {
-    tableColumns = cells.length; // delimiter row fixes the column count for the whole table
+    const firstCell = cells[0] || '';
+    const signature = [...new Set([...firstCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]))].sort().join(' + ');
+    if (!signature) return; // prose-only trigger cell (no inline code) — mechanical dedup doesn't cover it
+    if (!tableBlock.has(signature)) tableBlock.set(signature, []);
+    tableBlock.get(signature).push(index + 1);
     return;
   }
-  const signature = [...new Set([...firstCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]))].sort().join(' + ');
-  if (!signature) return; // prose-only trigger cell (no inline code) — mechanical dedup doesn't cover it
-  if (!tableBlock.has(signature)) tableBlock.set(signature, []);
-  tableBlock.get(signature).push(index + 1);
+  const trimmed = line.trim();
+  if (trimmed === '' || blockStartRe.test(line)) return flushTableBlock();
+  if (tableState === 'body') {
+    errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so a pipe-less line still parses as a row of the open table; the risk is that it escapes this project's leading-pipe convention and the duplicate-trigger scan built on it)`);
+    return flushTableBlock();
+  }
+  const cells = splitRowCells(line);
+  if (tableState === 'header' && isDelimiterRow(cells)) {
+    if (headerCells === cells.length) {
+      // The delimiter confirms the pending header — which lost its pipe if it was a pipe-less
+      // candidate; the delimiter losing its own pipe is the same convention break one row down.
+      if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
+      errors.push(`skill/SKILL.md:${index + 1}: table delimiter row missing its leading \`|\` — project convention: the delimiter row is written with a leading pipe like every other trigger-table row`);
+      tableState = 'body';
+      headerCells = cells.length;
+      return;
+    }
+    return flushTableBlock(); // cell-count mismatch: GFM recognizes no table — the pending row was a paragraph
+  }
+  if (tableState === 'header') {
+    // A pipe-less non-delimiter line directly under a pending pipe row: per GFM that pending
+    // row was a paragraph, never a table header — not a violation.
+    return flushTableBlock();
+  }
+  if (cells.length >= 2 && line.includes('|')) {
+    // A multi-cell pipe-less line outside any table is a row that may be waiting for the
+    // delimiter that confirms it; remember it as a pipe-less header candidate. Prose without a
+    // single '|' is never this project's row shape and is not tracked.
+    tableState = 'header';
+    headerHadPipe = false;
+    headerCells = cells.length;
+    headerLine = index + 1;
+  }
 });
 flushTableBlock();
 
