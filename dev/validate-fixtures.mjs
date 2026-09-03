@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: seventeen hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: twenty hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the leading-pipe table convention across
 // body/header/delimiter rows in three GFM-legal width variants, block-level quiet/flag probes
 // after a table — including empty heading/list and tab-expanded-indent boundaries — and
@@ -370,13 +370,15 @@ for (const [name, inserted] of [
   else if (result.status !== 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs flagged a GFM block-level start (${name}) immediately after a table as a pipe-less table row — got: ${result.output.trim()}`);
 }
 
-// Controls 16-17: the `\"` guard's fence state must track the opener's marker + length
+// Controls 16-18: the `\"` guard's fence state must track the opener's marker + length
 // (GFM §4.5), not toggle on any fence-looking line — a 3-backtick line inside a 4-backtick
-// fence and a ~~~ line inside a backtick fence are content, so an `\"` after them is still
-// inside code and must stay unflagged.
+// fence, a ~~~ line inside a backtick fence, and a would-be closer carrying trailing
+// non-space text (only spaces/tabs may follow a closer) are all content, so an `\"` after
+// them is still inside code and must stay unflagged.
 for (const [name, fenceLines] of [
   ['4-backtick-fence-3-backtick-content', ['````md', 'let recipe = "a";', '```', 'let escaped = "x \\" y";', '````']],
   ['backtick-fence-tilde-content', ['```md', '~~~', 'let escaped = "x \\" y";', '```']],
+  ['closer-trailing-text-fence-still-open', ['```md', 'let recipe = "a";', '``` trailing', 'let escaped = "x \\" y";', '```']],
 ]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
     const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
@@ -387,6 +389,25 @@ for (const [name, fenceLines] of [
   });
   if (result.skipped) failures.push(`escape-guard ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe lines after`);
   else if (result.status !== 0) failures.push(`escape-guard ${name} control: dev/validate.mjs rejected an \\" escape sitting inside a still-open fence (${name}) — got: ${result.output.trim()}`);
+}
+
+// Controls 19-20: GFM §4.5 restricts openers themselves — a tab-indented ``` is indented
+// code (only 0-3 spaces indent a fence) and a backtick fence whose info string holds a
+// backtick is not an opener — so neither opens a fence and an `\"` after either must be
+// flagged, not suppressed.
+for (const [name, openerLines] of [
+  ['tab-indented-fake-opener', ['\t```', 'let escaped = "x \\" y";']],
+  ['backtick-in-info-string-opener', ['```lang`invalid', 'let escaped = "x \\" y";']],
+]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = original.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = original.indexOf('\n', at);
+    return original.slice(0, lineEnd + 1) + openerLines.join('\n') + original.slice(lineEnd);
+  });
+  if (result.skipped) failures.push(`escape-guard ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe lines after`);
+  else if (result.status === 0 || !result.output.includes('literal \\" escape outside a fenced code block')) failures.push(`escape-guard ${name} control: dev/validate.mjs did not flag an \" escape after an invalid fence opener (${name}) — got: ${result.output.trim()}`);
 }
 
 // Rule-text presence controls for the corrected high-risk rules: a revert of the correction in

@@ -488,19 +488,21 @@ for (const rel of canonicalFiles) {
 // tracks the opener's marker char and length (GFM §4.5: a closer repeats the same marker at
 // >= the opener's length, followed only by spaces) — a blind boolean toggle wrongly "closes"
 // a 4-backtick fence on a 3-backtick line, flagging escapes that are still inside code.
+// Openers obey GFM §4.5 too: 0-3 spaces of indentation (a tab makes the line indented
+// code, not a fence) and a backtick-free info string for backtick fences.
 // Top-level fences only: no skill/*.md fence is nested in a list/blockquote.
 function fenceCloser(line, fence) {
-  const run = line.match(/^\s{0,3}(`{3,}|~{3,})\s*$/);
+  const run = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
   return run !== null && run[1][0] === fence.marker && run[1].length >= fence.length;
 }
 for (const file of markdownFiles) {
   const source = fs.readFileSync(file, 'utf8');
   let fence = null;
   source.split('\n').forEach((line, i) => {
-    const run = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    const run = line.match(/^ {0,3}(`{3,}|~{3,})/);
     if (fence) {
       if (fenceCloser(line, fence)) fence = null;
-    } else if (run) {
+    } else if (run && (run[1][0] === '~' || !line.slice(run[0].length).includes('`'))) {
       fence = { marker: run[1][0], length: run[1].length };
     } else if (line.includes('\\"')) {
       errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: literal \\" escape outside a fenced code block — JSON-style escape leaked into rule text`);
