@@ -280,6 +280,9 @@ function flushTableBlock() {
   tableBlock = new Map();
 }
 skillSource.forEach((line, index) => {
+  // Project convention: every trigger-table row in SKILL.md is written with a LEADING pipe,
+  // even though GFM makes outer pipes optional. This parser relies on that — a row without
+  // a leading pipe is treated as the end of the table (and skipped). Keep rows leading-pipe'd.
   if (!line.startsWith('|')) return flushTableBlock();
   const firstCell = splitTableRow(line)[0] || '';
   if (/^[\s:-]*$/.test(firstCell)) return; // header separator row
