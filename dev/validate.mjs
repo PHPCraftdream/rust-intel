@@ -296,8 +296,9 @@ function flushTableBlock() {
 // GFM §4.10: a pipe-less row stays a row of the open table (outer pipes are optional) — the
 // risk this check guards is the row escaping THIS project's leading-pipe convention and the
 // duplicate-trigger scan built on it, not GFM misparsing. A blank line, or a line starting a
-// heading, fence, blockquote, list, thematic break, indented code block (≥4 spaces or a tab:
-// cmark-gfm opens one when the container is not a paragraph, finalizing the table), or HTML
+// heading, fence, blockquote, list, thematic break, indented code block (indent reaching
+// column 4 under GFM §2.2 tab expansion: cmark-gfm opens one when the container is not a
+// paragraph, finalizing the table), or HTML
 // block, breaks the table instead of joining it as a row. Link reference definitions are
 // deliberately absent — cmark-gfm has no such block start (definitions are pulled from
 // paragraph content at finalize time; the table stays open for any line that parses as a row
@@ -305,7 +306,20 @@ function flushTableBlock() {
 // '<' deliberately over-approximates the seven GFM HTML start conditions: a pipe-less row
 // starting with '<' that is none of them (e.g. '<T as Trait>::f | …') escapes — accepted;
 // SKILL.md has no such line outside fences.
-const blockStartRe = /^(?: {4,}|\t)\S|^\s{0,3}(#{1,6}\s|```|~~~|>|[-*+]\s|\d{1,9}[.)]\s|((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$|<)/;
+// Indented code: compare by effective column, not raw prefix shape — GFM §2.2 expands a tab
+// to the next 4-column stop, so '  \tcode' reaches column 4 with no 4-space literal prefix.
+function reachesIndentedCodeColumn(line) {
+  let column = 0;
+  for (let i = 0; i < line.length; i += 1) {
+    if (line[i] === ' ') column += 1;
+    else if (line[i] === '\t') column += 4 - (column % 4);
+    else return column >= 4;
+  }
+  return false;
+}
+// Empty ATX headings ('#' through '######'), empty list items ('-', '*', '+', '1.', '1)') are
+// valid block starts too: the marker may be followed by end-of-line, not only whitespace.
+const blockStartRe = /^\s{0,3}(#{1,6}(?:\s|$)|```|~~~|>|[-*+](?:\s|$)|\d{1,9}[.)](?:\s|$)|((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$|<)/;
 // Delimiter row: ≥2 cells, each only hyphens with an optional leading/trailing colon (GFM
 // §4.10). A lone '---' is a thematic break (or setext underline), never a delimiter, and this
 // project's tables all have ≥2 columns.
@@ -360,7 +374,7 @@ skillSource.forEach((line, index) => {
     return;
   }
   const trimmed = line.trim();
-  if (trimmed === '' || blockStartRe.test(line)) return flushTableBlock();
+  if (trimmed === '' || reachesIndentedCodeColumn(line) || blockStartRe.test(line)) return flushTableBlock();
   if (tableState === 'body') {
     errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so a pipe-less line still parses as a row of the open table; the risk is that it escapes this project's leading-pipe convention and the duplicate-trigger scan built on it)`);
     return flushTableBlock();
@@ -470,13 +484,27 @@ for (const rel of canonicalFiles) {
 
 // A literal `\"` in rule text is a JSON-string escape that leaked through the apply path:
 // CommonMark processes no backslash escapes inside code spans, so a shipped manifest recipe
-// reads invalid TOML. Zero legitimate occurrences today — reject outside fences.
+// reads invalid TOML. Zero legitimate occurrences today — reject outside fences. Fence state
+// tracks the opener's marker char and length (GFM §4.5: a closer repeats the same marker at
+// >= the opener's length, followed only by spaces) — a blind boolean toggle wrongly "closes"
+// a 4-backtick fence on a 3-backtick line, flagging escapes that are still inside code.
+// Top-level fences only: no skill/*.md fence is nested in a list/blockquote.
+function fenceCloser(line, fence) {
+  const run = line.match(/^\s{0,3}(`{3,}|~{3,})\s*$/);
+  return run !== null && run[1][0] === fence.marker && run[1].length >= fence.length;
+}
 for (const file of markdownFiles) {
   const source = fs.readFileSync(file, 'utf8');
-  let inFence = false;
+  let fence = null;
   source.split('\n').forEach((line, i) => {
-    if (/^\s{0,3}(?:```|~~~)/.test(line)) inFence = !inFence;
-    else if (!inFence && line.includes('\\"')) errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: literal \\" escape outside a fenced code block — JSON-style escape leaked into rule text`);
+    const run = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      if (fenceCloser(line, fence)) fence = null;
+    } else if (run) {
+      fence = { marker: run[1][0], length: run[1].length };
+    } else if (line.includes('\\"')) {
+      errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: literal \\" escape outside a fenced code block — JSON-style escape leaked into rule text`);
+    }
   });
 }
 

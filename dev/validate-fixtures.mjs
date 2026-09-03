@@ -2,10 +2,11 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: twelve hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: seventeen hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the leading-pipe table convention across
-// body/header/delimiter rows in three GFM-legal width variants, and block-level quiet/flag probes
-// after a table), thirteen rule-text presence controls (see ruleTextControls below), and two
+// body/header/delimiter rows in three GFM-legal width variants, block-level quiet/flag probes
+// after a table — including empty heading/list and tab-expanded-indent boundaries — and
+// escape-guard fence-state probes), thirteen rule-text presence controls (see ruleTextControls below), and two
 // crude source probes (B5/B26). They verify that the seed still discriminates
 // positive from negative and that the categories it cites still exist and are still routed —
 // nothing more. They are NOT a recall measurement of the audit, and the rule-text controls pin
@@ -347,6 +348,45 @@ for (const [name, inserted, mustPass] of [
   if (result.skipped) failures.push(`SKILL.md ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe line after`);
   else if (mustPass && result.status !== 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs flagged a GFM block-level start (${name}) immediately after a table as a pipe-less table row — got: ${result.output.trim()}`);
   else if (!mustPass && (result.status === 0 || !result.output.includes('missing its leading `|`'))) failures.push(`SKILL.md ${name} control: dev/validate.mjs did not flag a pipe-less ${name} row directly after a table as a missing-leading-pipe row (a link reference definition is not a GFM block start) — got: ${result.output.trim()}`);
+}
+
+// Controls 13-15: valid GFM block starts the old allowlist missed — an empty ATX heading
+// (marker with nothing after it), an empty list item (marker then end-of-line), and
+// indentation reaching column 4 through tab expansion (GFM §2.2) — all terminate an open
+// table and must stay quiet, not be flagged as pipe-less rows.
+for (const [name, inserted] of [
+  ['empty-ATX-heading', '#'],
+  ['empty-list-item', '-'],
+  ['tab-expanded-indented-code', '  \tindented probe'],
+]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = original.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = original.indexOf('\n', at);
+    return original.slice(0, lineEnd + 1) + inserted + original.slice(lineEnd);
+  });
+  if (result.skipped) failures.push(`SKILL.md ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe line after`);
+  else if (result.status !== 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs flagged a GFM block-level start (${name}) immediately after a table as a pipe-less table row — got: ${result.output.trim()}`);
+}
+
+// Controls 16-17: the `\"` guard's fence state must track the opener's marker + length
+// (GFM §4.5), not toggle on any fence-looking line — a 3-backtick line inside a 4-backtick
+// fence and a ~~~ line inside a backtick fence are content, so an `\"` after them is still
+// inside code and must stay unflagged.
+for (const [name, fenceLines] of [
+  ['4-backtick-fence-3-backtick-content', ['````md', 'let recipe = "a";', '```', 'let escaped = "x \\" y";', '````']],
+  ['backtick-fence-tilde-content', ['```md', '~~~', 'let escaped = "x \\" y";', '```']],
+]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = original.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = original.indexOf('\n', at);
+    return original.slice(0, lineEnd + 1) + fenceLines.join('\n') + original.slice(lineEnd);
+  });
+  if (result.skipped) failures.push(`escape-guard ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe lines after`);
+  else if (result.status !== 0) failures.push(`escape-guard ${name} control: dev/validate.mjs rejected an \\" escape sitting inside a still-open fence (${name}) — got: ${result.output.trim()}`);
 }
 
 // Rule-text presence controls for the corrected high-risk rules: a revert of the correction in
