@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Repository-level regression checks. Zero dependencies; run with Node >= 16.
+// Repository-level regression checks. Zero dependencies; run with Node >= 16.7.0 (dev/validate-fixtures.mjs uses fs.cpSync).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -228,11 +228,12 @@ for (const file of new Set(categoryCountMentions.map((mention) => mention.file))
   // scan to the top banner paragraph — the one place README.md asserts the CURRENT count — so
   // accurate history and unrelated prose can't be mistaken for a stale mention.
   const bannerText = file === 'README.md' ? (fileText.split('# rust-intel')[1] || '').split('## What this is')[0] : fileText;
-  // Strip Markdown bold markers before matching: "**58** categories" has `**` sitting between the
-  // digit and the required whitespace, which the `\d+\s+categories` pattern below cannot cross —
-  // an emphasized stale count would otherwise slip past silently. `**` carries no meaning for this
-  // check either way, so stripping it never hides a genuine mismatch.
-  const scanText = bannerText.replace(/\*\*/g, '');
+  // Strip Markdown emphasis/code delimiters before matching: "**58**"/"__58__"/"*58*"/"_58_"/
+  // "`58`" categories all have wrapper characters sitting between the digit and the required
+  // whitespace, which the `\d+\s+categories` pattern below cannot cross — an emphasized or
+  // code-formatted stale count would otherwise slip past silently. None of `*`, `_`, or `` ` ``
+  // carries meaning for this check either way, so stripping them never hides a genuine mismatch.
+  const scanText = bannerText.replace(/[*_`]/g, '');
   categoryCountFileTexts.set(file, scanText);
 }
 for (const [file, text] of categoryCountFileTexts) {

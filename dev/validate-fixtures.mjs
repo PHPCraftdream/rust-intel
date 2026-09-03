@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
+// Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
 // Scope, stated honestly: these are two hand-written controls and two crude source probes. They
 // verify that the seed still discriminates positive from negative and that the categories it
@@ -67,8 +68,49 @@ for (const [category, moduleFile] of Object.entries(moduleFor)) {
 // kill, machine loss, or a crash between the write and the restore (reproduced: an interrupted run
 // left `README.md` modified and `git status` dirty). A stray temp directory left behind by an
 // interruption here is harmless OS clutter, never a dirty tracked file.
+// `os.tmpdir()` can itself resolve to a path inside the repo (a project-local TEMP/TMP override —
+// a supported, real dev/CI configuration, reproduced: with both set to `$repo/.round8-tmp`,
+// `fs.cpSync(root, tmpRoot)` throws ERR_FS_CP_EINVAL because it refuses to copy a directory into
+// its own subdirectory). Detect that case and fall back to a sibling of the repo root instead,
+// which cannot be nested inside it.
+//
+// The containment check itself must compare PHYSICAL paths, not lexical ones: a `TEMP`/`TMP` that
+// points at a junction (Windows) or symlink whose real target sits inside the repo passes a bare
+// `path.resolve()` prefix check (the alias path string doesn't textually start with the repo path)
+// while `fs.cpSync` still walks the same physical directory tree `fs.cpSync` is about to copy from
+// — reproduced: aliasing `TEMP` to a junction pointing at a directory inside the repo recursively
+// self-copies under the lexical-only check. `fs.realpathSync.native` resolves the actual
+// filesystem target (following symlinks/junctions) before the containment comparison runs.
+function resolvePhysical(p) {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function isInside(candidate, ancestor) {
+  const withSep = (p) => (p.endsWith(path.sep) ? p : p + path.sep);
+  // Windows paths are case-insensitive; realpathSync.native does not normalize case for us.
+  const norm = (p) => (process.platform === 'win32' ? withSep(p).toLowerCase() : withSep(p));
+  return norm(candidate).startsWith(norm(ancestor));
+}
+
+function makeTempRootOutside(sourceRoot) {
+  const sourcePhysical = resolvePhysical(sourceRoot);
+  const osTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'rust-intel-validate-'));
+  const osTempPhysical = resolvePhysical(osTemp);
+  if (!isInside(osTempPhysical, sourcePhysical) && !isInside(sourcePhysical, osTempPhysical)) return osTemp;
+  fs.rmSync(osTemp, { recursive: true, force: true });
+  const sibling = fs.mkdtempSync(path.join(path.dirname(sourceRoot), '.rust-intel-validate-'));
+  const siblingPhysical = resolvePhysical(sibling);
+  if (!isInside(siblingPhysical, sourcePhysical) && !isInside(sourcePhysical, siblingPhysical)) return sibling;
+  fs.rmSync(sibling, { recursive: true, force: true });
+  throw new Error(`could not find a temp root physically outside ${sourcePhysical} — both os.tmpdir() and the sibling-of-repo fallback resolve inside it`);
+}
+
 function runValidateAgainstMutatedCopy(mutateReadme) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rust-intel-validate-'));
+  const tmpRoot = makeTempRootOutside(root);
   try {
     fs.cpSync(root, tmpRoot, {
       recursive: true,
@@ -117,6 +159,61 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
   if (result.skipped) failures.push('README.md coexistence control: could not find the banner sentence to append a stale mention after');
   else if (result.status === 0) failures.push('README.md coexistence control: dev/validate.mjs still passed with a correct **N** banner alongside a coexisting stale **N-1** categories mention (Markdown-emphasis false negative)');
   else if (!result.output.includes('README.md')) failures.push(`README.md coexistence control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
+}
+
+// Control 3: same coexistence shape as Control 2, but with the stale mention wrapped in
+// underscore-emphasis (`__58__`) instead of `**58**` — proves the scanner strips more than one
+// Markdown wrapper form, not just the one form Control 2 happens to use.
+{
+  const result = runValidateAgainstMutatedCopy((original) => {
+    const m = original.match(/Numbered categories now \*\*(\d+)\*\*/);
+    if (!m) return null;
+    const staleCount = Number.parseInt(m[1], 10) - 1;
+    return original.replace(m[0], `${m[0]} Temporary probe: __${staleCount}__ categories.`);
+  });
+  if (result.skipped) failures.push('README.md underscore-coexistence control: could not find the banner sentence to append a stale mention after');
+  else if (result.status === 0) failures.push('README.md underscore-coexistence control: dev/validate.mjs still passed with a correct **N** banner alongside a coexisting stale __N-1__ categories mention (Markdown-emphasis false negative)');
+  else if (!result.output.includes('README.md')) failures.push(`README.md underscore-coexistence control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
+}
+
+// Control 4: TEMP/TMP resolves — via a symlink on POSIX, a junction on Windows — to a directory
+// whose PHYSICAL target sits inside the repo, even though the alias's own (lexical) path does not.
+// This is the exact bypass a `path.resolve()`-only containment check misses: reproduced by pointing
+// `TEMP` at a junction whose real target is `root/.rust-intel-validate-junction-target-*`, which
+// `makeTempRootOutside`'s physical-path check (via `fs.realpathSync.native`) must route around.
+{
+  const restoreEnv = (name, value) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  const aliasPath = fs.mkdtempSync(path.join(os.tmpdir(), 'rust-intel-validate-alias-'));
+  fs.rmSync(aliasPath, { recursive: true, force: true }); // symlinkSync requires the link path to not exist yet
+  const physicalTarget = fs.mkdtempSync(path.join(root, '.rust-intel-validate-junction-target-'));
+  const prevTemp = process.env.TEMP;
+  const prevTmp = process.env.TMP;
+  let tmpRootFromAlias = null;
+  try {
+    fs.symlinkSync(physicalTarget, aliasPath, 'junction'); // 'junction' type is Windows-only, ignored (plain symlink) elsewhere
+    process.env.TEMP = aliasPath;
+    process.env.TMP = aliasPath;
+    tmpRootFromAlias = makeTempRootOutside(root);
+    const resolvedTmpRoot = resolvePhysical(tmpRootFromAlias);
+    const resolvedRoot = resolvePhysical(root);
+    if (isInside(resolvedTmpRoot, resolvedRoot)) {
+      failures.push(`junction/symlink alias control: makeTempRootOutside returned ${tmpRootFromAlias} (physically ${resolvedTmpRoot}), which is still inside the repo (${resolvedRoot}) despite the alias's own lexical path pointing outside it`);
+    }
+  } catch (e) {
+    // Creating a directory symlink/junction can fail on a locked-down environment (e.g. a
+    // Windows account without SeCreateSymbolicLinkPrivilege and no Developer Mode). That is an
+    // environment limitation, not evidence the fix works — skip rather than false-pass.
+    console.log(`(skipped junction/symlink alias control: could not create the alias — ${e.message})`);
+  } finally {
+    restoreEnv('TEMP', prevTemp);
+    restoreEnv('TMP', prevTmp);
+    if (tmpRootFromAlias) fs.rmSync(tmpRootFromAlias, { recursive: true, force: true });
+    fs.rmSync(aliasPath, { recursive: true, force: true });
+    fs.rmSync(physicalTarget, { recursive: true, force: true });
+  }
 }
 
 for (const fixture of cases) {

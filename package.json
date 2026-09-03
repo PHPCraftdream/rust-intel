@@ -21,7 +21,7 @@
     "validate": "node dev/validate.mjs && node dev/validate-fixtures.mjs"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=16.7.0"
   },
   "repository": {
     "type": "git",
