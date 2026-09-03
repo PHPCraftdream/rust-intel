@@ -295,11 +295,17 @@ function flushTableBlock() {
 }
 // GFM §4.10: a pipe-less row stays a row of the open table (outer pipes are optional) — the
 // risk this check guards is the row escaping THIS project's leading-pipe convention and the
-// duplicate-trigger scan built on it, not GFM misparsing. §4.1–4.8: a blank line, or a line
-// starting a heading, fence, blockquote, list, thematic break, HTML block (all seven GFM start
-// conditions begin with '<' after ≤3 spaces of indent), or a link reference definition
-// ('[label]:', also ≤3 spaces), breaks the table instead of joining it as a row.
-const blockStartRe = /^\s{0,3}(#{1,6}\s|```|~~~|>|[-*+]\s|\d{1,9}[.)]\s|((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$|<|\[[^\]]*\]:)/;
+// duplicate-trigger scan built on it, not GFM misparsing. A blank line, or a line starting a
+// heading, fence, blockquote, list, thematic break, indented code block (≥4 spaces or a tab:
+// cmark-gfm opens one when the container is not a paragraph, finalizing the table), or HTML
+// block, breaks the table instead of joining it as a row. Link reference definitions are
+// deliberately absent — cmark-gfm has no such block start (definitions are pulled from
+// paragraph content at finalize time; the table stays open for any line that parses as a row
+// with n_columns ≥ 1), so a pipe-less '[label]:' line is a one-cell row and MUST be flagged.
+// '<' deliberately over-approximates the seven GFM HTML start conditions: a pipe-less row
+// starting with '<' that is none of them (e.g. '<T as Trait>::f | …') escapes — accepted;
+// SKILL.md has no such line outside fences.
+const blockStartRe = /^(?: {4,}|\t)\S|^\s{0,3}(#{1,6}\s|```|~~~|>|[-*+]\s|\d{1,9}[.)]\s|((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$|<)/;
 // Delimiter row: ≥2 cells, each only hyphens with an optional leading/trailing colon (GFM
 // §4.10). A lone '---' is a thematic break (or setext underline), never a delimiter, and this
 // project's tables all have ≥2 columns.
@@ -333,7 +339,7 @@ skillSource.forEach((line, index) => {
         if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
         tableState = 'body';
       }
-      else if (tableState !== 'body') { // cell-count mismatch: GFM §4.10 — no table recognized
+      else if (tableState !== 'body') { // count mismatch with the pending piped row: that row was a paragraph, and cmark-gfm takes a table's header from the paragraph's last line — which can be this delimiter-shaped line itself, so promote it
         tableState = 'header';
         headerHadPipe = true;
         headerCells = cells.length;
@@ -373,9 +379,11 @@ skillSource.forEach((line, index) => {
     return flushTableBlock(); // cell-count mismatch: GFM recognizes no table — the pending row was a paragraph
   }
   if (tableState === 'header') {
-    // A pipe-less non-delimiter line directly under a pending pipe row: per GFM that pending
-    // row was a paragraph, never a table header — not a violation.
-    return flushTableBlock();
+    // A pipe-less non-delimiter line directly under a pending piped row: that pending row was
+    // a paragraph, never a table header — not a violation. Flush it, but keep scanning THIS
+    // line: cmark-gfm takes a table's header from the paragraph's last line, so this pipe-less
+    // line may itself be the header of a table confirmed below.
+    flushTableBlock();
   }
   if (cells.length >= 2 && line.includes('|')) {
     // A multi-cell pipe-less line outside any table is a row that may be waiting for the
@@ -459,6 +467,19 @@ if (JSON.stringify(canonicalFiles) !== JSON.stringify(codexFiles)) errors.push('
 for (const rel of canonicalFiles) {
   if (fs.readFileSync(path.join(canonicalSkill, rel), 'utf8') !== fs.readFileSync(path.join(codexSkill, rel), 'utf8')) errors.push(`Codex skill mirror is out of sync: ${rel}`);
 }
+
+// A literal `\"` in rule text is a JSON-string escape that leaked through the apply path:
+// CommonMark processes no backslash escapes inside code spans, so a shipped manifest recipe
+// reads invalid TOML. Zero legitimate occurrences today — reject outside fences.
+for (const file of markdownFiles) {
+  const source = fs.readFileSync(file, 'utf8');
+  let inFence = false;
+  source.split('\n').forEach((line, i) => {
+    if (/^\s{0,3}(?:```|~~~)/.test(line)) inFence = !inFence;
+    else if (!inFence && line.includes('\\"')) errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: literal \\" escape outside a fenced code block — JSON-style escape leaked into rule text`);
+  });
+}
+
 // RUST_INTEL_SKIP_NESTED_FIXTURES breaks a self-spawn cycle: validate-fixtures.mjs's README.md
 // negative control spawns this script against a deliberately mutated repo state to prove the
 // category-count check fails — and this script would otherwise spawn validate-fixtures.mjs right

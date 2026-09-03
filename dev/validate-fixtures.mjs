@@ -2,10 +2,11 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: seven hand-written controls (README count wrong-value + two coexistence
-// variants, a temp-path junction/symlink alias, and the leading-pipe table convention in three
-// GFM-legal width variants), two rule-text presence controls (§B2 map-guard types, §B14 JoinSet
-// cap), and two crude source probes (B5/B26). They verify that the seed still discriminates
+// Scope, stated honestly: twelve hand-written controls (README count wrong-value + two coexistence
+// variants, a temp-path junction/symlink alias, the leading-pipe table convention across
+// body/header/delimiter rows in three GFM-legal width variants, and block-level quiet/flag probes
+// after a table), thirteen rule-text presence controls (see ruleTextControls below), and two
+// crude source probes (B5/B26). They verify that the seed still discriminates
 // positive from negative and that the categories it cites still exist and are still routed —
 // nothing more. They are NOT a recall measurement of the audit, and the rule-text controls pin
 // greppable API/type signatures, not whole paragraphs: pinning prose in CI turns every legitimate
@@ -136,9 +137,9 @@ const validateInputs = [
   'examples/fixtures/cases.json',
 ];
 
-// Optional validator inputs: dev/validate.mjs reads .app.json/.mcp.json only when plugin.json
-// declares apps/mcpServers, so they may legitimately not exist — copy them only when present or
-// every mutated-copy control would diverge from the real repo once a manifest starts using them.
+// Optional validator inputs: dev/validate.mjs only checks the EXISTENCE of .app.json/.mcp.json
+// when plugin.json declares apps/mcpServers (it never reads them) — copy them only when present
+// or a mutated copy could pass/fail the existence check differently from the real repo.
 const optionalValidateInputs = ['.app.json', '.mcp.json'];
 
 function runValidateAgainstMutatedFiles(relativePaths, mutate) {
@@ -305,10 +306,11 @@ for (const [name, mutateRow] of [
   else if (!result.output.includes('missing its leading `|`')) failures.push(`SKILL.md ${name} leading-pipe control: dev/validate.mjs failed but its output did not name the missing leading \`|\` — got: ${result.output.trim()}`);
 }
 
-// Controls 8-11 (round-14): a table's HEADER row and DELIMITER row can lose their leading pipe
-// too — both were invisible to the old two-variable state machine — while GFM block-level
-// starts that immediately follow a table (HTML blocks, link reference definitions) are NOT rows
-// and must stay quiet.
+// Controls 8-12: a table's HEADER row and DELIMITER row can lose their leading pipe too — both
+// were invisible to the old two-variable state machine — while lines that immediately follow a
+// table split two ways: a GFM block-level start (HTML block, ≥4-space indented code block) is
+// NOT a row and must stay quiet, but a link reference definition is NOT a block start (a
+// pipe-less '[x]:' line is a one-cell row) and must be flagged like any pipe-less row.
 for (const [name, marker] of [
   ['header-row', '| Code pattern in user input | Activates |'],
   ['delimiter-row', '|---|---|'],
@@ -330,9 +332,10 @@ for (const [name, marker] of [
   else if (expectedLine !== -1 && !result.output.includes(`skill/SKILL.md:${expectedLine}:`)) failures.push(`SKILL.md ${name} leading-pipe control: dev/validate.mjs cited the wrong line for the ${name} — expected skill/SKILL.md:${expectedLine}, got: ${result.output.trim()}`);
 }
 
-for (const [name, inserted] of [
-  ['HTML-block-start', '<div>probe</div>'],
-  ['link-reference-definition', '[probe]: https://example.invalid/x'],
+for (const [name, inserted, mustPass] of [
+  ['HTML-block-start', '<div>probe</div>', true],
+  ['indented-code-start', '    indented code probe', true],
+  ['link-reference-definition', '[x]: https://example.invalid/x', false],
 ]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
     const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
@@ -341,8 +344,9 @@ for (const [name, inserted] of [
     const lineEnd = original.indexOf('\n', at);
     return original.slice(0, lineEnd + 1) + inserted + original.slice(lineEnd);
   });
-  if (result.skipped) failures.push(`SKILL.md ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the block-start line after`);
-  else if (result.status !== 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs flagged a GFM block-level start (${name}) immediately after a table as a pipe-less table row — got: ${result.output.trim()}`);
+  if (result.skipped) failures.push(`SKILL.md ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe line after`);
+  else if (mustPass && result.status !== 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs flagged a GFM block-level start (${name}) immediately after a table as a pipe-less table row — got: ${result.output.trim()}`);
+  else if (!mustPass && (result.status === 0 || !result.output.includes('missing its leading `|`'))) failures.push(`SKILL.md ${name} control: dev/validate.mjs did not flag a pipe-less ${name} row directly after a table as a missing-leading-pipe row (a link reference definition is not a GFM block start) — got: ${result.output.trim()}`);
 }
 
 // Rule-text presence controls for the corrected high-risk rules: a revert of the correction in
@@ -370,12 +374,16 @@ const ruleTextControls = [
   { name: 'C12 either-defense catalog row (skill/deps-macros-ergonomics.md)', file: 'skill/deps-macros-ergonomics.md', rowAnchor: 'Markdown rendering of untrusted content', require: ['either drop', '`Html`/`InlineHtml` events or'] },
   { name: 'F1 decode-observable corpus oracle (skill/semantics-and-conformance.md §F1)', file: 'skill/semantics-and-conformance.md', section: '## §F1.', require: ['finite graph of distinct serialized type/variant definitions', 'two representatives, not every runtime depth', 'decode-observable, not typed-value-level', 'schema-mutation negative control'] },
   { name: 'F1 corpus trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'golden-bytes decode **corpus**', require: ['finite graph of distinct serialized type/variant definitions', 'two representatives, not every runtime depth', 'decode-observable, not typed-value-level', 'schema-mutation negative control'] },
+  { name: 'B12 Argon2/OsRng feature obligations (skill/security.md §B12)', file: 'skill/security.md', section: '## §B12.', require: ['State both obligations', 'getrandom` feature for `OsRng` to source entropy'] },
+  { name: 'B12 clean-TOML recipe row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'store a password', require: ['rand_core = { version = "0.6", features = ["getrandom"] }', 'two feature obligations, not one'] },
+  { name: 'B1a out-parameter cache witness (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'Show the caller for the §B1a laundering shape', require: ['fn remember', 'captured into a longer-lived cache/container that outlives the call'] },
+  { name: 'B13 pure-reader exemption (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'pure reader that makes no check-then-act decision', require: ['need not hold the same guard'] },
 ];
 for (const control of ruleTextControls) {
   const text = fs.readFileSync(path.join(root, control.file), 'utf8');
   const scoped = control.section ? sectionOf(text, control.section) : control.rowAnchor ? rowOf(text, control.rowAnchor) : text;
   for (const token of control.require || []) {
-    if (!scoped.includes(token)) failures.push(`${control.name}: required signature "${token}" absent — the round-13 correction looks reverted or reworded past its greppable signature`);
+    if (!scoped.includes(token)) failures.push(`${control.name}: required signature "${token}" absent — the correction this control pins looks reverted or reworded past its greppable signature`);
   }
   for (const token of control.forbid || []) {
     if (scoped.includes(token)) failures.push(`${control.name}: forbidden signature "${token}" present — the corrected rule text looks reverted`);
