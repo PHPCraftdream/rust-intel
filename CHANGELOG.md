@@ -58,6 +58,8 @@ This release also closes out two prior commits that shipped without a changelog 
 
 **Rounds 20–21 close the two validator-conformance P3 findings identified in round 20 and carried into round 21.** No new category, no BANNED/REQUIRED shape change — **PATCH**-shaped. The shared `isFenceOpener(line)` predicate applies GFM §4.5's backtick-info restriction to table-boundary detection, and table delimiter normalization now matches cmark-gfm's `[ \t\v\f]` class instead of Unicode-wide `trim()`, so NBSP does not turn ordinary prose into a table. See `docs/reviews/latest-commits-review-round-20-2026-09-04-1206.md` findings 1–2 and `docs/reviews/latest-commits-review-round-21-2026-09-04-1228.md` carried P3 findings 1–2.
 
+**The post-`a28b905` HS review-cycle closes these validator-conformance classes:** fenced-content suppression; CRLF/lone-CR parsing; optional leading pipes with 0–3 spaces; paragraph-aware interruption; escaped-pipe backslash parity; duplicate signatures only for confirmed tables; and branch-complete NBSP rollback controls. No new category, no BANNED/REQUIRED shape change — **PATCH**-shaped. This is a closure-scope record; it does not assert test results or a new commit.
+
 ## [0.6.0] — 2026-08-19
 
 **New category: §C12/§C12a — reinventing a solved problem instead of reaching for a world-recognized crate.** **MINOR:** a new numbered category (with a lettered infrastructure-tier sub-section), a new §A1 bullet, two trigger rows, one 🔴 escalation. Numbered category count **58 → 59**.

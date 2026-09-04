@@ -260,24 +260,58 @@ for (const [file, text] of categoryCountFileTexts) {
 function trimGfmTableSpace(text) {
   return text.replace(/^[ \t\v\f]+|[ \t\v\f]+$/g, '');
 }
-function splitTableRow(line) {
+function splitGfmLines(source) {
+  // Markdown parsers normalize CRLF and lone CR before block scanning.  Do the same here so
+  // line-oriented predicates (especially fence closers) do not depend on the checkout's EOL.
+  return source.replace(/\r\n?/g, '\n').split('\n');
+}
+function isAsciiPunctuation(character) {
+  return character.length === 1 && /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.test(character);
+}
+function isEscapedChar(text, index) {
+  if (!isAsciiPunctuation(text[index])) return false;
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) backslashes += 1;
+  return backslashes % 2 === 1;
+}
+function splitTableCells(text) {
   const cells = [];
   let current = '';
-  for (let i = 1; i < line.length; i += 1) {
-    if (line[i] === '\\' && line[i + 1] === '|') {
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '|' && isEscapedChar(text, i)) {
+      // A backslash escapes one ASCII punctuation character.  Remove that escape slash while
+      // retaining any preceding slashes: `\|` is content, `\\|` is a delimiter, and the same
+      // odd/even rule applies to longer runs.
+      if (current.endsWith('\\')) current = current.slice(0, -1);
       current += '|';
-      i += 1;
-    } else if (line[i] === '|') {
+    } else if (text[i] === '|') {
       cells.push(current);
       current = '';
     } else {
-      current += line[i];
+      current += text[i];
     }
   }
   if (trimGfmTableSpace(current) !== '') cells.push(current);
   return cells;
 }
-const skillSource = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8').split('\n');
+function tableRowView(line, paragraphContinuation = false) {
+  // A paragraph's first line permits only three spaces of indentation. Once a paragraph is
+  // already open, cmark strips the full leading space/tab prefix from continuation lines (an
+  // indented-code-looking line cannot interrupt that paragraph). Keep those two parser views
+  // distinct; the raw first column is still used for this project's leading-pipe convention.
+  const indent = (paragraphContinuation ? line.match(/^[ \t]*/) : line.match(/^ {0,3}/))[0].length;
+  const parserLeadingPipe = line[indent] === '|';
+  const text = line.slice(indent + (parserLeadingPipe ? 1 : 0));
+  const cells = splitTableCells(text).map(trimGfmTableSpace);
+  return {
+    cells,
+    parserLeadingPipe,
+    // GFM permits 0–3 spaces before the optional outer pipe.  The project's convention is
+    // intentionally stricter: it checks the raw first column, hence `   | a | b |` is diagnosed.
+    rawLeadingPipe: line.startsWith('|'),
+  };
+}
+const skillSource = splitGfmLines(fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8'));
 let tableBlock = new Map();
 // Three-state table machine: 'none' -> 'header' (a row that could be a table header is pending,
 // waiting for the delimiter row that confirms a real table) -> 'body'. The old two-variable
@@ -289,6 +323,8 @@ let tableState = 'none';
 let headerHadPipe = false;
 let headerCells = 0;
 let headerLine = 0; // 1-based line of the pending header candidate — errors about IT must cite this, not the confirming delimiter's line
+let pendingSignature = '';
+let pendingSignatureLine = 0;
 function flushTableBlock() {
   for (const [signature, lines] of tableBlock) {
     if (lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${signature}] at lines ${lines.join(', ')}`);
@@ -298,6 +334,25 @@ function flushTableBlock() {
   headerHadPipe = false;
   headerCells = 0;
   headerLine = 0;
+  pendingSignature = '';
+  pendingSignatureLine = 0;
+}
+function signatureForRow(cells) {
+  const firstCell = cells[0] || '';
+  return [...new Set([...firstCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]))].sort().join(' + ');
+}
+function rememberSignature(signature, line) {
+  if (!signature) return;
+  if (!tableBlock.has(signature)) tableBlock.set(signature, []);
+  tableBlock.get(signature).push(line);
+}
+function setPendingHeader(row, line) {
+  tableState = 'header';
+  headerHadPipe = row.rawLeadingPipe;
+  headerCells = row.cells.length;
+  headerLine = line;
+  pendingSignature = signatureForRow(row.cells);
+  pendingSignatureLine = line;
 }
 // GFM §4.10: a pipe-less row stays a row of the open table (outer pipes are optional) — the
 // risk this check guards is the row escaping THIS project's leading-pipe convention and the
@@ -338,68 +393,96 @@ const blockStartRe = /^ {0,3}(#{1,6}(?:[ \t]|$)|>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?
 // Delimiter row: ≥2 cells, each only hyphens with an optional leading/trailing colon (GFM
 // §4.10). A lone '---' is a thematic break (or setext underline), never a delimiter, and this
 // project's tables all have ≥2 columns.
-function splitRowCells(line) {
-  const from = line.startsWith('|') ? 1 : 0;
-  const cells = [];
-  let current = '';
-  for (let i = from; i < line.length; i += 1) {
-    if (line[i] === '\\' && line[i + 1] === '|') {
-      current += '|';
-      i += 1;
-    } else if (line[i] === '|') {
-      cells.push(current);
-      current = '';
-    } else {
-      current += line[i];
-    }
-  }
-  cells.push(current);
-  if (cells.length > 1 && trimGfmTableSpace(cells[cells.length - 1]) === '') cells.pop(); // trailing pipe, same as splitTableRow
-  return cells.map(trimGfmTableSpace);
-}
 function isDelimiterRow(cells) {
   return cells.length >= 2 && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
+function orderedListStart(line) {
+  const match = line.match(/^ {0,3}(\d{1,9})[.)](?:[ \t]|$)/);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+function isBlankListItem(line) {
+  return /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]*$/.test(line);
+}
+function isBlockStart(line) {
+  return reachesIndentedCodeColumn(line) || isFenceOpener(line) || blockStartRe.test(line);
+}
+function interruptsPendingParagraph(line) {
+  // CommonMark/GFM block interruption: indented code cannot interrupt a paragraph; an ordered
+  // list may do so only when it starts at 1; and an empty list item cannot interrupt one.
+  if (reachesIndentedCodeColumn(line) || isBlankListItem(line)) return false;
+  const start = orderedListStart(line);
+  return start === null || start === 1;
+}
+let tableFence = null;
 skillSource.forEach((line, index) => {
-  if (line.startsWith('|')) {
-    const cells = splitTableRow(line);
-    if (isDelimiterRow(cells.map(trimGfmTableSpace))) {
-      if (tableState === 'header' && headerCells === cells.length) {
-        if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
-        tableState = 'body';
-      }
-      else if (tableState !== 'body') { // count mismatch with the pending piped row: that row was a paragraph, and cmark-gfm takes a table's header from the paragraph's last line — which can be this delimiter-shaped line itself, so promote it
-        tableState = 'header';
-        headerHadPipe = true;
-        headerCells = cells.length;
-        headerLine = index + 1;
-      }
-    } else if (tableState !== 'body') {
-      if (tableState === 'none') flushTableBlock(); // fresh candidate: dedup scope restarts
-      tableState = 'header';
-      headerHadPipe = true;
-      headerCells = cells.length;
-      headerLine = index + 1;
-    }
-    const firstCell = cells[0] || '';
-    const signature = [...new Set([...firstCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]))].sort().join(' + ');
-    if (!signature) return; // prose-only trigger cell (no inline code) — mechanical dedup doesn't cover it
-    if (!tableBlock.has(signature)) tableBlock.set(signature, []);
-    tableBlock.get(signature).push(index + 1);
+  if (tableFence) {
+    if (fenceCloser(line, tableFence)) tableFence = null;
     return;
   }
-  if (/^[ \t]*$/.test(line) || reachesIndentedCodeColumn(line) || isFenceOpener(line) || blockStartRe.test(line)) return flushTableBlock();
+  const opener = isFenceOpener(line);
+  if (opener) {
+    flushTableBlock();
+    tableFence = opener;
+    return;
+  }
+  const row = tableRowView(line);
+  if (row.parserLeadingPipe) {
+    const { cells } = row;
+    let confirmedDelimiter = false;
+    if (isDelimiterRow(cells)) {
+      if (tableState === 'header' && headerCells === cells.length) {
+        confirmedDelimiter = true;
+        rememberSignature(pendingSignature, pendingSignatureLine);
+        if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
+        tableState = 'body';
+        pendingSignature = '';
+        pendingSignatureLine = 0;
+      }
+      else if (tableState !== 'body') { // count mismatch with the pending piped row: that row was a paragraph, and cmark-gfm takes a table's header from the paragraph's last line — which can be this delimiter-shaped line itself, so promote it
+        setPendingHeader(row, index + 1);
+      }
+    } else if (tableState !== 'body') {
+      // A pending candidate is only provisional.  Replacing it must discard its signature until
+      // a matching delimiter confirms the new header.
+      setPendingHeader(row, index + 1);
+    } else {
+      rememberSignature(signatureForRow(cells), index + 1);
+    }
+    if (!row.rawLeadingPipe && tableState === 'body') {
+      if (confirmedDelimiter) errors.push(`skill/SKILL.md:${index + 1}: table delimiter row missing its leading \`|\` — project convention: the delimiter row is written with a leading pipe like every other trigger-table row`);
+      else errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so a pipe-less line still parses as a row of the open table; the risk is that it escapes this project's leading-pipe convention and the duplicate-trigger scan built on it)`);
+      flushTableBlock();
+    }
+    return;
+  }
+  const blankLine = /^[ \t]*$/.test(line);
+  if (blankLine || isBlockStart(line)) {
+    // A block start always ends an already-open table body. In contrast, indented code and an
+    // ordered list not starting at 1 (including an empty list item) cannot interrupt a pending
+    // paragraph, so they replace its provisional header with the paragraph's latest line.
+    if (tableState === 'body' || tableState === 'none' || blankLine || interruptsPendingParagraph(line)) {
+      flushTableBlock();
+    } else {
+      setPendingHeader(tableRowView(line, true), index + 1);
+    }
+    return;
+  }
   if (tableState === 'body') {
     errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so a pipe-less line still parses as a row of the open table; the risk is that it escapes this project's leading-pipe convention and the duplicate-trigger scan built on it)`);
     return flushTableBlock();
   }
-  const cells = splitRowCells(line);
+  const continuation = tableState === 'header';
+  const continuationRow = tableRowView(line, continuation);
+  const cells = continuationRow.cells;
   if (tableState === 'header' && isDelimiterRow(cells)) {
     if (headerCells === cells.length) {
       // The delimiter confirms the pending header — which lost its pipe if it was a pipe-less
       // candidate; the delimiter losing its own pipe is the same convention break one row down.
       if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
       errors.push(`skill/SKILL.md:${index + 1}: table delimiter row missing its leading \`|\` — project convention: the delimiter row is written with a leading pipe like every other trigger-table row`);
+      rememberSignature(pendingSignature, pendingSignatureLine);
+      pendingSignature = '';
+      pendingSignatureLine = 0;
       tableState = 'body';
       headerCells = cells.length;
       return;
@@ -411,16 +494,14 @@ skillSource.forEach((line, index) => {
     // a paragraph, never a table header — not a violation. Flush it, but keep scanning THIS
     // line: cmark-gfm takes a table's header from the paragraph's last line, so this pipe-less
     // line may itself be the header of a table confirmed below.
-    flushTableBlock();
+    setPendingHeader(continuationRow, index + 1);
+    return;
   }
   if (cells.length >= 2 && line.includes('|')) {
     // A multi-cell pipe-less line outside any table is a row that may be waiting for the
     // delimiter that confirms it; remember it as a pipe-less header candidate. Prose without a
     // single '|' is never this project's row shape and is not tracked.
-    tableState = 'header';
-    headerHadPipe = false;
-    headerCells = cells.length;
-    headerLine = index + 1;
+    setPendingHeader(continuationRow, index + 1);
   }
 });
 flushTableBlock();
@@ -517,7 +598,7 @@ function fenceCloser(line, fence) {
 for (const file of markdownFiles) {
   const source = fs.readFileSync(file, 'utf8');
   let fence = null;
-  source.split('\n').forEach((line, i) => {
+  splitGfmLines(source).forEach((line, i) => {
     const opener = isFenceOpener(line);
     if (fence) {
       if (fenceCloser(line, fence)) fence = null;

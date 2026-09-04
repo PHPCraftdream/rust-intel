@@ -32,6 +32,8 @@ The five gap audits below were merged into v0.4.7. This ledger records the secon
 
 | latest-commits-review-rounds 20–21 (2026-09 closure) | Corrected | The two validator P3 findings carried from round 20 into round 21 are closed: table-boundary detection shares exact GFM backtick-fence opener recognition (an info string containing a backtick is not an opener), and table delimiter normalization matches cmark-gfm's `[ \t\v\f]` class rather than Unicode-wide `trim()`, so NBSP does not create a table. See `latest-commits-review-round-20-2026-09-04-1206.md` findings 1–2 and `latest-commits-review-round-21-2026-09-04-1228.md` carried P3 findings 1–2. |
 
+| post-`a28b905` HS review-cycle (2026-09 closure) | Corrected | Closes the validator-conformance classes identified in this cycle: fenced-content suppression; CRLF/lone-CR parsing; optional leading pipes with 0–3 spaces; paragraph-aware interruption; escaped-pipe backslash parity; duplicate signatures only for confirmed tables; and branch-complete NBSP rollback controls. No separate review report was created; this row records the closure scope without asserting test results or a new commit. |
+
 ## Historical-count erratum
 
 The crypto review's prose count was inconsistent with its listed candidates. The integrated change set contains the five in-scope crypto findings plus two explicitly out-of-scope candidates; it is not a thirteen-item result. Use the rule ledger and changelog bullets as authoritative, not the old arithmetic sentence.
