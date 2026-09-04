@@ -245,592 +245,183 @@ for (const [file, text] of categoryCountFileTexts) {
   }
 }
 
-// Duplicate trigger rows. Two rows in the same table that key off the SAME set of inline-code
-// tokens are the same rule stated twice — the drift that creeps in when independently-written
-// releases each add a row for a pattern the other already covered. Compared per contiguous table
-// block so the phrase table and the code-pattern table never collide with each other.
-//
-// Markdown table cells escape a literal pipe as `\|` — including inside inline code, since
-// backticks do NOT protect table-cell delimiters in GFM. A naive `split('|')` truncates a cell
-// like `` `std::thread::scope(\|s\| ...)` `` at the first escaped pipe. Split respecting the
-// escape instead, then unescape `\|` back to `|` before extracting inline-code spans.
-// cmark-gfm's table scanner calls only ASCII space, tab, vertical tab, and form feed
-// spacechar. Keep this separate from String.prototype.trim(), whose Unicode-wide behavior
-// would incorrectly discard content such as a non-breaking space around a delimiter marker.
+// The repository owns exactly two top-level trigger tables. This is deliberately a small
+// contract: it requires the canonical anchors and raw-column-1 pipes, rather than pretending
+// to be a complete GFM table parser.  A missing first pipe is still located and diagnosed.
 function trimGfmTableSpace(text) {
   return text.replace(/^[ \t\v\f]+|[ \t\v\f]+$/g, '');
 }
 function splitGfmLines(source) {
-  // Markdown parsers normalize CRLF and lone CR before block scanning.  Do the same here so
-  // line-oriented predicates (especially fence closers) do not depend on the checkout's EOL.
+  // Normalize both CRLF and lone CR before any line-oriented state machine runs.
   return source.replace(/\r\n?/g, '\n').split('\n');
 }
+const skillSource = splitGfmLines(fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8'));
 function isAsciiPunctuation(character) {
-  return character.length === 1 && /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.test(character);
+  return character.length === 1 && /[!"#$%&'()*+,\-.\/:;<=>?@[\\\]^_`{|}~]/.test(character);
 }
 function isEscapedChar(text, index) {
   if (!isAsciiPunctuation(text[index])) return false;
-  let backslashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) backslashes += 1;
-  return backslashes % 2 === 1;
+  let slashes = 0;
+  for (let i = index - 1; i >= 0 && text[i] === '\\'; i -= 1) slashes += 1;
+  return slashes % 2 === 1;
 }
 function splitTableCells(text) {
   const cells = [];
-  let current = '';
+  let cell = '';
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] === '|' && isEscapedChar(text, i)) {
-      // A backslash escapes one ASCII punctuation character.  Remove that escape slash while
-      // retaining any preceding slashes: `\|` is content, `\\|` is a delimiter, and the same
-      // odd/even rule applies to longer runs.
-      if (current.endsWith('\\')) current = current.slice(0, -1);
-      current += '|';
+      if (cell.endsWith('\\')) cell = cell.slice(0, -1);
+      cell += '|';
     } else if (text[i] === '|') {
-      cells.push(current);
-      current = '';
-    } else {
-      current += text[i];
-    }
+      cells.push(trimGfmTableSpace(cell));
+      cell = '';
+    } else cell += text[i];
   }
-  if (trimGfmTableSpace(current) !== '') cells.push(current);
+  if (trimGfmTableSpace(cell) !== '') cells.push(trimGfmTableSpace(cell));
   return cells;
 }
-function tableRowView(line, paragraphContinuation = false) {
-  // A paragraph's first line permits only three spaces of indentation. Once a paragraph is
-  // already open, cmark strips the full leading space/tab prefix from continuation lines (an
-  // indented-code-looking line cannot interrupt that paragraph). Keep those two parser views
-  // distinct; the raw first column is still used for this project's leading-pipe convention.
-  const indent = (paragraphContinuation ? line.match(/^[ \t]*/) : line.match(/^ {0,3}/))[0].length;
-  const parserLeadingPipe = line[indent] === '|';
-  const text = line.slice(indent + (parserLeadingPipe ? 1 : 0));
-  const cells = splitTableCells(text).map(trimGfmTableSpace);
-  return {
-    cells,
-    parserLeadingPipe,
-    // GFM permits 0–3 spaces before the optional outer pipe.  The project's convention is
-    // intentionally stricter: it checks the raw first column, hence `   | a | b |` is diagnosed.
-    rawLeadingPipe: line.startsWith('|'),
-  };
+function contractRow(line) {
+  const rawLeadingPipe = line.startsWith('|');
+  return { rawLeadingPipe, cells: splitTableCells(rawLeadingPipe ? line.slice(1) : line) };
 }
-const skillSource = splitGfmLines(fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8'));
-let tableBlock = new Map();
-// Four-state table machine: 'none' -> 'header' (a row that could be a table header is pending,
-// waiting for the delimiter row that confirms a real table) -> 'body'. The old two-variable
-// state (inTable/tableColumns) was set only once a pipe-prefixed row existed, so a pipe-less
-// header row (inTable still false) and a pipe-less delimiter row (tableColumns still 0) both
-// escaped detection; the delimiter row must also match the header's cell count or GFM
-// recognizes no table at all — that fact needs an explicit pending-header state.
-// 'rejected' is the TABLE_VISITED state: a width-mismatched paragraph cannot promote a later
-// delimiter until a real paragraph boundary.
-let tableState = 'none';
-let headerHadPipe = false;
-let headerCells = 0;
-let headerLine = 0; // 1-based line of the pending header candidate — errors about IT must cite this, not the confirming delimiter's line
-function flushTableBlock() {
-  for (const entry of tableBlock.values()) {
-    if (entry.lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${entry.display}] at lines ${entry.lines.join(', ')}`);
-  }
-  tableBlock = new Map();
-  tableState = 'none';
-  headerHadPipe = false;
-  headerCells = 0;
-  headerLine = 0;
+function isDelimiterCells(cells, width) {
+  return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
-function inlineMarkupEnd(text, start) {
-  const rest = text.slice(start);
-  for (const [open, close] of [['<!--', '-->'], ['<?', '?>'], ['<![CDATA[', ']]>']]) {
-    if (rest.startsWith(open)) {
-      const end = rest.indexOf(close, open.length);
-      return end < 0 ? null : start + end + close.length;
-    }
-  }
-  if (/^<![A-Z]/.test(rest)) {
-    const end = rest.indexOf('>');
-    return end < 0 ? null : start + end + 1;
-  }
-  const close = rest.match(htmlCloseTag);
-  if (close) return start + close[0].length;
-  const open = rest.match(htmlOpenTag);
-  if (open) return start + open[0].length;
-  const uri = rest.match(/^<([A-Za-z][A-Za-z0-9+.-]{1,31}):[^\x00-\x20<>]*>/);
-  if (uri) return start + uri[0].length;
-  const email = rest.match(/^<[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*>/);
-  return email ? start + email[0].length : null;
-}
-function inlineLinkParts(text, start) {
-  const labelStart = text[start] === '!' && text[start + 1] === '[' ? start + 1 : start;
-  if (text[labelStart] !== '[') return null;
-  let depth = 0;
-  let labelEnd = -1;
-  for (let cursor = labelStart + 1; cursor < text.length; cursor += 1) {
-    if (text[cursor] === '\\' && cursor + 1 < text.length && isAsciiPunctuation(text[cursor + 1])) {
-      cursor += 1;
-    } else if (text[cursor] === '[') {
-      depth += 1;
-    } else if (text[cursor] === ']') {
-      if (depth === 0) { labelEnd = cursor; break; }
-      depth -= 1;
-    }
-  }
-  if (labelEnd < 0 || text[labelEnd + 1] !== '(') return null;
-  let cursor = labelEnd + 2;
-  let hadOpeningWhitespace = false;
-  let emptyDestination = false;
-  while (cursor < text.length && /[ \t\v\f]/.test(text[cursor])) { cursor += 1; hadOpeningWhitespace = true; }
-  if (text[cursor] === '<') {
-    cursor += 1;
-    while (cursor < text.length && text[cursor] !== '>' && !/[\x00-\x20]/.test(text[cursor])) cursor += 1;
-    if (text[cursor] !== '>') return null;
-    cursor += 1;
-  } else if (hadOpeningWhitespace && ['"', "'", '('].includes(text[cursor])) {
-    // Empty destinations may be followed directly by a title after the required whitespace.
-    emptyDestination = true;
-  } else {
-    let nesting = 0;
-    while (cursor < text.length) {
-      if (text[cursor] === '\\' && cursor + 1 < text.length && isAsciiPunctuation(text[cursor + 1])) { cursor += 2; continue; }
-      if (/[\x00-\x20]/.test(text[cursor])) break;
-      if (text[cursor] === '(') nesting += 1;
-      else if (text[cursor] === ')') {
-        if (nesting === 0) break;
-        nesting -= 1;
-      }
-      cursor += 1;
-    }
-    if (nesting !== 0) return null;
-  }
-  let hadTitleWhitespace = emptyDestination;
-  while (cursor < text.length && /[ \t\v\f]/.test(text[cursor])) { cursor += 1; hadTitleWhitespace = true; }
-  if (text[cursor] === ')') return { labelEnd, end: cursor + 1 };
-  if (!hadTitleWhitespace) return null;
-  const titleOpen = text[cursor];
-  const titleClose = titleOpen === '(' ? ')' : titleOpen;
-  if (!['"', "'", '('].includes(titleOpen)) return null;
-  cursor += 1;
-  let titleNesting = 1;
-  while (cursor < text.length) {
-    if (text[cursor] === '\\' && cursor + 1 < text.length && isAsciiPunctuation(text[cursor + 1])) { cursor += 2; continue; }
-    if (titleOpen === '(' && text[cursor] === '(') titleNesting += 1;
-    else if (text[cursor] === titleClose) {
-      titleNesting -= 1;
-      if (titleNesting === 0) break;
-    }
-    cursor += 1;
-  }
-  if (cursor >= text.length || text[cursor] !== titleClose) return null;
-  cursor += 1;
-  while (cursor < text.length && /[ \t\v\f]/.test(text[cursor])) cursor += 1;
-  return text[cursor] === ')' ? { labelEnd, end: cursor + 1 } : null;
-}
-function codeSpanSignatures(cells) {
-  const text = cells[0] || '';
-  const signatures = [];
-  let linkEnd = -1;
-  let linkLabelEnd = -1;
+function codeSpanTokens(text, onOutside) {
+  // Collect maximal, unescaped runs once, then pair each opener with the next run of equal
+  // length. This keeps unmatched-run inputs linear instead of rescanning the suffix per opener.
+  const runs = [];
   for (let i = 0; i < text.length;) {
-    if (linkEnd >= 0 && i > linkLabelEnd && i < linkEnd) {
-      i = linkEnd;
-      linkEnd = -1;
-      linkLabelEnd = -1;
-      continue;
-    }
+    if (text[i] === '\\' && i + 1 < text.length && isAsciiPunctuation(text[i + 1])) { i += 2; continue; }
+    if (text[i] !== '`') { i += 1; continue; }
+    let length = 1;
+    while (text[i + length] === '`') length += 1;
+    runs.push({ start: i, length });
+    i += length;
+  }
+  const nextSame = Array(runs.length).fill(-1);
+  const nextByLength = new Map();
+  for (let i = runs.length - 1; i >= 0; i -= 1) {
+    nextSame[i] = nextByLength.get(runs[i].length) ?? -1;
+    nextByLength.set(runs[i].length, i);
+  }
+  const tokens = [];
+  let runIndex = 0;
+  for (let i = 0; i < text.length;) {
     if (text[i] === '\\' && i + 1 < text.length && isAsciiPunctuation(text[i + 1])) {
       i += 2;
       continue;
     }
-    if (text[i] === '<') {
-      const markupEnd = inlineMarkupEnd(text, i);
-      if (markupEnd !== null) {
-        i = markupEnd;
+    while (runIndex < runs.length && runs[runIndex].start < i) runIndex += 1;
+    if (runIndex < runs.length && runs[runIndex].start === i) {
+      const opener = runs[runIndex];
+      const closerIndex = nextSame[runIndex];
+      if (closerIndex >= 0) {
+        const closer = runs[closerIndex];
+        let content = text.slice(i + opener.length, closer.start).replace(/\r\n?|\n/g, ' ');
+        if (content.length >= 2 && content.startsWith(' ') && content.endsWith(' ') && /[^ ]/.test(content)) content = content.slice(1, -1);
+        tokens.push(content);
+        i = closer.start + closer.length;
+        while (runIndex < runs.length && runs[runIndex].start < i) runIndex += 1;
         continue;
       }
-    }
-    if (text[i] === '[' || (text[i] === '!' && text[i + 1] === '[')) {
-      const link = inlineLinkParts(text, i);
-      if (link) {
-        linkEnd = link.end;
-        linkLabelEnd = link.labelEnd;
-        i += text[i] === '!' ? 2 : 1;
-        continue;
-      }
+      i += opener.length;
+      continue;
     }
     if (text[i] !== '`') {
+      if (onOutside) onOutside(text[i], i, text);
       i += 1;
       continue;
     }
-    let runLength = 1;
-    while (text[i + runLength] === '`') runLength += 1;
-    let cursor = i + runLength;
-    let content = null;
-    let spanEnd = i + runLength;
-    while (cursor < text.length) {
-      if (text[cursor] !== '`') {
-        cursor += 1;
-        continue;
-      }
-      let closeLength = 1;
-      while (text[cursor + closeLength] === '`') closeLength += 1;
-      if (closeLength === runLength) {
-        // CommonMark normalizes only line endings here; interior spaces (and tabs) are
-        // significant in a code span.  The one-space edge trim below is the separate
-        // code-span rule and must not collapse runs of spaces.
-        content = text.slice(i + runLength, cursor).replace(/\r\n?|\n/g, ' ');
-        if (content.length >= 2 && content.startsWith(' ') && content.endsWith(' ') && /[^ ]/.test(content)) content = content.slice(1, -1);
-        spanEnd = cursor + closeLength;
-        break;
-      }
-      cursor += closeLength;
+    i += 1;
+  }
+  return tokens;
+}
+function codeSpanSignatures(cells) {
+  const tokens = codeSpanTokens(cells[0] || '');
+  const unique = [...new Set(tokens)].sort();
+  return { tokens: unique, key: JSON.stringify(unique), display: unique.join(' + ') };
+}
+function unsupportedFirstCellSyntax(text) {
+  let reason = null;
+  codeSpanTokens(text, (character, index, full) => {
+    if (reason) return;
+    if (character === '<') reason = 'raw inline HTML/autolink';
+    else if (character === '[' || (character === '!' && full[index + 1] === '[')) reason = 'link/image/reference';
+  });
+  return reason;
+}
+const tableContracts = [
+  { name: 'prompt-trigger', anchor: ['User request contains...', 'Activates category', 'Specific risk'], width: 3, endMarker: '**Triggered by code, not phrase**' },
+  { name: 'code-pattern', anchor: ['Code pattern in user input', 'Activates'], width: 2, endMarker: 'When two or more triggers fire in one request' },
+];
+const contractRanges = [];
+let searchFrom = 0;
+for (const contract of tableContracts) {
+  const headerMatches = [];
+  for (let i = searchFrom; i < skillSource.length; i += 1) {
+    const row = contractRow(skillSource[i]);
+    if (row.cells.length === contract.width && row.cells.every((cell, n) => cell === contract.anchor[n])) {
+      headerMatches.push(i);
     }
-    if (content !== null) {
-      if (!signatures.includes(content)) signatures.push(content);
-      // The closing run is consumed as part of this span.  Starting the outer scan at its
-      // first backtick would otherwise rediscover the same delimiter as a new opener.
-      i = spanEnd;
-    } else {
-      i += runLength;
-    }
   }
-  signatures.sort();
-  return { key: JSON.stringify(signatures), display: signatures.join(' + ') };
-}
-function rememberSignature(signature, line) {
-  if (!signature || signature.key === '[]') return;
-  // The display string is intentionally human-readable, but it is not injective (`a + b`
-  // could be one token or two). JSON encoding the sorted token array is the actual map key.
-  if (!tableBlock.has(signature.key)) tableBlock.set(signature.key, { display: signature.display, lines: [] });
-  tableBlock.get(signature.key).lines.push(line);
-}
-function setPendingHeader(row, line) {
-  tableState = 'header';
-  headerHadPipe = row.rawLeadingPipe;
-  headerCells = row.cells.length;
-  headerLine = line;
-}
-function rejectPendingParagraph() {
-  tableBlock = new Map();
-  tableState = 'rejected';
-  headerHadPipe = false;
-  headerCells = 0;
-  headerLine = 0;
-}
-// GFM §4.10: a pipe-less row stays a row of the open table (outer pipes are optional) — the
-// risk this check guards is the row escaping THIS project's leading-pipe convention and the
-// duplicate-trigger scan built on it, not GFM misparsing. A blank line, or a line starting a
-// heading, fence, blockquote, list, thematic break, indented code block (indent reaching
-// column 4 under GFM §2.2 tab expansion: cmark-gfm opens one when the container is not a
-// paragraph, finalizing the table), or HTML
-// block, breaks the table instead of joining it as a row. Link reference definitions are
-// deliberately absent — cmark-gfm has no such block start (definitions are pulled from
-// paragraph content at finalize time; the table stays open for any line that parses as a row
-// with n_columns ≥ 1), so a pipe-less '[label]:' line is a one-cell row and MUST be flagged.
-// HTML starts are classified by the seven CommonMark scanners below; generic type-7 tags only
-// interrupt an already-open paragraph when they are not paragraph continuations.
-// Indented code: compare by effective column, not raw prefix shape — GFM §2.2 expands a tab
-// to the next 4-column stop, so '  \tcode' reaches column 4 with no 4-space literal prefix.
-function reachesIndentedCodeColumn(line) {
-  let column = 0;
-  for (let i = 0; i < line.length; i += 1) {
-    if (line[i] === ' ') column += 1;
-    else if (line[i] === '\t') column += 4 - (column % 4);
-    else return column >= 4;
+  const headerIndex = headerMatches[0] ?? -1;
+  if (headerMatches.length !== 1) errors.push(`skill/SKILL.md: ${contract.name} table header anchor must occur exactly once after the preceding contract (found ${headerMatches.length})`);
+  if (headerIndex < 0) {
+    errors.push(`skill/SKILL.md: missing ${contract.name} table header anchor`);
+    continue;
   }
-  return false;
-}
-// Empty ATX headings ('#' through '######'), empty list items ('-', '*', '+', '1.', '1)') are
-// valid block starts too: the marker may be followed by end-of-line, not only whitespace.
-// A fence opener is a GFM block start only when its marker has 0-3 spaces of indentation;
-// tabs are not indentation here, and a backtick fence's info string may not contain a backtick.
-// Return the opener details so the escape scanner and table boundary classifier share exactly
-// the same recognition predicate.
-function stripBlockquotePrefixes(line) {
-  let offset = 0;
-  let depth = 0;
-  while (true) {
-    const prefix = line.slice(offset).match(/^ {0,3}>[ \t]?/);
-    if (!prefix) break;
-    offset += prefix[0].length;
-    depth += 1;
+  const header = contractRow(skillSource[headerIndex]);
+  if (!header.rawLeadingPipe) errors.push(`skill/SKILL.md:${headerIndex + 1}: table header row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`);
+  const delimiterIndex = headerIndex + 1;
+  const delimiter = delimiterIndex < skillSource.length ? contractRow(skillSource[delimiterIndex]) : null;
+  if (!delimiter || !isDelimiterCells(delimiter.cells, contract.width)) {
+    errors.push(`skill/SKILL.md:${delimiterIndex + 1}: ${contract.name} table delimiter row has wrong width or syntax`);
+  } else if (!delimiter.rawLeadingPipe) {
+    errors.push(`skill/SKILL.md:${delimiterIndex + 1}: table delimiter row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`);
   }
-  return { text: line.slice(offset), depth };
-}
-function indentationColumns(text) {
-  let column = 0;
-  for (const character of text) {
-    if (character === ' ') column += 1;
-    else if (character === '\t') column += 4 - (column % 4);
-    else break;
+  const endMatches = skillSource.flatMap((line, i) => line.startsWith(contract.endMarker) ? [i] : []);
+  if (endMatches.length !== 1) errors.push(`skill/SKILL.md: ${contract.name} table end marker must occur exactly once (found ${endMatches.length})`);
+  const end = endMatches.find((index) => index > delimiterIndex) ?? skillSource.length;
+  if (end < skillSource.length) {
+    if (end === delimiterIndex + 1 || !/^[ \t]*$/.test(skillSource[end - 1])) errors.push(`skill/SKILL.md:${end + 1}: ${contract.name} table requires one blank separator immediately before its end marker`);
+    else if (end > delimiterIndex + 2 && /^[ \t]*$/.test(skillSource[end - 2])) errors.push(`skill/SKILL.md:${end + 1}: ${contract.name} table requires exactly one blank separator immediately before its end marker`);
   }
-  return column;
+  // Exclude the one required separator from the body span; earlier blanks remain body errors.
+  const bodyEnd = end < skillSource.length && /^[ \t]*$/.test(skillSource[end - 1]) ? end - 1 : end;
+  contractRanges.push({ contract, headerIndex, delimiterIndex, end, bodyEnd });
+  searchFrom = end < skillSource.length ? end + 1 : skillSource.length;
 }
-function takeIndentColumns(text, columns) {
-  let offset = 0;
-  let current = 0;
-  while (offset < text.length && current < columns && (text[offset] === ' ' || text[offset] === '\t')) {
-    current = indentationColumns(text.slice(0, offset + 1));
-    offset += 1;
-  }
-  return offset;
-}
-function stripContainerPrefixes(line) {
-  let offset = 0;
-  let quoteDepth = 0;
-  let listDepth = 0;
-  let quoteConsumed = 0;
-  let listIndent = 0;
-  const listMarkers = [];
-  while (true) {
-    const quote = line.slice(offset).match(/^ {0,3}>[ \t]?/);
-    if (quote) {
-      offset += quote[0].length;
-      quoteConsumed += quote[0].length;
-      quoteDepth += 1;
+for (const range of contractRanges) {
+  const { contract, delimiterIndex, bodyEnd } = range;
+  const seen = new Map();
+  for (let i = delimiterIndex + 1; i < bodyEnd; i += 1) {
+    const line = skillSource[i];
+    if (/^[ \t]*$/.test(line)) {
+      errors.push(`skill/SKILL.md:${i + 1}: unexpected blank line inside ${contract.name} table body; only the end-marker separator may be blank`);
       continue;
     }
-    const list = line.slice(offset).match(/^ {0,3}(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)/);
-    if (!list) break;
-    offset += list[0].length;
-    const padding = line.slice(offset).match(/^[ \t]*/)[0];
-    const paddingColumns = indentationColumns(padding);
-    // CommonMark gives a list marker 1–4 columns of padding. Five or more columns become
-    // W+1 content indentation, so consume only one padding character and leave the rest.
-    offset += paddingColumns > 4 ? (padding.length > 0 ? 1 : 0) : padding.length;
-    listDepth += 1;
-    listMarkers.push(list[0].trim());
-    listIndent = indentationColumns(line.slice(quoteConsumed, offset));
-  }
-  return { text: line.slice(offset), blockquoteDepth: quoteDepth, listDepth, listIndent, listMarkers };
-}
-function containerViewForState(line, container, keepUnindentedListBlank = false) {
-  // At the document root, markers such as `> ...` and `- ...` are ordinary fenced content;
-  // never strip them while looking for a closer.
-  if (container.blockquoteDepth === 0 && container.listDepth === 0) return { inside: true, text: line, listDepth: 0 };
-  if (keepUnindentedListBlank && container.listDepth > 0 && container.blockquoteDepth === 0 && /^[ \t]*$/.test(line)) return { inside: true, text: line, listDepth: container.listDepth };
-  const view = stripContainerPrefixes(line);
-  if (view.blockquoteDepth < container.blockquoteDepth) return { inside: false, text: view.text };
-  if (view.blockquoteDepth > container.blockquoteDepth) {
-    // A residual quote marker is content of the current leaf. Strip only the stored outer list
-    // padding (when present), then leave every remaining `>` literal for the end scanner.
-    const leading = line.match(/^[ \t]*/)[0];
-    if (container.listDepth > 0 && indentationColumns(leading) >= container.listIndent) return { inside: true, text: line.slice(takeIndentColumns(line, container.listIndent)), listDepth: container.listDepth };
-    return { inside: false, text: view.text };
-  }
-  if (container.listDepth === 0) return { inside: true, text: view.listDepth > 0 ? line : view.text, listDepth: view.listDepth, nested: view.listDepth > 0 };
-  const quote = stripBlockquotePrefixes(line);
-  const leading = quote.text.match(/^[ \t]*/)[0];
-  const leadingColumns = indentationColumns(leading);
-  if (view.listDepth === container.listDepth && leadingColumns >= container.listIndent && leadingColumns > 0) {
-    const remainder = quote.text.slice(takeIndentColumns(quote.text, container.listIndent));
-    return { inside: true, text: remainder, listDepth: container.listDepth };
-  }
-  if (view.listDepth > container.listDepth) return { inside: true, text: line, listDepth: view.listDepth, nested: true };
-  if (view.listDepth === container.listDepth) {
-    // An explicit marker at the current leaf denotes a sibling item, even when it uses the
-    // same bullet/ordered marker as the opener. The line must be rescanned outside this leaf.
-    return { inside: false, text: view.text, listDepth: view.listDepth };
-  }
-  if (quote.depth !== container.blockquoteDepth) return { inside: false, text: view.text, listDepth: view.listDepth };
-  if (leadingColumns < container.listIndent) return { inside: false, text: quote.text, listDepth: view.listDepth };
-  const remainder = quote.text.slice(takeIndentColumns(quote.text, container.listIndent));
-  const nested = remainder.match(/^ {0,3}(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)/);
-  if (nested) {
-    return { inside: true, text: line, listDepth: container.listDepth + 1, nested: true };
-  }
-  return { inside: true, text: remainder, listDepth: container.listDepth };
-}
-function isFenceOpener(line) {
-  const view = stripContainerPrefixes(line);
-  const { text } = view;
-  const run = text.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-  if (!run || (run[1][0] === '`' && run[2].includes('`'))) return null;
-  return {
-    marker: run[1][0],
-    length: run[1].length,
-    blockquoteDepth: view.blockquoteDepth,
-    container: { blockquoteDepth: view.blockquoteDepth, listDepth: view.listDepth, listIndent: view.listIndent, listMarkers: view.listMarkers },
-  };
-}
-function htmlLineText(line) {
-  return stripContainerPrefixes(line).text;
-}
-const blockStartRe = /^ {0,3}(#{1,6}(?:[ \t]|$)|>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|((-[ \t]*){3,}|(\*[ \t]*){3,}|(_[ \t]*){3,})$)/;
-const blockTagNames = 'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul';
-const htmlOpenTag = new RegExp('^<[A-Za-z][A-Za-z0-9-]*(?:[ \\t\\v\\f]+[A-Za-z_:][A-Za-z0-9:._-]*(?:[ \\t\\v\\f]*=[ \\t\\v\\f]*(?:"[^"\\r\\n]*"|\'[^\'\\r\\n]*\'|[^ \\t\\v\\f"\'=<>`]+))?)*[ \\t\\v\\f]*/?>');
-const htmlCloseTag = /^<\/[A-Za-z][A-Za-z0-9-]*[ \t\v\f]*>/;
-function htmlBlockStartType(line) {
-  const containerText = htmlLineText(line);
-  const indent = containerText.match(/^ {0,3}/)[0].length;
-  const text = containerText.slice(indent);
-  if (/^<(?:script|pre|textarea|style)(?=[ \t\v\f>]|$)/i.test(text)) return 1;
-  if (text.startsWith('<!--')) return 2;
-  if (text.startsWith('<?')) return 3;
-  if (text.startsWith('<![CDATA[')) return 5;
-  if (/^<![A-Z]/.test(text)) return 4;
-  if (new RegExp(`^</?(?:${blockTagNames})(?=[ \\t\\v\\f]|/?[>]|$)`, 'i').test(text)) return 6;
-  const open = text.match(htmlOpenTag) || text.match(htmlCloseTag);
-  if (open && /^[ \t\f]*$/.test(text.slice(open[0].length))) return 7;
-  return 0;
-}
-function htmlBlockEnd(line, block, content = htmlLineText(line)) {
-  if (block.type === 1) {
-    // cmark-gfm's type-1 end scanner accepts any of the four exact close tags; unlike the
-    // opener, the closing tag is not paired to one particular element and cannot contain space.
-    return /<\/(?:script|pre|style|textarea)>/i.test(content);
-  }
-  if (block.type === 2) return content.includes('-->');
-  if (block.type === 3) return content.includes('?>');
-  if (block.type === 4) return content.includes('>');
-  if (block.type === 5) return content.includes(']]>');
-  return /^[ \t]*$/.test(content);
-}
-// Delimiter row: one or more cells, each only hyphens with an optional leading/trailing colon
-// (GFM §4.10). A lone '---' is a thematic break (or setext underline), never a delimiter.
-function isDelimiterRow(cells) {
-  return cells.length >= 1 && cells.every((cell) => /^:?-+:?$/.test(cell));
-}
-function orderedListStart(line) {
-  const match = line.match(/^ {0,3}(\d{1,9})[.)](?:[ \t]|$)/);
-  return match ? Number.parseInt(match[1], 10) : null;
-}
-function isBlankListItem(line) {
-  return /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]*$/.test(line);
-}
-function isSetextUnderline(line) {
-  return /^ {0,3}(?:=+|-+)[ \t]*$/.test(line);
-}
-function isBlockStart(line) {
-  return reachesIndentedCodeColumn(line) || isFenceOpener(line) || blockStartRe.test(line) || htmlBlockStartType(line) !== 0;
-}
-function interruptsPendingParagraph(line) {
-  // CommonMark/GFM block interruption: indented code cannot interrupt a paragraph; an ordered
-  // list may do so only when it starts at 1; and an empty list item cannot interrupt one.
-  if (reachesIndentedCodeColumn(line) || isBlankListItem(line)) return false;
-  const start = orderedListStart(line);
-  if (start !== null) return start === 1;
-  return htmlBlockStartType(line) !== 7;
-}
-let tableFence = null;
-let htmlBlock = null;
-skillSource.forEach((line, index) => {
-  if (tableFence) {
-    const view = containerViewForState(line, tableFence.container, true);
-    if (fenceCloser(line, tableFence)) {
-      tableFence = null;
-      return;
+    const row = contractRow(line);
+    // In a known table span, every nonblank line is a body row. This catches a row that lost
+    // even its last pipe instead of silently treating it as section prose.
+    if (row.cells.length !== contract.width) {
+      errors.push(`skill/SKILL.md:${i + 1}: ${contract.name} table body row has ${row.cells.length} cells; expected ${contract.width}`);
+      continue;
     }
-    if (view.inside) return;
-    // The containing list/blockquote ended. Rescan this line at the outer depth so a literal
-    // escaped quote (or a new outer fence) is not swallowed as fenced content.
-    tableFence = null;
-  }
-  if (htmlBlock) {
-    const view = containerViewForState(line, htmlBlock.container, htmlBlock.type <= 5);
-    if (view.inside) {
-      if (!view.nested && htmlBlockEnd(line, htmlBlock, view.text)) htmlBlock = null;
-      return;
+    if (!row.rawLeadingPipe) {
+      errors.push(`skill/SKILL.md:${i + 1}: table row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`);
+      continue;
     }
-    // As with fences, the line which exits the containing list/blockquote belongs to the
-    // outer document and must be processed again below.
-    htmlBlock = null;
+    if (contract.name !== 'code-pattern') continue;
+    const unsupported = unsupportedFirstCellSyntax(row.cells[0]);
+    if (unsupported) errors.push(`skill/SKILL.md:${i + 1}: unsupported ${unsupported} syntax in code-pattern table first cell; use plain text or inline code`);
+    const signature = codeSpanSignatures(row.cells);
+    if (signature.key === '[]') continue;
+    if (!seen.has(signature.key)) seen.set(signature.key, { display: signature.display, lines: [] });
+    seen.get(signature.key).lines.push(i + 1);
   }
-  const opener = isFenceOpener(line);
-  const canInterruptParagraph = tableState === 'none' || tableState === 'body' || interruptsPendingParagraph(line);
-  if (opener && canInterruptParagraph) {
-    flushTableBlock();
-    tableFence = opener;
-    return;
-  }
-  const htmlType = htmlBlockStartType(line);
-  // Type-7 HTML starts a block only when it can interrupt the current paragraph.  A
-  // rejected width-mismatch candidate is still inside that paragraph, just like a pending
-  // header, so it must remain suppressed until a real paragraph boundary.
-  if (htmlType && canInterruptParagraph && !(htmlType === 7 && (tableState === 'header' || tableState === 'rejected'))) {
-    flushTableBlock();
-    const context = stripContainerPrefixes(line);
-    const candidate = { type: htmlType, container: { blockquoteDepth: context.blockquoteDepth, listDepth: context.listDepth, listIndent: context.listIndent, listMarkers: context.listMarkers } };
-    // Types 1–5 may be complete on their opening line; only retain continuation state when
-    // their exact end marker was not already present.
-    htmlBlock = htmlBlockEnd(line, candidate) ? null : candidate;
-    return;
-  }
-  const row = tableRowView(line);
-  if (row.parserLeadingPipe) {
-    const { cells } = row;
-    let confirmedDelimiter = false;
-    if (tableState === 'rejected') return;
-    if (tableState === 'header' && isDelimiterRow(cells) && headerCells !== cells.length) return rejectPendingParagraph();
-    if (isDelimiterRow(cells)) {
-      if (tableState === 'header' && headerCells === cells.length) {
-        confirmedDelimiter = true;
-        if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
-        tableState = 'body';
-      }
-      else if (tableState !== 'body') { // count mismatch with the pending piped row: that row was a paragraph, and cmark-gfm takes a table's header from the paragraph's last line — which can be this delimiter-shaped line itself, so promote it
-        setPendingHeader(row, index + 1);
-      }
-    } else if (tableState !== 'body') {
-    // A pending candidate is provisional and never enters the duplicate scan until a delimiter
-    // confirms the table.
-      setPendingHeader(row, index + 1);
-    } else {
-      rememberSignature(codeSpanSignatures(cells), index + 1);
-    }
-    if (!row.rawLeadingPipe && tableState === 'body') {
-      if (confirmedDelimiter) errors.push(`skill/SKILL.md:${index + 1}: table delimiter row missing its leading \`|\` — project convention: the delimiter row is written with a leading pipe like every other trigger-table row`);
-      else errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so a pipe-less line still parses as a row of the open table; the risk is that it escapes this project's leading-pipe convention and the duplicate-trigger scan built on it)`);
-      flushTableBlock();
-    }
-    return;
-  }
-  const blankLine = /^[ \t]*$/.test(line);
-  // Setext underlines close a pending paragraph (including TABLE_VISITED), but are deliberately
-  // not added to the generic block-start predicate for an already-confirmed table body.
-  const setextBoundary = (tableState === 'header' || tableState === 'rejected') && isSetextUnderline(line);
-  if (blankLine || isBlockStart(line) || setextBoundary) {
-    // A block start always ends an already-open table body. In contrast, indented code and an
-    // ordered list not starting at 1 (including an empty list item) cannot interrupt a pending
-    // paragraph, so they replace its provisional header with the paragraph's latest line.
-    if (tableState === 'rejected') {
-      if (blankLine || setextBoundary || interruptsPendingParagraph(line)) flushTableBlock();
-    } else if (tableState === 'body' || tableState === 'none' || blankLine || setextBoundary || interruptsPendingParagraph(line)) {
-      flushTableBlock();
-    } else {
-      setPendingHeader(tableRowView(line, true), index + 1);
-    }
-    return;
-  }
-  if (tableState === 'body') {
-    errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so a pipe-less line still parses as a row of the open table; the risk is that it escapes this project's leading-pipe convention and the duplicate-trigger scan built on it)`);
-    return flushTableBlock();
-  }
-  if (tableState === 'rejected') return;
-  const continuation = tableState === 'header';
-  const continuationRow = tableRowView(line, continuation);
-  const cells = continuationRow.cells;
-  if (tableState === 'header' && isDelimiterRow(cells) && headerCells !== cells.length) return rejectPendingParagraph();
-  if (tableState === 'header' && isDelimiterRow(cells)) {
-    if (headerCells === cells.length) {
-      // The delimiter confirms the pending header — which lost its pipe if it was a pipe-less
-      // candidate; the delimiter losing its own pipe is the same convention break one row down.
-      if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
-      errors.push(`skill/SKILL.md:${index + 1}: table delimiter row missing its leading \`|\` — project convention: the delimiter row is written with a leading pipe like every other trigger-table row`);
-      tableState = 'body';
-      headerCells = cells.length;
-      return;
-    }
-    return rejectPendingParagraph();
-  }
-  if (tableState === 'header') {
-    // A pipe-less non-delimiter line directly under a pending row becomes the latest paragraph
-    // line; cmark-gfm takes a table's header from that last line.
-    setPendingHeader(continuationRow, index + 1);
-    return;
-  }
-  if (tableState === 'none') {
-    // Every ordinary paragraph line is a possible one-column header. cmark-gfm uses the last
-    // line of the paragraph as the header, so replacing this candidate is intentional.
-    setPendingHeader(row, index + 1);
-  }
-});
-flushTableBlock();
+  for (const entry of seen.values()) if (entry.lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${entry.display}] at lines ${entry.lines.join(', ')}`);
+}
 
 // Regression cases for the SemVer check itself — a loose regex here would silently let a
 // malformed release tag through the gate that is supposed to catch it.
@@ -903,65 +494,46 @@ for (const rel of canonicalFiles) {
   if (fs.readFileSync(path.join(canonicalSkill, rel), 'utf8') !== fs.readFileSync(path.join(codexSkill, rel), 'utf8')) errors.push(`Codex skill mirror is out of sync: ${rel}`);
 }
 
-// A literal `\"` in rule text is a JSON-string escape that leaked through the apply path:
-// CommonMark processes no backslash escapes inside code spans, so a shipped manifest recipe
-// reads invalid TOML. Zero legitimate occurrences today — reject outside fences. Fence state
-// tracks the opener's marker char and length (a closer repeats the same marker at >= the
-// opener's length; GFM §4.5's own text allows only trailing spaces, but the cmark-gfm reference
-// scanner and CommonMark >= 0.30 also allow trailing tabs, which is the behavior matched here) —
-// a blind boolean toggle wrongly "closes" a 4-backtick fence on a 3-backtick line, flagging
-// escapes that are still inside code.
-// Openers obey GFM §4.5 too: 0-3 spaces of indentation (a tab makes the line indented
-// code, not a fence) and a backtick-free info string for backtick fences.
-// Fence scanning understands bounded nested list/blockquote container prefixes, so a closer
-// must match the opener's container identity. A container-ending line is rescanned outside it.
-// splitGfmLines normalizes CRLF and lone CR before this scanner runs, so [ \t]* needs no
-// separate \r? guard and a CR checkout cannot leave a fence open past a closer.
-function fenceCloser(line, fence) {
-  const view = containerViewForState(line, fence.container, true);
-  if (!view.inside) return false;
-  const run = view.text.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
-  return run !== null && run[1][0] === fence.marker && run[1].length >= fence.length && view.listDepth === fence.container.listDepth;
+// Project markdown permits only standalone fences with 0–3 literal leading spaces. Container
+// syntax is intentionally unsupported here: `- ````, `> ````, and similar lines are diagnosed,
+// never interpreted as nested fences. This is a bounded repository check, not CommonMark.
+function projectFenceOpener(line) {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null;
+  return { marker: match[1][0], length: match[1].length };
 }
+function projectFenceCloser(line, fence) {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+  return match !== null && match[1][0] === fence.marker && match[1].length >= fence.length;
+}
+function unsupportedContainerFence(line) {
+  return /^ {0,3}>[ \t]*(?:`{3,}|~{3,})/.test(line)
+    || /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?:`{3,}|~{3,})/.test(line);
+}
+const rawHtmlBlockStart = /^ {0,3}(?:<!--|<\?|<!\[CDATA\[|<![A-Z]|<\/?(?:script|pre|style|textarea|address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?=[ \t\v\f/>]|$)|<(?=[A-Za-z][A-Za-z0-9-]*(?:[ \t\v\f]|\/?>)))/i;
 for (const file of markdownFiles) {
   const source = fs.readFileSync(file, 'utf8');
   let fence = null;
-  let paragraphOpen = false;
   splitGfmLines(source).forEach((line, i) => {
-    const opener = isFenceOpener(line);
-    let fenceLineHandled = false;
     if (fence) {
-      if (fenceCloser(line, fence)) {
-        fence = null;
-        fenceLineHandled = true;
-      }
-      else if (!containerViewForState(line, fence.container, true).inside) {
-        // A fenced block nested in a list/blockquote ends when its containing container ends. The
-        // line that exits the container belongs to the outer document and must be rescanned as
-        // such; otherwise a literal `\\"` on it would be incorrectly treated as fenced text.
-        fence = null;
-      } else {
-        return;
-      }
-    }
-    if (fenceLineHandled) {
-      paragraphOpen = false;
+      if (projectFenceCloser(line, fence)) fence = null;
       return;
     }
-    // An ordered list starting above 1 is a block start only after a paragraph boundary; while
-    // a paragraph is open, its fence-looking line is continuation text, not a new fence.
-    if (!fence && opener && (!paragraphOpen || interruptsPendingParagraph(line))) {
-      fence = opener;
-      paragraphOpen = false;
-    } else if (line.includes('\\"')) {
-      errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: literal \\" escape outside a fenced code block — JSON-style escape leaked into rule text`);
-    }
-    if (!fence) {
-      if (/^[ \t]*$/.test(line)) paragraphOpen = false;
-      else if (isBlockStart(line) && interruptsPendingParagraph(line)) paragraphOpen = false;
-      else paragraphOpen = true;
+    if (unsupportedContainerFence(line)) {
+      errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: unsupported container-prefixed fence; use a standalone fence with 0–3 leading spaces`);
+    } else if (rawHtmlBlockStart.test(line)) {
+      errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: unsupported angle-bracket-leading/raw-HTML-style line in tracked skill markdown`);
+    } else {
+      const opener = projectFenceOpener(line);
+      if (opener) {
+        opener.openedAt = i + 1;
+        fence = opener;
+        return;
+      }
+      if (line.includes('\\"')) errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: literal \\" escape outside a fenced code block — JSON-style escape leaked into rule text`);
     }
   });
+  if (fence) errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${fence.openedAt}: unclosed project fence at end of file`);
 }
 
 // RUST_INTEL_SKIP_NESTED_FIXTURES breaks a self-spawn cycle: validate-fixtures.mjs's README.md
