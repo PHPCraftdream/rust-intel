@@ -60,6 +60,8 @@ This release also closes out two prior commits that shipped without a changelog 
 
 **The post-`a28b905` HS review-cycle closes these validator-conformance classes:** fenced-content suppression; CRLF/lone-CR parsing; optional leading pipes with 0–3 spaces; paragraph-aware interruption; escaped-pipe backslash parity; duplicate signatures only for confirmed tables; and branch-complete NBSP rollback controls. No new category, no BANNED/REQUIRED shape change — **PATCH**-shaped. This is a closure-scope record; it does not assert test results or a new commit.
 
+**The post-`44eb16c` HS review-cycle 2 closes these validator-conformance classes:** one-column tables; paragraph visited after width mismatch; exact HTML starts plus continuation; body-only duplicate signatures; CommonMark code-span extraction; and nested blockquote fences. No new category, no BANNED/REQUIRED shape change — **PATCH**-shaped. This is a closure-scope record; it does not assert test results or a new commit.
+
 ## [0.6.0] — 2026-08-19
 
 **New category: §C12/§C12a — reinventing a solved problem instead of reaching for a world-recognized crate.** **MINOR:** a new numbered category (with a lettered infrastructure-tier sub-section), a new §A1 bullet, two trigger rows, one 🔴 escalation. Numbered category count **58 → 59**.

@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: forty-three hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: sixty hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the leading-pipe table convention across
 // body/header/delimiter rows in three GFM-legal width variants, block-level quiet/flag probes
 // after a table — including empty heading/list and tab-expanded-indent boundaries — and
@@ -552,9 +552,10 @@ for (const indent of ['', ' ', '  ', '   ']) {
     const lineEnd = source.indexOf('\n', at);
     return source.slice(0, lineEnd + 1) + [
       '',
-      '| `odd\\|pipe-probe` | header |',
+      '| odd escaped-pipe header | header |',
       '|---|---|',
-      '| `odd\\|pipe-probe` | duplicate |',
+      '| `odd\\|pipe-probe` | first body row |',
+      '| `odd\\|pipe-probe` | second body row |',
       '',
     ].join('\n') + source.slice(lineEnd);
   });
@@ -662,6 +663,230 @@ for (const [name, needle, replacement, probe] of [
   });
   if (result.skipped) failures.push('ASCII-space delimiter control: could not find the trigger row to insert the probe after');
   else if (result.status === 0 || !result.output.includes('table delimiter row missing its leading `|`') || !result.output.includes('table row missing its leading `|`')) failures.push(`ASCII-space delimiter control: pipe-less delimiter with ordinary spaces was not recognized before body enforcement — got: ${result.output.trim()}`);
+}
+
+// Control 44: a one-column GFM table is still a table. Its pipe-less body row must be checked
+// against the repository's leading-pipe convention rather than being discarded as a delimiter
+// candidate with too few cells.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| one-column table header |', '| --- |', 'one-column pipe-less body', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('one-column table body control: could not find the trigger row to insert the probe after');
+  else if (result.status === 0 || !result.output.includes('table row missing its leading `|`')) failures.push(`one-column table body control: validator failed to diagnose a pipe-less body in a confirmed one-column table — got: ${result.output.trim()}`);
+}
+
+// Control 45: once a one-column table is confirmed, duplicate signatures in its body still
+// count. This is separate from Control 44 so entering body state cannot be skipped.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| one-column duplicate header |', '| --- |', '| `one-column-body-duplicate` |', '| `one-column-body-duplicate` |', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('one-column duplicate control: could not find the trigger row to insert the probe after');
+  else if (result.status === 0 || !result.output.includes('duplicate code-pattern trigger rows') || !result.output.includes('[one-column-body-duplicate]')) failures.push(`one-column duplicate control: confirmed one-column body rows were not deduplicated — got: ${result.output.trim()}`);
+  else if (result.output.includes('missing its leading `|`')) failures.push(`one-column duplicate control: valid one-column rows produced a spurious leading-pipe diagnostic — got: ${result.output.trim()}`);
+}
+
+// Control 46: after a width-mismatching delimiter, cmark-gfm has visited the paragraph and must
+// not retry a later delimiter as a fresh header. Repeated delimiter-shaped lines therefore do not
+// create a phantom table or a body error for the following prose.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| width-mismatch header | second cell | third cell |', '|---|---|', '|---|---|', 'repeated delimiter prose must stay outside a phantom table', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('table width-mismatch visited control: could not find the trigger row to insert the probe after');
+  else if (result.status !== 0) failures.push(`table width-mismatch visited control: a repeated matching delimiter reopened a phantom table — got: ${result.output.trim()}`);
+}
+
+// Control 47: a generic Rust associated-type expression begins with '<' but is not an HTML
+// block start. Inside a confirmed table it remains a body row and must lose only on the missing
+// leading-pipe convention; treating every '<' as HTML silently lets it escape.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| generic body header | second cell |', '|---|---|', '<T as Trait>::f | x', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('generic angle-bracket table body control: could not find the trigger row to insert the probe after');
+  else if (result.status === 0 || !result.output.includes('table row missing its leading `|`')) failures.push(`generic angle-bracket table body control: a non-HTML '<T as Trait>::f | x' body row escaped table enforcement — got: ${result.output.trim()}`);
+}
+
+// Control 48: a header signature is not a body occurrence. Reusing the token once in the header
+// and once in the body must stay quiet, while two body rows carrying a different token must still
+// report a duplicate.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| `header-body-token` | header cell |', '|---|---|', '| `header-body-token` | first body row |', '| `body-only-token` | first duplicate row |', '| `body-only-token` | second duplicate row |', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('header/body signature control: could not find the trigger row to insert the probe after');
+  else if (result.status === 0 || !result.output.includes('[body-only-token]')) failures.push(`header/body signature control: two equal body signatures were not reported — got: ${result.output.trim()}`);
+  else if (result.output.includes('[header-body-token]')) failures.push(`header/body signature control: the header occurrence was incorrectly counted as a body duplicate — got: ${result.output.trim()}`);
+}
+
+// Control 49: escaped backticks are literal prose and must not form a signature. Real multi-
+// backtick code spans, by contrast, are code and two equal body spans must be reported.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| escaped-backtick header | second cell |', '|---|---|', '| \\`x\\` | escaped prose one |', '| \\`x\\` | escaped prose two |', '| ``real-multi-backtick-probe`` | real code one |', '| ``real-multi-backtick-probe`` | real code two |', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('escaped/multi-backtick signature control: could not find the trigger row to insert the probe after');
+  else if (result.status === 0 || !result.output.includes('[real-multi-backtick-probe]')) failures.push(`escaped/multi-backtick signature control: real multi-backtick body spans were not deduplicated — got: ${result.output.trim()}`);
+  else if (result.output.includes('[x]')) failures.push(`escaped/multi-backtick signature control: escaped backticks were incorrectly treated as code — got: ${result.output.trim()}`);
+}
+
+// Control 50: a type-6 HTML block continues through table-looking lines until a blank line.
+// Duplicate-looking rows inside that block are literal HTML-block content and must remain quiet.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '<div>', '| `html-block-probe` | literal HTML-block content |', '|---|---|', '| `html-block-probe` | duplicate HTML-block content |', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('type-6 HTML-block control: could not find the trigger row to insert the probe after');
+  else if (result.status !== 0) failures.push(`type-6 HTML-block control: table-like duplicate rows inside <div> were inspected before the blank terminator — got: ${result.output.trim()}`);
+}
+
+// Control 51: a fenced code block nested in a blockquote still owns its literal contents. The
+// quote prefix must not hide its fence state from the escaped-quote guard or table scanner.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '> ```md', '> let escaped = "x \\" y";', '> | `blockquote-fence-probe` | literal table-like content |', '> |---|---|', '> | `blockquote-fence-probe` | duplicate table-like content |', '> ```', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('blockquote fenced-code control: could not find the trigger row to insert the probe after');
+  else if (result.status !== 0) failures.push(`blockquote fenced-code control: literal \\\" or table-like content inside a quoted fence was inspected — got: ${result.output.trim()}`);
+}
+
+// Controls 52-56: HTML block types 1-5 can be complete on their opening line. Each completed
+// opener must release the scanner so the following external table and literal-escape probes are
+// still diagnosed rather than being swallowed as HTML continuation content.
+for (const [name, opener] of [
+  ['type-1-script', '<script></script>'],
+  ['type-2-comment', '<!-- complete comment -->'],
+  ['type-3-processing-instruction', '<?complete?>'],
+  ['type-4-declaration', '<!DOCTYPE html>'],
+  ['type-5-cdata', '<![CDATA[complete]]>'],
+]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + [
+      '',
+      opener,
+      '| external-after-complete-html | second cell |',
+      '|---|---|',
+      'external pipe-less body after complete HTML',
+      'let escaped = "x \\" y";',
+      '',
+    ].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push(`HTML ${name} completion control: could not find the trigger row to insert the probe after`);
+  else if (result.status === 0 || !result.output.includes('table row missing its leading `|`') || !result.output.includes('literal \\" escape outside a fenced code block')) failures.push(`HTML ${name} completion control: a type-${name.slice(5, 6)} opening-line terminator swallowed the following table or escape diagnostic — got: ${result.output.trim()}`);
+}
+
+// Control 57: type-1 HTML blocks close only on their matching tag. A </style> line inside a
+// <script> block must not release the scanner and expose the table-like rows before </script>.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + [
+      '',
+      '<script>',
+      '</style>',
+      '| `script-close-tag-probe` | literal script content |',
+      '|---|---|',
+      '| `script-close-tag-probe` | duplicate script content |',
+      '</script>',
+      'let escaped = "x \\" y";',
+      '',
+    ].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('HTML type-1 close-tag control: could not find the trigger row to insert the probe after');
+  else if (result.status === 0 || !result.output.includes('literal \\" escape outside a fenced code block') || result.output.includes('[script-close-tag-probe]') || result.output.includes('table row missing its leading `|`')) failures.push(`HTML type-1 close-tag control: </style> incorrectly closed <script> or hid the real post-</script> escape diagnostic — got: ${result.output.trim()}`);
+}
+
+// Control 58: a blockquote fence ends when the quote container ends. The unquoted line after
+// the nested fence is external content and its literal escape must be diagnosed; quoted
+// table-like duplicate rows remain fenced literals.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + [
+      '',
+      '> ```md',
+      '> quoted fence content',
+      '> | `blockquote-exit-probe` | literal quoted content |',
+      '> |---|---|',
+      '> | `blockquote-exit-probe` | duplicate quoted content |',
+      'outside quote = "x \\" y";',
+      '',
+    ].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('blockquote fence-exit control: could not find the trigger row to insert the probe after');
+  else if (result.status === 0 || !result.output.includes('literal \\" escape outside a fenced code block') || result.output.includes('[blockquote-exit-probe]')) failures.push(`blockquote fence-exit control: the nested fence did not end at quote-container exit or quoted table-like rows leaked into the scan — got: ${result.output.trim()}`);
+}
+
+// Control 59: code-span whitespace normalization applies only at the edges. Internal runs are
+// content, so `a  b` and `a b` must remain different body signatures.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| code-span internal-space header | second cell |', '|---|---|', '| ``a  b`` | double internal space |', '| ``a b`` | single internal space |', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('code-span internal-space control: could not find the trigger row to insert the probe after');
+  else if (result.status !== 0) failures.push(`code-span internal-space control: distinct internal whitespace runs were collapsed into a duplicate or another diagnostic — got: ${result.output.trim()}`);
+}
+
+// Control 60: CommonMark removes one matching edge space from a non-all-space code span. The
+// separately-probed edge-equivalent spans therefore do duplicate, unlike Control 59's internals.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| code-span edge-space header | second cell |', '|---|---|', '| `` a `` | edge-spaced code |', '| ``a`` | normalized code |', ''].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('code-span edge-space control: could not find the trigger row to insert the probe after');
+  else if (result.status === 0 || !result.output.includes('[a]')) failures.push(`code-span edge-space control: CommonMark-equivalent edge spaces did not normalize to one duplicate signature — got: ${result.output.trim()}`);
 }
 
 // Rule-text presence controls for the corrected high-risk rules: a revert of the correction in
