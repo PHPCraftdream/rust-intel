@@ -486,13 +486,13 @@ for (const rel of canonicalFiles) {
 // CommonMark processes no backslash escapes inside code spans, so a shipped manifest recipe
 // reads invalid TOML. Zero legitimate occurrences today — reject outside fences. Fence state
 // tracks the opener's marker char and length (GFM §4.5: a closer repeats the same marker at
-// >= the opener's length, followed only by spaces) — a blind boolean toggle wrongly "closes"
+// >= the opener's length, followed only by spaces or tabs) — a blind boolean toggle wrongly "closes"
 // a 4-backtick fence on a 3-backtick line, flagging escapes that are still inside code.
 // Openers obey GFM §4.5 too: 0-3 spaces of indentation (a tab makes the line indented
 // code, not a fence) and a backtick-free info string for backtick fences.
 // Top-level fences only: no skill/*.md fence is nested in a list/blockquote.
 function fenceCloser(line, fence) {
-  const run = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+  const run = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
   return run !== null && run[1][0] === fence.marker && run[1].length >= fence.length;
 }
 for (const file of markdownFiles) {

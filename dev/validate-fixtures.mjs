@@ -370,15 +370,20 @@ for (const [name, inserted] of [
   else if (result.status !== 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs flagged a GFM block-level start (${name}) immediately after a table as a pipe-less table row — got: ${result.output.trim()}`);
 }
 
-// Controls 16-18: the `\"` guard's fence state must track the opener's marker + length
+// Controls 16-20: the `\"` guard's fence state must track the opener's marker + length
 // (GFM §4.5), not toggle on any fence-looking line — a 3-backtick line inside a 4-backtick
-// fence, a ~~~ line inside a backtick fence, and a would-be closer carrying trailing
-// non-space text (only spaces/tabs may follow a closer) are all content, so an `\"` after
-// them is still inside code and must stay unflagged.
+// fence, a ~~~ line inside a backtick fence, a would-be closer carrying trailing non-space
+// text (only spaces/tabs may follow a closer), a would-be closer suffixed with a form feed
+// (cmark-gfm's closer scanner allows only ASCII space/tab after the delimiter, so any other
+// whitespace character leaves the fence open), and a tab-indented ``` (a tab indent is not
+// 0-3 spaces, so the fence stays open) are all content, so an `\"` after them is still
+// inside code and must stay unflagged.
 for (const [name, fenceLines] of [
   ['4-backtick-fence-3-backtick-content', ['````md', 'let recipe = "a";', '```', 'let escaped = "x \\" y";', '````']],
   ['backtick-fence-tilde-content', ['```md', '~~~', 'let escaped = "x \\" y";', '```']],
   ['closer-trailing-text-fence-still-open', ['```md', 'let recipe = "a";', '``` trailing', 'let escaped = "x \\" y";', '```']],
+  ['closer-form-feed-suffix-fence-still-open', ['```md', 'let recipe = "a";', '``` \f', 'let escaped = "x \\" y";', '```']],
+  ['tab-indented-fake-closer', ['```md', '\t```', 'let escaped = "x \\" y";', '```']],
 ]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
     const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
@@ -391,7 +396,7 @@ for (const [name, fenceLines] of [
   else if (result.status !== 0) failures.push(`escape-guard ${name} control: dev/validate.mjs rejected an \\" escape sitting inside a still-open fence (${name}) — got: ${result.output.trim()}`);
 }
 
-// Controls 19-20: GFM §4.5 restricts openers themselves — a tab-indented ``` is indented
+// Controls 21-22: GFM §4.5 restricts openers themselves — a tab-indented ``` is indented
 // code (only 0-3 spaces indent a fence) and a backtick fence whose info string holds a
 // backtick is not an opener — so neither opens a fence and an `\"` after either must be
 // flagged, not suppressed.
@@ -407,7 +412,7 @@ for (const [name, openerLines] of [
     return original.slice(0, lineEnd + 1) + openerLines.join('\n') + original.slice(lineEnd);
   });
   if (result.skipped) failures.push(`escape-guard ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe lines after`);
-  else if (result.status === 0 || !result.output.includes('literal \\" escape outside a fenced code block')) failures.push(`escape-guard ${name} control: dev/validate.mjs did not flag an \" escape after an invalid fence opener (${name}) — got: ${result.output.trim()}`);
+  else if (result.status === 0 || !result.output.includes('literal \\" escape outside a fenced code block')) failures.push(`escape-guard ${name} control: dev/validate.mjs did not flag an \\" escape after an invalid fence opener (${name}) — got: ${result.output.trim()}`);
 }
 
 // Rule-text presence controls for the corrected high-risk rules: a revert of the correction in
