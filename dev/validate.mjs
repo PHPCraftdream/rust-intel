@@ -319,7 +319,7 @@ function reachesIndentedCodeColumn(line) {
 }
 // Empty ATX headings ('#' through '######'), empty list items ('-', '*', '+', '1.', '1)') are
 // valid block starts too: the marker may be followed by end-of-line, not only whitespace.
-const blockStartRe = /^\s{0,3}(#{1,6}(?:\s|$)|```|~~~|>|[-*+](?:\s|$)|\d{1,9}[.)](?:\s|$)|((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})$|<)/;
+const blockStartRe = /^ {0,3}(#{1,6}(?:[ \t]|$)|```|~~~|>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|((-[ \t]*){3,}|(\*[ \t]*){3,}|(_[ \t]*){3,})$|<)/;
 // Delimiter row: ≥2 cells, each only hyphens with an optional leading/trailing colon (GFM
 // §4.10). A lone '---' is a thematic break (or setext underline), never a delimiter, and this
 // project's tables all have ≥2 columns.
@@ -373,8 +373,7 @@ skillSource.forEach((line, index) => {
     tableBlock.get(signature).push(index + 1);
     return;
   }
-  const trimmed = line.trim();
-  if (trimmed === '' || reachesIndentedCodeColumn(line) || blockStartRe.test(line)) return flushTableBlock();
+  if (/^[ \t]*$/.test(line) || reachesIndentedCodeColumn(line) || blockStartRe.test(line)) return flushTableBlock();
   if (tableState === 'body') {
     errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so a pipe-less line still parses as a row of the open table; the risk is that it escapes this project's leading-pipe convention and the duplicate-trigger scan built on it)`);
     return flushTableBlock();
@@ -485,12 +484,17 @@ for (const rel of canonicalFiles) {
 // A literal `\"` in rule text is a JSON-string escape that leaked through the apply path:
 // CommonMark processes no backslash escapes inside code spans, so a shipped manifest recipe
 // reads invalid TOML. Zero legitimate occurrences today — reject outside fences. Fence state
-// tracks the opener's marker char and length (GFM §4.5: a closer repeats the same marker at
-// >= the opener's length, followed only by spaces or tabs) — a blind boolean toggle wrongly "closes"
-// a 4-backtick fence on a 3-backtick line, flagging escapes that are still inside code.
+// tracks the opener's marker char and length (a closer repeats the same marker at >= the
+// opener's length; GFM §4.5's own text allows only trailing spaces, but the cmark-gfm reference
+// scanner and CommonMark >= 0.30 also allow trailing tabs, which is the behavior matched here) —
+// a blind boolean toggle wrongly "closes" a 4-backtick fence on a 3-backtick line, flagging
+// escapes that are still inside code.
 // Openers obey GFM §4.5 too: 0-3 spaces of indentation (a tab makes the line indented
 // code, not a fence) and a backtick-free info string for backtick fences.
 // Top-level fences only: no skill/*.md fence is nested in a list/blockquote.
+// [ \t]* has no \r? guard because every tracked file is \n-only by .gitattributes'
+// `* text=auto eol=lf` (verified: `git ls-files --eol` shows i/lf w/lf for every scanned file);
+// a checkout without that attribute could leave a fence open past a CR-suffixed closer.
 function fenceCloser(line, fence) {
   const run = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
   return run !== null && run[1][0] === fence.marker && run[1].length >= fence.length;

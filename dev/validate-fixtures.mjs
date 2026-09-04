@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: twenty hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: twenty-four hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the leading-pipe table convention across
 // body/header/delimiter rows in three GFM-legal width variants, block-level quiet/flag probes
 // after a table — including empty heading/list and tab-expanded-indent boundaries — and
@@ -370,7 +370,26 @@ for (const [name, inserted] of [
   else if (result.status !== 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs flagged a GFM block-level start (${name}) immediately after a table as a pipe-less table row — got: ${result.output.trim()}`);
 }
 
-// Controls 16-20: the `\"` guard's fence state must track the opener's marker + length
+// Controls 16-17: a non-breaking space (U+00A0) is Unicode whitespace but not GFM space/tab —
+// an NBSP-prefixed bullet marker and an NBSP-only line are both still table rows to cmark-gfm,
+// not block starts / blank lines, and must be flagged like any other pipe-less row.
+for (const [name, inserted] of [
+  ['nbsp-prefixed-bullet', '\u00A0- item'],
+  ['nbsp-only-line', '\u00A0\u00A0\u00A0'],
+]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (original) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = original.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = original.indexOf('\n', at);
+    return original.slice(0, lineEnd + 1) + inserted + original.slice(lineEnd);
+  });
+  if (result.skipped) failures.push(`SKILL.md ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe line after`);
+  else if (result.status === 0) failures.push(`SKILL.md ${name} control: dev/validate.mjs did not flag a non-breaking-space line (${name}) as a pipe-less table row`);
+  else if (!result.output.includes('missing its leading `|`')) failures.push(`SKILL.md ${name} control: dev/validate.mjs failed but its output did not name the missing leading \`|\` — got: ${result.output.trim()}`);
+}
+
+// Controls 18-22: the `\"` guard's fence state must track the opener's marker + length
 // (GFM §4.5), not toggle on any fence-looking line — a 3-backtick line inside a 4-backtick
 // fence, a ~~~ line inside a backtick fence, a would-be closer carrying trailing non-space
 // text (only spaces/tabs may follow a closer), a would-be closer suffixed with a form feed
@@ -396,7 +415,7 @@ for (const [name, fenceLines] of [
   else if (result.status !== 0) failures.push(`escape-guard ${name} control: dev/validate.mjs rejected an \\" escape sitting inside a still-open fence (${name}) — got: ${result.output.trim()}`);
 }
 
-// Controls 21-22: GFM §4.5 restricts openers themselves — a tab-indented ``` is indented
+// Controls 23-24: GFM §4.5 restricts openers themselves — a tab-indented ``` is indented
 // code (only 0-3 spaces indent a fence) and a backtick fence whose info string holds a
 // backtick is not an opener — so neither opens a fence and an `\"` after either must be
 // flagged, not suppressed.
