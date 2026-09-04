@@ -313,25 +313,54 @@ function tableRowView(line, paragraphContinuation = false) {
 }
 const skillSource = splitGfmLines(fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8'));
 let tableBlock = new Map();
-// Three-state table machine: 'none' -> 'header' (a row that could be a table header is pending,
+// Four-state table machine: 'none' -> 'header' (a row that could be a table header is pending,
 // waiting for the delimiter row that confirms a real table) -> 'body'. The old two-variable
 // state (inTable/tableColumns) was set only once a pipe-prefixed row existed, so a pipe-less
 // header row (inTable still false) and a pipe-less delimiter row (tableColumns still 0) both
 // escaped detection; the delimiter row must also match the header's cell count or GFM
 // recognizes no table at all — that fact needs an explicit pending-header state.
+// 'rejected' is the TABLE_VISITED state: a width-mismatched paragraph cannot promote a later
+// delimiter until a real paragraph boundary.
 let tableState = 'none';
 let headerHadPipe = false;
 let headerCells = 0;
 let headerLine = 0; // 1-based line of the pending header candidate — errors about IT must cite this, not the confirming delimiter's line
 function flushTableBlock() {
-  for (const [signature, lines] of tableBlock) {
-    if (lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${signature}] at lines ${lines.join(', ')}`);
+  for (const entry of tableBlock.values()) {
+    if (entry.lines.length > 1) errors.push(`skill/SKILL.md: duplicate code-pattern trigger rows for [${entry.display}] at lines ${entry.lines.join(', ')}`);
   }
   tableBlock = new Map();
   tableState = 'none';
   headerHadPipe = false;
   headerCells = 0;
   headerLine = 0;
+}
+function inlineMarkupEnd(text, start) {
+  const rest = text.slice(start);
+  for (const [open, close] of [['<!--', '-->'], ['<?', '?>'], ['<![CDATA[', ']]>']]) {
+    if (rest.startsWith(open)) {
+      const end = rest.indexOf(close, open.length);
+      return end < 0 ? null : start + end + close.length;
+    }
+  }
+  if (/^<![A-Z]/.test(rest)) {
+    const end = rest.indexOf('>');
+    return end < 0 ? null : start + end + 1;
+  }
+  const close = rest.match(htmlCloseTag);
+  if (close) return start + close[0].length;
+  const open = rest.match(htmlOpenTag);
+  if (open) {
+    // `<T as Trait>` / `<T where U>` are Rust generic prose, not inline HTML tags. Keep this
+    // narrow guard so
+    // valid lowercase HTML attributes/tags still take precedence.
+    const tagName = open[0].match(/^<([A-Za-z][A-Za-z0-9-]*)/)[1];
+    if (!(tagName.length === 1 && /\b(?:as|where)\b/.test(open[0]))) return start + open[0].length;
+  }
+  const uri = rest.match(/^<([A-Za-z][A-Za-z0-9+.-]{1,31}):[^ <>]*>/);
+  if (uri) return start + uri[0].length;
+  const email = rest.match(/^<[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*>/);
+  return email ? start + email[0].length : null;
 }
 function codeSpanSignatures(cells) {
   const text = cells[0] || '';
@@ -340,6 +369,13 @@ function codeSpanSignatures(cells) {
     if (text[i] === '\\' && i + 1 < text.length && isAsciiPunctuation(text[i + 1])) {
       i += 2;
       continue;
+    }
+    if (text[i] === '<') {
+      const markupEnd = inlineMarkupEnd(text, i);
+      if (markupEnd !== null) {
+        i = markupEnd;
+        continue;
+      }
     }
     if (text[i] !== '`') {
       i += 1;
@@ -377,12 +413,15 @@ function codeSpanSignatures(cells) {
       i += runLength;
     }
   }
-  return signatures.sort().join(' + ');
+  signatures.sort();
+  return { key: JSON.stringify(signatures), display: signatures.join(' + ') };
 }
 function rememberSignature(signature, line) {
-  if (!signature) return;
-  if (!tableBlock.has(signature)) tableBlock.set(signature, []);
-  tableBlock.get(signature).push(line);
+  if (!signature || signature.key === '[]') return;
+  // The display string is intentionally human-readable, but it is not injective (`a + b`
+  // could be one token or two). JSON encoding the sorted token array is the actual map key.
+  if (!tableBlock.has(signature.key)) tableBlock.set(signature.key, { display: signature.display, lines: [] });
+  tableBlock.get(signature.key).lines.push(line);
 }
 function setPendingHeader(row, line) {
   tableState = 'header';
@@ -437,19 +476,83 @@ function stripBlockquotePrefixes(line) {
   }
   return { text: line.slice(offset), depth };
 }
+function stripContainerPrefixes(line) {
+  let offset = 0;
+  let quoteDepth = 0;
+  let listDepth = 0;
+  let quoteConsumed = 0;
+  let listIndent = 0;
+  const listMarkers = [];
+  while (true) {
+    const quote = line.slice(offset).match(/^ {0,3}>[ \t]?/);
+    if (quote) {
+      offset += quote[0].length;
+      quoteConsumed += quote[0].length;
+      quoteDepth += 1;
+      continue;
+    }
+    const list = line.slice(offset).match(/^ {0,3}(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)/);
+    if (!list) break;
+    offset += list[0].length;
+    offset += line.slice(offset).match(/^[ \t]*/)[0].length;
+    listDepth += 1;
+    listMarkers.push(list[0].trim());
+    listIndent = offset - quoteConsumed;
+  }
+  return { text: line.slice(offset), blockquoteDepth: quoteDepth, listDepth, listIndent, listMarkers };
+}
+function containerViewForState(line, container) {
+  // At the document root, markers such as `> ...` and `- ...` are ordinary fenced content;
+  // never strip them while looking for a closer.
+  if (container.blockquoteDepth === 0 && container.listDepth === 0) return { inside: true, text: line, listDepth: 0 };
+  const view = stripContainerPrefixes(line);
+  if (view.blockquoteDepth !== container.blockquoteDepth) return { inside: false, text: view.text };
+  if (container.listDepth === 0) return { inside: true, text: view.text, listDepth: view.listDepth };
+  const quote = stripBlockquotePrefixes(line);
+  const leading = quote.text.match(/^[ \t]*/)[0];
+  if (view.listDepth === container.listDepth && leading.length >= container.listIndent && leading.length > 0) {
+    const remainder = quote.text.slice(container.listIndent);
+    const nested = remainder.match(/^ {0,3}(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)/);
+    if (nested) {
+      const nestedText = remainder.slice(nested[0].length).replace(/^[ \t]*/, '');
+      return { inside: true, text: nestedText, listDepth: container.listDepth + 1 };
+    }
+  }
+  if (view.listDepth >= container.listDepth) {
+    if (container.listMarkers.some((marker, index) => view.listMarkers[index] !== marker)) return { inside: false, text: view.text, listDepth: view.listDepth };
+    return { inside: true, text: view.text, listDepth: view.listDepth };
+  }
+  if (quote.depth !== container.blockquoteDepth) return { inside: false, text: view.text, listDepth: view.listDepth };
+  if (leading.length < container.listIndent) return { inside: false, text: quote.text, listDepth: view.listDepth };
+  const remainder = quote.text.slice(container.listIndent);
+  const nested = remainder.match(/^ {0,3}(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)/);
+  if (nested) {
+    const nestedText = remainder.slice(nested[0].length).replace(/^[ \t]*/, '');
+      return { inside: true, text: nestedText, listDepth: container.listDepth + 1 };
+  }
+  return { inside: true, text: remainder, listDepth: container.listDepth };
+}
 function isFenceOpener(line) {
-  const { text, depth } = stripBlockquotePrefixes(line);
+  const view = stripContainerPrefixes(line);
+  const { text } = view;
   const run = text.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
   if (!run || (run[1][0] === '`' && run[2].includes('`'))) return null;
-  return { marker: run[1][0], length: run[1].length, blockquoteDepth: depth };
+  return {
+    marker: run[1][0],
+    length: run[1].length,
+    blockquoteDepth: view.blockquoteDepth,
+    container: { blockquoteDepth: view.blockquoteDepth, listDepth: view.listDepth, listIndent: view.listIndent, listMarkers: view.listMarkers },
+  };
+}
+function htmlLineText(line) {
+  return stripContainerPrefixes(line).text;
 }
 const blockStartRe = /^ {0,3}(#{1,6}(?:[ \t]|$)|>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|((-[ \t]*){3,}|(\*[ \t]*){3,}|(_[ \t]*){3,})$)/;
 const blockTagNames = 'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul';
 const htmlOpenTag = new RegExp('^<[A-Za-z][A-Za-z0-9-]*(?:[ \\t\\v\\f]+[A-Za-z_:][A-Za-z0-9:._-]*(?:[ \\t\\v\\f]*=[ \\t\\v\\f]*(?:"[^"\\r\\n]*"|\'[^\'\\r\\n]*\'|[^ \\t\\v\\f"\'=<>`]+))?)*[ \\t\\v\\f]*/?>');
 const htmlCloseTag = /^<\/[A-Za-z][A-Za-z0-9-]*[ \t\v\f]*>/;
 function htmlBlockStartType(line) {
-  const indent = line.match(/^ {0,3}/)[0].length;
-  const text = line.slice(indent);
+  const text = htmlLineText(line);
   if (/^<(?:script|pre|textarea|style)(?=[ \t\v\f>]|$)/i.test(text)) return 1;
   if (text.startsWith('<!--')) return 2;
   if (text.startsWith('<?')) return 3;
@@ -460,21 +563,17 @@ function htmlBlockStartType(line) {
   if (open && /^[ \t\f]*$/.test(text.slice(open[0].length))) return 7;
   return 0;
 }
-function htmlType1Tag(line) {
-  const indent = line.match(/^ {0,3}/)[0].length;
-  const match = line.slice(indent).match(/^<(script|pre|textarea|style)(?=[ \t\v\f>]|$)/i);
-  return match ? match[1].toLowerCase() : null;
-}
-function htmlBlockEnd(line, block) {
+function htmlBlockEnd(line, block, content = htmlLineText(line)) {
   if (block.type === 1) {
-    const tag = block.tag ? block.tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '(?:script|pre|textarea|style)';
-    return new RegExp(`</${tag}[ \\t\\v\\f]*>`, 'i').test(line);
+    // cmark-gfm's type-1 end scanner accepts any of the four exact close tags; unlike the
+    // opener, the closing tag is not paired to one particular element and cannot contain space.
+    return /<\/(?:script|pre|style|textarea)>/i.test(content);
   }
-  if (block.type === 2) return line.includes('-->');
-  if (block.type === 3) return line.includes('?>');
-  if (block.type === 4) return line.includes('>');
-  if (block.type === 5) return line.includes(']]>');
-  return /^[ \t]*$/.test(line);
+  if (block.type === 2) return content.includes('-->');
+  if (block.type === 3) return content.includes('?>');
+  if (block.type === 4) return content.includes('>');
+  if (block.type === 5) return content.includes(']]>');
+  return /^[ \t]*$/.test(content);
 }
 // Delimiter row: one or more cells, each only hyphens with an optional leading/trailing colon
 // (GFM §4.10). A lone '---' is a thematic break (or setext underline), never a delimiter.
@@ -487,6 +586,9 @@ function orderedListStart(line) {
 }
 function isBlankListItem(line) {
   return /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]*$/.test(line);
+}
+function isSetextUnderline(line) {
+  return /^ {0,3}(?:=+|-+)[ \t]*$/.test(line);
 }
 function isBlockStart(line) {
   return reachesIndentedCodeColumn(line) || isFenceOpener(line) || blockStartRe.test(line) || htmlBlockStartType(line) !== 0;
@@ -503,19 +605,25 @@ let tableFence = null;
 let htmlBlock = null;
 skillSource.forEach((line, index) => {
   if (tableFence) {
-    const { depth } = stripBlockquotePrefixes(line);
+    const view = containerViewForState(line, tableFence.container);
     if (fenceCloser(line, tableFence)) {
       tableFence = null;
       return;
     }
-    if (depth >= tableFence.blockquoteDepth) return;
-    // The containing blockquote ended.  Rescan this line at the outer depth so a literal
-    // escaped quote (or a new top-level fence) is not swallowed as fenced content.
+    if (view.inside) return;
+    // The containing list/blockquote ended. Rescan this line at the outer depth so a literal
+    // escaped quote (or a new outer fence) is not swallowed as fenced content.
     tableFence = null;
   }
   if (htmlBlock) {
-    if (htmlBlockEnd(line, htmlBlock)) htmlBlock = null;
-    return;
+    const view = containerViewForState(line, htmlBlock.container);
+    if (view.inside) {
+      if (htmlBlockEnd(line, htmlBlock, view.text)) htmlBlock = null;
+      return;
+    }
+    // As with fences, the line which exits the containing list/blockquote belongs to the
+    // outer document and must be processed again below.
+    htmlBlock = null;
   }
   const opener = isFenceOpener(line);
   if (opener) {
@@ -529,7 +637,8 @@ skillSource.forEach((line, index) => {
   // header, so it must remain suppressed until a real paragraph boundary.
   if (htmlType && !(htmlType === 7 && (tableState === 'header' || tableState === 'rejected'))) {
     flushTableBlock();
-    const candidate = { type: htmlType, tag: htmlType === 1 ? htmlType1Tag(line) : null };
+    const context = stripContainerPrefixes(line);
+    const candidate = { type: htmlType, container: { blockquoteDepth: context.blockquoteDepth, listDepth: context.listDepth, listIndent: context.listIndent, listMarkers: context.listMarkers } };
     // Types 1–5 may be complete on their opening line; only retain continuation state when
     // their exact end marker was not already present.
     htmlBlock = htmlBlockEnd(line, candidate) ? null : candidate;
@@ -565,13 +674,16 @@ skillSource.forEach((line, index) => {
     return;
   }
   const blankLine = /^[ \t]*$/.test(line);
-  if (blankLine || isBlockStart(line)) {
+  // Setext underlines close a pending paragraph (including TABLE_VISITED), but are deliberately
+  // not added to the generic block-start predicate for an already-confirmed table body.
+  const setextBoundary = (tableState === 'header' || tableState === 'rejected') && isSetextUnderline(line);
+  if (blankLine || isBlockStart(line) || setextBoundary) {
     // A block start always ends an already-open table body. In contrast, indented code and an
     // ordered list not starting at 1 (including an empty list item) cannot interrupt a pending
     // paragraph, so they replace its provisional header with the paragraph's latest line.
     if (tableState === 'rejected') {
-      if (blankLine || interruptsPendingParagraph(line)) flushTableBlock();
-    } else if (tableState === 'body' || tableState === 'none' || blankLine || interruptsPendingParagraph(line)) {
+      if (blankLine || setextBoundary || interruptsPendingParagraph(line)) flushTableBlock();
+    } else if (tableState === 'body' || tableState === 'none' || blankLine || setextBoundary || interruptsPendingParagraph(line)) {
       flushTableBlock();
     } else {
       setPendingHeader(tableRowView(line, true), index + 1);
@@ -605,11 +717,10 @@ skillSource.forEach((line, index) => {
     setPendingHeader(continuationRow, index + 1);
     return;
   }
-  if (cells.length >= 2 && line.includes('|')) {
-    // A multi-cell pipe-less line outside any table is a row that may be waiting for the
-    // delimiter that confirms it; remember it as a pipe-less header candidate. Prose without a
-    // single '|' is never this project's row shape and is not tracked.
-    setPendingHeader(continuationRow, index + 1);
+  if (tableState === 'none') {
+    // Every ordinary paragraph line is a possible one-column header. cmark-gfm uses the last
+    // line of the paragraph as the header, so replacing this candidate is intentional.
+    setPendingHeader(row, index + 1);
   }
 });
 flushTableBlock();
@@ -695,15 +806,15 @@ for (const rel of canonicalFiles) {
 // escapes that are still inside code.
 // Openers obey GFM §4.5 too: 0-3 spaces of indentation (a tab makes the line indented
 // code, not a fence) and a backtick-free info string for backtick fences.
-// Fence scanning also understands nested blockquote container prefixes, so a closer must
-// match the opener's quote depth.  A quote-ending line is then rescanned at its outer depth.
-// [ \t]* has no \r? guard because every tracked file is \n-only by .gitattributes'
-// `* text=auto eol=lf` (verified: `git ls-files --eol` shows i/lf w/lf for every scanned file);
-// a checkout without that attribute could leave a fence open past a CR-suffixed closer.
+// Fence scanning understands bounded nested list/blockquote container prefixes, so a closer
+// must match the opener's container identity. A container-ending line is rescanned outside it.
+// splitGfmLines normalizes CRLF and lone CR before this scanner runs, so [ \t]* needs no
+// separate \r? guard and a CR checkout cannot leave a fence open past a closer.
 function fenceCloser(line, fence) {
-  const { text, depth } = stripBlockquotePrefixes(line);
-  const run = text.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
-  return run !== null && depth === (fence.blockquoteDepth || 0) && run[1][0] === fence.marker && run[1].length >= fence.length;
+  const view = containerViewForState(line, fence.container);
+  if (!view.inside) return false;
+  const run = view.text.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+  return run !== null && run[1][0] === fence.marker && run[1].length >= fence.length && view.listDepth === fence.container.listDepth;
 }
 for (const file of markdownFiles) {
   const source = fs.readFileSync(file, 'utf8');
@@ -712,14 +823,13 @@ for (const file of markdownFiles) {
     const opener = isFenceOpener(line);
     let fenceLineHandled = false;
     if (fence) {
-      const { depth } = stripBlockquotePrefixes(line);
       if (fenceCloser(line, fence)) {
         fence = null;
         fenceLineHandled = true;
       }
-      else if (depth < fence.blockquoteDepth) {
-        // A fenced block nested in a blockquote ends when the containing quote ends.  The
-        // line that exits the quote belongs to the outer document and must be rescanned as
+      else if (!containerViewForState(line, fence.container).inside) {
+        // A fenced block nested in a list/blockquote ends when its containing container ends. The
+        // line that exits the container belongs to the outer document and must be rescanned as
         // such; otherwise a literal `\\"` on it would be incorrectly treated as fenced text.
         fence = null;
       } else {
