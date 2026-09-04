@@ -62,7 +62,9 @@ This release also closes out two prior commits that shipped without a changelog 
 
 **The post-`44eb16c` HS review-cycle 2 closure is superseded by cycle 3's P3 corrections.** Its preliminary scope covered one-column tables; paragraph visited after width mismatch; HTML start/continuation handling; body-only duplicate signatures; CommonMark code-span extraction; and nested blockquote fences. No new category, no BANNED/REQUIRED shape change — **PATCH**-shaped. This records the supersession and does not assert test results or a new commit.
 
-**The post-`44eb16c` HS review-cycle 3 closes these validator-conformance classes:** fully pipe-less/mixed one-column headers; setext boundary after `TABLE_VISITED`; exact CommonMark type-1 terminators; list-contained HTML/fences; inline HTML/autolink precedence for code signatures; injective signature keys; and strengthened oracles. No new category, no BANNED/REQUIRED shape change — **PATCH**-shaped. This is a closure-scope record; it does not assert test results or a new commit.
+**The post-`44eb16c` HS review-cycle 3 closure is superseded by cycle 4's P3 corrections.** Its preliminary scope covered fully pipe-less/mixed one-column headers; setext boundary after `TABLE_VISITED`; exact CommonMark type-1 terminators; list-contained HTML/fences; inline HTML/autolink precedence for code signatures; injective signature keys; and strengthened oracles. No new category, no BANNED/REQUIRED shape change — **PATCH**-shaped. This records the supersession and does not assert test results or a new commit.
+
+**The post-`44eb16c` HS review-cycle 4 closes these validator-conformance classes:** accurate list-container lifecycle (siblings, residual markers, blanks, interruption, and padding); 0–3-space HTML starts; inline link/image destinations and titles; exact inline HTML priority; autolink bounds; and strengthened table-leak/parity oracles. No new category, no BANNED/REQUIRED shape change — **PATCH**-shaped. This is a closure-scope record; it does not assert test results or a new commit.
 
 ## [0.6.0] — 2026-08-19
 
