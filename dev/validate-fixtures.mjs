@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: twenty-four hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: twenty-six hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the leading-pipe table convention across
 // body/header/delimiter rows in three GFM-legal width variants, block-level quiet/flag probes
 // after a table — including empty heading/list and tab-expanded-indent boundaries — and
@@ -432,6 +432,44 @@ for (const [name, openerLines] of [
   });
   if (result.skipped) failures.push(`escape-guard ${name} control: could not find the \`Rc<RefCell<...>>\` trigger row to insert the probe lines after`);
   else if (result.status === 0 || !result.output.includes('literal \\" escape outside a fenced code block')) failures.push(`escape-guard ${name} control: dev/validate.mjs did not flag an \\" escape after an invalid fence opener (${name}) — got: ${result.output.trim()}`);
+}
+
+// Control 25: a backtick fence-looking line whose info string contains a backtick is not a GFM
+// fence opener. Keep its pipes as a pipe-less header candidate, confirm that candidate with a
+// delimiter, and then require the following body row without a leading pipe to be diagnosed.
+// Treating the invalid opener as a block start flushes the candidate, so the body-row diagnostic
+// disappears; checking the body's exact line makes this a state-preservation probe, not merely a
+// second invalid-opener escape check.
+{
+  const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+  const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
+  const markerAt = original.indexOf(marker);
+  const markerLine = markerAt === -1 ? -1 : original.slice(0, markerAt).split('\n').length;
+  const bodyLine = markerLine === -1 ? -1 : markerLine + 4;
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '```lang`invalid | probe header |', '|---|---|', 'probe body row | still body'].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('escape-guard backtick-info-table-state control: could not find the `Rc<RefCell<...>>` trigger row to insert the counterfactual table after');
+  else if (result.status === 0 || !result.output.includes('table row missing its leading `|`')) failures.push(`escape-guard backtick-info-table-state control: dev/validate.mjs did not diagnose the body row after a non-opener containing a backtick in its info string with the missing-leading-pipe message — got: ${result.output.trim()}`);
+  else if (bodyLine !== -1 && !result.output.includes(`skill/SKILL.md:${bodyLine}: table row missing its leading \`|\``)) failures.push(`escape-guard backtick-info-table-state control: dev/validate.mjs did not cite the following body row at skill/SKILL.md:${bodyLine} — got: ${result.output.trim()}`);
+}
+
+// Control 26: NBSP is not one of GFM's table-space characters. A header followed by a delimiter
+// whose cells are wrapped in NBSP must therefore remain a non-table candidate; the prose after it
+// must not inherit a false open-table state and trigger a missing-leading-pipe error.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const marker = '| `Rc<RefCell<...>>` crossing `.await` or sent across threads |';
+    const at = source.indexOf(marker);
+    if (at === -1) return null;
+    const lineEnd = source.indexOf('\n', at);
+    return source.slice(0, lineEnd + 1) + ['', '| probe header | second cell |', '|\u00A0---\u00A0|\u00A0---\u00A0|', 'prose after NBSP delimiter'].join('\n') + source.slice(lineEnd);
+  });
+  if (result.skipped) failures.push('table NBSP-delimiter control: could not find the `Rc<RefCell<...>>` trigger row to insert the counterfactual table after');
+  else if (result.status !== 0 || result.output.includes('missing its leading `|`')) failures.push(`table NBSP-delimiter control: dev/validate.mjs treated NBSP around delimiter cells as table whitespace and created a false table / missing-leading-pipe error — got: ${result.output.trim()}`);
 }
 
 // Rule-text presence controls for the corrected high-risk rules: a revert of the correction in

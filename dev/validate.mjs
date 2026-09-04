@@ -254,6 +254,12 @@ for (const [file, text] of categoryCountFileTexts) {
 // backticks do NOT protect table-cell delimiters in GFM. A naive `split('|')` truncates a cell
 // like `` `std::thread::scope(\|s\| ...)` `` at the first escaped pipe. Split respecting the
 // escape instead, then unescape `\|` back to `|` before extracting inline-code spans.
+// cmark-gfm's table scanner calls only ASCII space, tab, vertical tab, and form feed
+// spacechar. Keep this separate from String.prototype.trim(), whose Unicode-wide behavior
+// would incorrectly discard content such as a non-breaking space around a delimiter marker.
+function trimGfmTableSpace(text) {
+  return text.replace(/^[ \t\v\f]+|[ \t\v\f]+$/g, '');
+}
 function splitTableRow(line) {
   const cells = [];
   let current = '';
@@ -268,7 +274,7 @@ function splitTableRow(line) {
       current += line[i];
     }
   }
-  if (current.trim() !== '') cells.push(current);
+  if (trimGfmTableSpace(current) !== '') cells.push(current);
   return cells;
 }
 const skillSource = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8').split('\n');
@@ -319,7 +325,16 @@ function reachesIndentedCodeColumn(line) {
 }
 // Empty ATX headings ('#' through '######'), empty list items ('-', '*', '+', '1.', '1)') are
 // valid block starts too: the marker may be followed by end-of-line, not only whitespace.
-const blockStartRe = /^ {0,3}(#{1,6}(?:[ \t]|$)|```|~~~|>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|((-[ \t]*){3,}|(\*[ \t]*){3,}|(_[ \t]*){3,})$|<)/;
+// A fence opener is a GFM block start only when its marker has 0-3 spaces of indentation;
+// tabs are not indentation here, and a backtick fence's info string may not contain a backtick.
+// Return the opener details so the escape scanner and table boundary classifier share exactly
+// the same recognition predicate.
+function isFenceOpener(line) {
+  const run = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (!run || (run[1][0] === '`' && run[2].includes('`'))) return null;
+  return { marker: run[1][0], length: run[1].length };
+}
+const blockStartRe = /^ {0,3}(#{1,6}(?:[ \t]|$)|>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|((-[ \t]*){3,}|(\*[ \t]*){3,}|(_[ \t]*){3,})$|<)/;
 // Delimiter row: ≥2 cells, each only hyphens with an optional leading/trailing colon (GFM
 // §4.10). A lone '---' is a thematic break (or setext underline), never a delimiter, and this
 // project's tables all have ≥2 columns.
@@ -339,8 +354,8 @@ function splitRowCells(line) {
     }
   }
   cells.push(current);
-  if (cells.length > 1 && cells[cells.length - 1].trim() === '') cells.pop(); // trailing pipe, same as splitTableRow
-  return cells.map((cell) => cell.trim());
+  if (cells.length > 1 && trimGfmTableSpace(cells[cells.length - 1]) === '') cells.pop(); // trailing pipe, same as splitTableRow
+  return cells.map(trimGfmTableSpace);
 }
 function isDelimiterRow(cells) {
   return cells.length >= 2 && cells.every((cell) => /^:?-+:?$/.test(cell));
@@ -348,7 +363,7 @@ function isDelimiterRow(cells) {
 skillSource.forEach((line, index) => {
   if (line.startsWith('|')) {
     const cells = splitTableRow(line);
-    if (isDelimiterRow(cells.map((cell) => cell.trim()))) {
+    if (isDelimiterRow(cells.map(trimGfmTableSpace))) {
       if (tableState === 'header' && headerCells === cells.length) {
         if (!headerHadPipe) errors.push(`skill/SKILL.md:${headerLine}: table header row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (this header is confirmed by the delimiter row directly below it)`);
         tableState = 'body';
@@ -373,7 +388,7 @@ skillSource.forEach((line, index) => {
     tableBlock.get(signature).push(index + 1);
     return;
   }
-  if (/^[ \t]*$/.test(line) || reachesIndentedCodeColumn(line) || blockStartRe.test(line)) return flushTableBlock();
+  if (/^[ \t]*$/.test(line) || reachesIndentedCodeColumn(line) || isFenceOpener(line) || blockStartRe.test(line)) return flushTableBlock();
   if (tableState === 'body') {
     errors.push(`skill/SKILL.md:${index + 1}: table row missing its leading \`|\` — project convention: every trigger-table row is written with a leading pipe (GFM outer pipes are optional, so a pipe-less line still parses as a row of the open table; the risk is that it escapes this project's leading-pipe convention and the duplicate-trigger scan built on it)`);
     return flushTableBlock();
@@ -503,11 +518,11 @@ for (const file of markdownFiles) {
   const source = fs.readFileSync(file, 'utf8');
   let fence = null;
   source.split('\n').forEach((line, i) => {
-    const run = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    const opener = isFenceOpener(line);
     if (fence) {
       if (fenceCloser(line, fence)) fence = null;
-    } else if (run && (run[1][0] === '~' || !line.slice(run[0].length).includes('`'))) {
-      fence = { marker: run[1][0], length: run[1].length };
+    } else if (opener) {
+      fence = opener;
     } else if (line.includes('\\"')) {
       errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: literal \\" escape outside a fenced code block — JSON-style escape leaked into rule text`);
     }
