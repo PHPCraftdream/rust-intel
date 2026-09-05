@@ -256,6 +256,31 @@ function splitGfmLines(source) {
   return source.replace(/\r\n?/g, '\n').split('\n');
 }
 const skillSource = splitGfmLines(fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8'));
+function projectFenceOpener(line) {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null;
+  return { marker: match[1][0], length: match[1].length };
+}
+function projectFenceCloser(line, fence) {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+  return match !== null && match[1][0] === fence.marker && match[1].length >= fence.length;
+}
+// Scaffold anchors/end markers inside a supported fence are out of scope for this contract.
+const tableFenceMask = [];
+let tableFence = null;
+for (let i = 0; i < skillSource.length; i += 1) {
+  const line = skillSource[i];
+  if (tableFence) {
+    tableFenceMask[i] = true;
+    if (projectFenceCloser(line, tableFence)) tableFence = null;
+    continue;
+  }
+  const opener = projectFenceOpener(line);
+  if (opener) {
+    tableFenceMask[i] = true;
+    tableFence = opener;
+  } else tableFenceMask[i] = false;
+}
 function isAsciiPunctuation(character) {
   return character.length === 1 && /[!"#$%&'()*+,\-.\/:;<=>?@[\\\]^_`{|}~]/.test(character);
 }
@@ -287,23 +312,25 @@ function contractRow(line) {
 function isDelimiterCells(cells, width) {
   return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
-function codeSpanTokens(text, onOutside) {
-  // Collect maximal, unescaped runs once, then pair each opener with the next run of equal
-  // length. This keeps unmatched-run inputs linear instead of rescanning the suffix per opener.
+function codeSpanTokens(text, onOutside, onSpan) {
+  // Pair raw maximal runs once. Backslash escaping only suppresses an opener outside a span;
+  // an escaped first tick also exposes the remaining suffix as an opener candidate. A closer
+  // inside an accepted span is always the full raw run, even when preceded by a backslash.
   const runs = [];
   for (let i = 0; i < text.length;) {
-    if (text[i] === '\\' && i + 1 < text.length && isAsciiPunctuation(text[i + 1])) { i += 2; continue; }
     if (text[i] !== '`') { i += 1; continue; }
-    let length = 1;
-    while (text[i + length] === '`') length += 1;
-    runs.push({ start: i, length });
-    i += length;
+    const start = i;
+    while (text[i] === '`') i += 1;
+    const length = i - start;
+    const escapedFirst = isEscapedChar(text, start);
+    runs.push({ start, length, openerAllowed: !escapedFirst, closerAllowed: true });
+    if (escapedFirst && length > 1) runs.push({ start: start + 1, length: length - 1, openerAllowed: true, closerAllowed: false });
   }
   const nextSame = Array(runs.length).fill(-1);
   const nextByLength = new Map();
   for (let i = runs.length - 1; i >= 0; i -= 1) {
-    nextSame[i] = nextByLength.get(runs[i].length) ?? -1;
-    nextByLength.set(runs[i].length, i);
+    nextSame[i] = runs[i].closerAllowed ? (nextByLength.get(runs[i].length) ?? -1) : -1;
+    if (runs[i].closerAllowed) nextByLength.set(runs[i].length, i);
   }
   const tokens = [];
   let runIndex = 0;
@@ -316,11 +343,12 @@ function codeSpanTokens(text, onOutside) {
     if (runIndex < runs.length && runs[runIndex].start === i) {
       const opener = runs[runIndex];
       const closerIndex = nextSame[runIndex];
-      if (closerIndex >= 0) {
+      if (opener.openerAllowed && closerIndex >= 0) {
         const closer = runs[closerIndex];
         let content = text.slice(i + opener.length, closer.start).replace(/\r\n?|\n/g, ' ');
         if (content.length >= 2 && content.startsWith(' ') && content.endsWith(' ') && /[^ ]/.test(content)) content = content.slice(1, -1);
         tokens.push(content);
+        if (onSpan) onSpan(i, closer.start + closer.length);
         i = closer.start + closer.length;
         while (runIndex < runs.length && runs[runIndex].start < i) runIndex += 1;
         continue;
@@ -343,12 +371,22 @@ function codeSpanSignatures(cells) {
   return { tokens: unique, key: JSON.stringify(unique), display: unique.join(' + ') };
 }
 function unsupportedFirstCellSyntax(text) {
+  // Pattern cells intentionally accept plain text and inline code only; GFM link/autolink
+  // grammar is rejected (rather than partially emulated) outside accepted code spans.
   let reason = null;
+  const outside = Array(text.length).fill('\0');
   codeSpanTokens(text, (character, index, full) => {
+    outside[index] = character;
     if (reason) return;
     if (character === '<') reason = 'raw inline HTML/autolink';
     else if (character === '[' || (character === '!' && full[index + 1] === '[')) reason = 'link/image/reference';
   });
+  if (!reason) {
+    const plain = outside.join('');
+    if (/(?:^|\0|[^\w])(?:https?|mailto|xmpp):[^\s<>\0]+/i.test(plain)
+      || /(?:^|\0|[^\w])www\.[^\s<>\0]+/i.test(plain)
+      || /\b[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b/.test(plain)) reason = 'GFM autolink';
+  }
   return reason;
 }
 const tableContracts = [
@@ -359,14 +397,16 @@ const contractRanges = [];
 let searchFrom = 0;
 for (const contract of tableContracts) {
   const headerMatches = [];
-  for (let i = searchFrom; i < skillSource.length; i += 1) {
+  for (let i = 0; i < skillSource.length; i += 1) {
+    if (tableFenceMask[i]) continue;
     const row = contractRow(skillSource[i]);
     if (row.cells.length === contract.width && row.cells.every((cell, n) => cell === contract.anchor[n])) {
       headerMatches.push(i);
     }
   }
-  const headerIndex = headerMatches[0] ?? -1;
-  if (headerMatches.length !== 1) errors.push(`skill/SKILL.md: ${contract.name} table header anchor must occur exactly once after the preceding contract (found ${headerMatches.length})`);
+  const headerIndex = headerMatches.find((index) => index >= searchFrom) ?? -1;
+  if (headerMatches.length !== 1) errors.push(`skill/SKILL.md: ${contract.name} table header anchor must occur exactly once outside supported fences (found ${headerMatches.length})`);
+  if (headerIndex >= 0 && headerIndex < searchFrom) errors.push(`skill/SKILL.md:${headerIndex + 1}: ${contract.name} table header is out of order`);
   if (headerIndex < 0) {
     errors.push(`skill/SKILL.md: missing ${contract.name} table header anchor`);
     continue;
@@ -375,13 +415,15 @@ for (const contract of tableContracts) {
   if (!header.rawLeadingPipe) errors.push(`skill/SKILL.md:${headerIndex + 1}: table header row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`);
   const delimiterIndex = headerIndex + 1;
   const delimiter = delimiterIndex < skillSource.length ? contractRow(skillSource[delimiterIndex]) : null;
+  if (tableFenceMask[headerIndex] || tableFenceMask[delimiterIndex]) errors.push(`skill/SKILL.md:${delimiterIndex + 1}: ${contract.name} table scaffold must remain outside supported fences`);
   if (!delimiter || !isDelimiterCells(delimiter.cells, contract.width)) {
     errors.push(`skill/SKILL.md:${delimiterIndex + 1}: ${contract.name} table delimiter row has wrong width or syntax`);
   } else if (!delimiter.rawLeadingPipe) {
     errors.push(`skill/SKILL.md:${delimiterIndex + 1}: table delimiter row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`);
   }
-  const endMatches = skillSource.flatMap((line, i) => line.startsWith(contract.endMarker) ? [i] : []);
+  const endMatches = skillSource.flatMap((line, i) => !tableFenceMask[i] && line.startsWith(contract.endMarker) ? [i] : []);
   if (endMatches.length !== 1) errors.push(`skill/SKILL.md: ${contract.name} table end marker must occur exactly once (found ${endMatches.length})`);
+  if (endMatches.length === 1 && endMatches[0] <= delimiterIndex) errors.push(`skill/SKILL.md:${endMatches[0] + 1}: ${contract.name} table end marker must follow its delimiter and body`);
   const end = endMatches.find((index) => index > delimiterIndex) ?? skillSource.length;
   if (end < skillSource.length) {
     if (end === delimiterIndex + 1 || !/^[ \t]*$/.test(skillSource[end - 1])) errors.push(`skill/SKILL.md:${end + 1}: ${contract.name} table requires one blank separator immediately before its end marker`);
@@ -392,11 +434,29 @@ for (const contract of tableContracts) {
   contractRanges.push({ contract, headerIndex, delimiterIndex, end, bodyEnd });
   searchFrom = end < skillSource.length ? end + 1 : skillSource.length;
 }
+const promptRange = contractRanges.find(({ contract }) => contract.name === 'prompt-trigger');
+const codeRange = contractRanges.find(({ contract }) => contract.name === 'code-pattern');
+if (promptRange && codeRange) {
+  const promptAfter = promptRange.end + 1;
+  if (!/^[ \t]*$/.test(skillSource[promptAfter] || '') || codeRange.headerIndex !== promptAfter + 1) {
+    errors.push(`skill/SKILL.md:${promptRange.end + 1}: prompt end marker must be followed by exactly one blank line and the canonical code-pattern header`);
+  }
+}
+if (codeRange) {
+  const codeAfter = codeRange.end + 1;
+  if (!/^[ \t]*$/.test(skillSource[codeAfter] || '') || skillSource[codeAfter + 1] !== '---') {
+    errors.push(`skill/SKILL.md:${codeRange.end + 1}: code-pattern end marker must be followed by exactly one blank line and ---`);
+  }
+}
 for (const range of contractRanges) {
   const { contract, delimiterIndex, bodyEnd } = range;
   const seen = new Map();
   for (let i = delimiterIndex + 1; i < bodyEnd; i += 1) {
     const line = skillSource[i];
+    if (tableFenceMask[i]) {
+      errors.push(`skill/SKILL.md:${i + 1}: ${contract.name} table scaffold row lies inside a supported fence`);
+      continue;
+    }
     if (/^[ \t]*$/.test(line)) {
       errors.push(`skill/SKILL.md:${i + 1}: unexpected blank line inside ${contract.name} table body; only the end-marker separator may be blank`);
       continue;
@@ -495,22 +555,33 @@ for (const rel of canonicalFiles) {
 }
 
 // Project markdown permits only standalone fences with 0–3 literal leading spaces. Container
-// syntax is intentionally unsupported here: `- ````, `> ````, and similar lines are diagnosed,
-// never interpreted as nested fences. This is a bounded repository check, not CommonMark.
-function projectFenceOpener(line) {
-  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null;
-  return { marker: match[1][0], length: match[1].length };
-}
-function projectFenceCloser(line, fence) {
-  const match = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
-  return match !== null && match[1][0] === fence.marker && match[1].length >= fence.length;
+// syntax is intentionally unsupported here: repeated/mixed simple list and blockquote prefixes
+// are stripped lexically only to diagnose a fence or angle-leading remainder, never parsed.
+function stripSimpleContainerChain(line) {
+  let text = line;
+  let hadContainer = false;
+  while (true) {
+    const quote = text.match(/^ {0,3}>[ \t]?/);
+    if (quote) {
+      text = text.slice(quote[0].length);
+      hadContainer = true;
+      continue;
+    }
+    const list = text.match(/^ {0,3}(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)/);
+    if (!list) break;
+    const padding = text.slice(list[0].length).match(/^[ \t]*/)[0];
+    text = text.slice(list[0].length + padding.length);
+    hadContainer = true;
+  }
+  return { text, hadContainer };
 }
 function unsupportedContainerFence(line) {
-  return /^ {0,3}>[ \t]*(?:`{3,}|~{3,})/.test(line)
-    || /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?:`{3,}|~{3,})/.test(line);
+  const remainder = stripSimpleContainerChain(line);
+  return remainder.hadContainer && projectFenceOpener(remainder.text) !== null;
 }
-const rawHtmlBlockStart = /^ {0,3}(?:<!--|<\?|<!\[CDATA\[|<![A-Z]|<\/?(?:script|pre|style|textarea|address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?=[ \t\v\f/>]|$)|<(?=[A-Za-z][A-Za-z0-9-]*(?:[ \t\v\f]|\/?>)))/i;
+function angleLeadingStyle(line) {
+  return /^ {0,3}</.test(line) || (stripSimpleContainerChain(line).hadContainer && /^</.test(stripSimpleContainerChain(line).text));
+}
 for (const file of markdownFiles) {
   const source = fs.readFileSync(file, 'utf8');
   let fence = null;
@@ -521,7 +592,7 @@ for (const file of markdownFiles) {
     }
     if (unsupportedContainerFence(line)) {
       errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: unsupported container-prefixed fence; use a standalone fence with 0–3 leading spaces`);
-    } else if (rawHtmlBlockStart.test(line)) {
+    } else if (angleLeadingStyle(line)) {
       errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${i + 1}: unsupported angle-bracket-leading/raw-HTML-style line in tracked skill markdown`);
     } else {
       const opener = projectFenceOpener(line);

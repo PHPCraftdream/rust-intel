@@ -24,6 +24,16 @@ The premise: Rust's compiler catches a large class of LLM mistakes (a known empi
 
 The exact category count is given in the spec itself; the count is allowed to evolve.
 
+## Validator contract
+
+`dev/validate.mjs` is deliberately a repository validator, not a general CommonMark/GFM parser.
+Its supported Markdown surface is explicit:
+
+- It recognizes exactly two global, top-level trigger-table anchors: `User request contains... | Activates category | Specific risk` and `Code pattern in user input | Activates`.
+- Each anchor has a canonical end/scaffold boundary (`**Triggered by code, not phrase**` or `When two or more triggers fire in one request`); raw column-1 leading pipes, declared widths, and body rows are required.
+- Duplicate detection uses only the allowed plain-text + inline-code subset. Complex inline markup and extended-autolink syntax in code-pattern cells are rejected explicitly.
+- Project fences are standalone and allow 0–3 leading spaces. Container-prefixed fences and angle-leading raw-HTML-style lines are rejected explicitly.
+
 ## Status
 
 **v0.5.0 (2026-08-08).** Second distribution channel, a review-of-reviews pass, and the repo's first CI. Codex plugin manifest + `rust-intel-codex` installer; the evidence base moved *inside* the skill (`skill/references/sources.md`); corrected §B5 union validity and `transmute` sufficiency, §B12 zeroization, §B20 duplicate keys, §C1 `repr(transparent)`; archive safety split along the right axis — zip-slip traversal to §C2, aggregate extraction quotas to §B7; new §B26 shift-count rule; the fan-out audit now records which artifacts each unit actually opened. Numbered categories remain **58**. See [`CHANGELOG.md`](CHANGELOG.md).
