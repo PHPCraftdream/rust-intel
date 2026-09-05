@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: one hundred ninety-two hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: two hundred seventeen hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2271,45 +2271,114 @@ for (const [name, mutate] of [
   expectFixture(result, 'after-live dead runtime module helper does not mask weakened helper', 1, ['workflow']);
 }
 
-// Control 189: parentheses around a root alias must not hide a later mutator.
-{
-  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
-    mutateWorkflowLines(source, (lines) => {
-      const end = workflowArrayEnd(lines, 'MODULES');
-      if (end < 0) return false;
-      lines.splice(end + 1, 0, 'const modulesAlias = (MODULES);', 'modulesAlias.pop();');
-      return true;
-    }));
-  expectFixture(result, 'parenthesized MODULES alias pop is rejected', 1, ['workflow']);
+function insertWorkflowMutation(source, name, mutation) {
+  return mutateWorkflowLines(source, (lines) => {
+    const end = workflowArrayEnd(lines, name);
+    if (end < 0) return false;
+    lines.splice(end + 1, 0, ...mutation.split('\n'));
+    return true;
+  });
 }
 
-// Control 190: destructuring a nested array from the first frozen record is still a mutation
-// path into the declarative MODULES graph.
-{
-  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
-    mutateWorkflowLines(source, (lines) => {
-      const end = workflowArrayEnd(lines, 'MODULES');
-      if (end < 0) return false;
-      lines.splice(end + 1, 0, 'const { categories } = MODULES[0];', "categories.push('Z99');");
-      return true;
-    }));
-  expectFixture(result, 'destructured first-record categories push is rejected', 1, ['workflow']);
+// Controls 189-199: direct bindings into the frozen MODULES graph are rejected, including
+// parenthesized/const/let/var roots, alias chains, array and object destructuring, and bracket
+// nested-array aliases. Derived primitive/copy bindings (`.length` and `.map()`) are intentionally
+// covered as positive controls below because they no longer name the declarative graph.
+for (const [number, name, mutation] of [
+  [189, 'parenthesized MODULES alias', 'const modulesAlias = (MODULES); modulesAlias.pop();'],
+  [190, 'const MODULES alias', 'const modulesConstAlias = MODULES; modulesConstAlias.pop();'],
+  [191, 'let MODULES alias', 'let modulesLetAlias = MODULES; modulesLetAlias.pop();'],
+  [192, 'var MODULES alias', 'var modulesVarAlias = MODULES; modulesVarAlias.pop();'],
+  [193, 'alias-of-alias MODULES binding', 'const modulesAlias = MODULES; const secondAlias = modulesAlias; secondAlias.pop();'],
+  [194, 'array-destructured MODULES record binding', "const [moduleRecord] = MODULES; moduleRecord.categories.push('Z99');"],
+  [195, 'shorthand object-destructured MODULES binding', "const { categories } = MODULES[0]; categories.push('Z99');"],
+  [196, 'renamed object-destructured MODULES binding', "const { categories: renamedCategories } = MODULES[0]; renamedCategories.push('Z99');"],
+  [197, 'bracket categories MODULES binding', "const categoriesAlias = MODULES[0]['categories']; categoriesAlias.push('Z99');"],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias']);
 }
 
-// Controls 191-192: bracket notation for the non-mutating `length` property is bookkeeping,
-// not an alias to the frozen array. Both quote spellings must remain accepted.
-for (const [name, mutation] of [
-  ['MODULES single-quoted length read and counter mutation', "let count = MODULES['length']; count += 1;"],
-  ['MODULES double-quoted length read and counter mutation', 'let count = MODULES["length"]; count += 1;'],
+// Controls 198-199: bindings to a primitive length or a newly allocated map result are safe;
+// mutating those derived locals must not be confused with mutating the frozen MODULES graph.
+for (const [number, name, mutation] of [
+  [198, 'MODULES length binding', 'const moduleCount = MODULES.length; moduleCount += 1;'],
+  [199, 'MODULES map-copy binding', 'const moduleCopy = MODULES.map((entry) => entry); moduleCopy.push({ file: \'copy.md\', categories: [] });'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
+  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+}
+
+// Controls 200-203: direct assignments to the root array's length are mutations too. Keep both
+// dot and quoted bracket notation pinned for MODULES and AUDIT_UNITS.
+for (const [number, name, root, property] of [
+  [200, 'direct MODULES length assignment', 'MODULES', '.length'],
+  [201, 'bracket MODULES length assignment', 'MODULES', "['length']"],
+  [202, 'direct AUDIT_UNITS length assignment', 'AUDIT_UNITS', '.length'],
+  [203, 'bracket AUDIT_UNITS length assignment', 'AUDIT_UNITS', '["length"]'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const target = insertWorkflowMutation(source, root, `${root}${property} = 0;`);
+    return target;
+  });
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+
+// Controls 204-214: the same direct-alias contract applies to AUDIT_UNITS, including all
+// declaration kinds, alias chains, both destructuring forms, and bracket nested-array access.
+for (const [number, name, mutation] of [
+  [204, 'parenthesized AUDIT_UNITS alias', 'const auditUnitsAlias = (AUDIT_UNITS); auditUnitsAlias.pop();'],
+  [205, 'const AUDIT_UNITS alias', 'const auditUnitsConstAlias = AUDIT_UNITS; auditUnitsConstAlias.pop();'],
+  [206, 'let AUDIT_UNITS alias', 'let auditUnitsLetAlias = AUDIT_UNITS; auditUnitsLetAlias.pop();'],
+  [207, 'var AUDIT_UNITS alias', 'var auditUnitsVarAlias = AUDIT_UNITS; auditUnitsVarAlias.pop();'],
+  [208, 'alias-of-alias AUDIT_UNITS binding', 'const auditUnitsAlias = AUDIT_UNITS; const secondAuditAlias = auditUnitsAlias; secondAuditAlias.pop();'],
+  [209, 'array-destructured AUDIT_UNITS record binding', "const [auditRecord] = AUDIT_UNITS; auditRecord.requiredArtifactGroups.push('decoy');"],
+  [210, 'shorthand object-destructured AUDIT_UNITS binding', "const { requiredArtifactGroups } = AUDIT_UNITS[0]; requiredArtifactGroups.push('decoy');"],
+  [211, 'renamed object-destructured AUDIT_UNITS binding', "const { requiredArtifactGroups: renamedGroups } = AUDIT_UNITS[0]; renamedGroups.push('decoy');"],
+  [212, 'bracket required-groups AUDIT_UNITS binding', "const groupsAlias = AUDIT_UNITS[0]['requiredArtifactGroups']; groupsAlias.push('decoy');"],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const target = insertWorkflowMutation(source, 'AUDIT_UNITS', mutation);
+    return target;
+  });
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias']);
+}
+
+// Controls 213-214: length is a primitive and filter allocates a new array, so bindings to
+// those results remain safe even when the derived local is subsequently changed.
+for (const [number, name, mutation] of [
+  [213, 'AUDIT_UNITS bracket-length binding', "const auditUnitCount = AUDIT_UNITS['length']; auditUnitCount += 1;"],
+  [214, 'AUDIT_UNITS filter-copy binding', "const auditUnitCopy = AUDIT_UNITS.filter((entry) => entry); auditUnitCopy.push({ module: 'decoy.md', label: 'decoy', requiredArtifactGroups: [] });"],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'AUDIT_UNITS', mutation));
+  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+}
+
+// Controls 215-216: inline reads are not bindings and remain legal. These positive controls are
+// deliberately expression statements, so a validator that rejects every occurrence of the root
+// identifier (rather than RHS-leading declarations) would be too broad.
+for (const [number, name, root] of [
+  [215, 'inline MODULES length/map reads', 'MODULES'],
+  [216, 'inline AUDIT_UNITS length/map reads', 'AUDIT_UNITS'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
-    mutateWorkflowLines(source, (lines) => {
-      const end = workflowArrayEnd(lines, 'MODULES');
-      if (end < 0) return false;
-      lines.splice(end + 1, 0, mutation);
-      return true;
-    }));
-  expectFixture(result, name + ' remains accepted', 0);
+    insertWorkflowMutation(source, root, `{ ${root}.length; ${root}.map((entry) => entry); }`));
+  expectFixture(result, `Control ${number}: ${name} remain accepted`, 0);
+}
+
+// Control 217: an alias-like variable name used only for unrelated local arrays in separate
+// scopes is harmless. This catches a global name-set implementation that remembers a spelling
+// as an alias even when its RHS never references MODULES/AUDIT_UNITS.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'AUDIT_UNITS', `{
+  const modulesAlias = [];
+  modulesAlias.push('local-module');
+}
+{
+  const auditUnitsAlias = [];
+  auditUnitsAlias.push('local-audit');
+}`));
+  expectFixture(result, 'Control 217: unrelated local alias names remain accepted', 0);
 }
 
 for (const fixture of cases) {

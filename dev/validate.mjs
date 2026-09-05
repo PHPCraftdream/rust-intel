@@ -718,110 +718,130 @@ const auditUnits = (parsedAuditUnits || []).filter(Boolean);
 
 // Deep-freezing is the primary runtime boundary, but an executable post-initialisation write is
 // still a contract violation (and can become observable if the freeze is weakened).  Keep this
-// deliberately bounded: reject obvious writes, deletes, Reflect.set calls, mutators, and simple
-// aliases of MODULES/AUDIT_UNITS or their nested arrays, while leaving ordinary result bookkeeping
-// such as `missing.push(...)` alone.
+// deliberately bounded: reject obvious writes, deletes, Reflect.set calls, mutators, and aliases
+// of MODULES/AUDIT_UNITS, while leaving ordinary result bookkeeping such as `missing.push(...)`
+// alone.  Aliasing is rejected at the binding site instead of being propagated through a scope
+// model: the workflow is declarative and there is no legitimate reason to bind these arrays (or a
+// value reached from them) to another variable.
 function workflowMutationCheck(source, names, rawSource = source) {
   const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
   const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const aliases = new Map(names.map((name) => [name, 'root']));
-  // Track only references whose runtime value is declarative audit data: a root array, one
-  // indexed record from that root, or one of the known nested array fields.  In particular,
-  // `.length`, primitive fields, and `.map(...)` results are not aliases merely because their
-  // spelling starts with MODULES/AUDIT_UNITS.  Include const/let/var and iterate to a fixpoint
-  // so alias-of-alias chains remain protected.
-  const aliasRe = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*((?:\(\s*)*[A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:\)\s*)*)/g;
-  const destructuredAliasRe = /\b(?:const|let|var)\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*=\s*((?:\(\s*)*[A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:\)\s*)*)/g;
-  const objectDestructuredAliasRe = /\b(?:const|let|var)\s*\{\s*(categories|requiredArtifactGroups)\s*\}\s*=\s*((?:\(\s*)*[A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:\)\s*)*)/g;
-  const unwrapParens = (value) => {
-    let text = value.trim();
-    while (text.startsWith('(') && text.endsWith(')')
-      && findMatchingDelimiter(text, 0, '(', ')') === text.length - 1) {
-      text = text.slice(1, -1).trim();
-    }
-    return text;
-  };
-  const normalizeReference = (value) => {
-    let text = unwrapParens(value);
-    for (;;) {
-      const grouped = text.replace(/\(\s*([A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)\s*\)/g, '$1');
-      const next = unwrapParens(grouped);
-      if (next === text) return text;
-      text = next;
-    }
-  };
-  const classifyReference = (base, suffix) => {
-    const reference = normalizeReference(`${base}${suffix}`);
-    const match = reference.match(/^([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)$/);
-    if (!match) return null;
-    const baseKind = aliases.get(match[1]);
-    if (!baseKind) return null;
-    const text = match[2].trim();
-    if (!text) return baseKind;
+  const rootNames = names.map(escaped).join('|');
+  const rootChainRe = `(?:\\(\\s*)*(?:${rootNames})\\b(?:\\s*\\)\\s*)*(?:\\s*(?:\\[[^\\]\\r\\n]*\\]|\\.[A-Za-z_$][A-Za-z0-9_$]*))*(?:\\s*\\)\\s*)*`;
+
+  // Reject first-order aliases, including destructuring and values derived by a method/property
+  // access.  Only the beginning of the RHS matters: a nested inline use such as
+  // `new Set(MODULES.map(...))` remains valid, while `const ids = MODULES.map(...)` is rejected.
+  // Split declaration lists at top-level commas so `const keep = 1, copy = MODULES` is covered.
+  const splitDeclaration = (text) => {
     const parts = [];
-    const partRe = /\s*(\[[^\]\r\n]*\]|\.([A-Za-z_$][A-Za-z0-9_$]*))/g;
-    let consumed = 0;
-    for (const match of text.matchAll(partRe)) {
-      if (match.index !== consumed) return null;
-      consumed += match[0].length;
-      if (match[1].startsWith('[')) {
-        const property = match[1].slice(1, -1).trim();
-        parts.push(/^(['"])length\1$/u.test(property) ? 'length' : 'index');
-      } else parts.push(match[2]);
-    }
-    if (consumed !== text.length) return null;
-    let kind = baseKind;
-    for (const part of parts) {
-      if (kind === 'root' && part === 'length') return null;
-      if (kind === 'root' && part === 'index') kind = 'record';
-      else if (kind === 'record' && (part === 'categories' || part === 'requiredArtifactGroups')) kind = 'array';
-      else return null;
-    }
-    return kind;
-  };
-  let aliasesChanged = true;
-  while (aliasesChanged) {
-    aliasesChanged = false;
-    for (const match of source.matchAll(aliasRe)) {
-      const rhsStart = match.index + match[0].indexOf(match[2]);
-      const rawRhs = rawSource.slice(rhsStart, rhsStart + match[2].length);
-      const reference = normalizeReference(rawRhs);
-      const referenceMatch = reference.match(/^([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)$/);
-      const kind = referenceMatch ? classifyReference(referenceMatch[1], referenceMatch[2]) : null;
-      if (!kind || aliases.has(match[1])) continue;
-      aliases.set(match[1], kind);
-      aliasesChanged = true;
-    }
-    for (const match of source.matchAll(destructuredAliasRe)) {
-      const rhsStart = match.index + match[0].indexOf(match[2]);
-      const rawRhs = rawSource.slice(rhsStart, rhsStart + match[2].length);
-      const reference = normalizeReference(rawRhs);
-      const referenceMatch = reference.match(/^([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)$/);
-      const kind = referenceMatch ? classifyReference(referenceMatch[1], referenceMatch[2]) : null;
-      if (!kind || aliases.has(match[1])) continue;
-      if (kind === 'root' || kind === 'record') {
-        aliases.set(match[1], 'record');
-        aliasesChanged = true;
+    let start = 0;
+    let round = 0;
+    let square = 0;
+    let curly = 0;
+    let quote = null;
+    for (let i = 0; i < text.length; i += 1) {
+      const character = text[i];
+      if (quote) {
+        if (character === '\\') i += 1;
+        else if (character === quote) quote = null;
+        continue;
+      }
+      if (character === "'" || character === '"' || character === '`') { quote = character; continue; }
+      if (character === '(') round += 1;
+      else if (character === ')') round -= 1;
+      else if (character === '[') square += 1;
+      else if (character === ']') square -= 1;
+      else if (character === '{') curly += 1;
+      else if (character === '}') curly -= 1;
+      else if (character === ',' && round === 0 && square === 0 && curly === 0) {
+        parts.push(text.slice(start, i));
+        start = i + 1;
       }
     }
-    for (const match of source.matchAll(objectDestructuredAliasRe)) {
-      const rhsStart = match.index + match[0].indexOf(match[2]);
-      const rawRhs = rawSource.slice(rhsStart, rhsStart + match[2].length);
-      const reference = normalizeReference(rawRhs);
-      const referenceMatch = reference.match(/^([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)$/);
-      const kind = referenceMatch ? classifyReference(referenceMatch[1], referenceMatch[2]) : null;
-      if (kind === 'record' && !aliases.has(match[1])) {
-        aliases.set(match[1], 'array');
-        aliasesChanged = true;
+    parts.push(text.slice(start));
+    return parts;
+  };
+  const topLevelEquals = (text) => {
+    let round = 0;
+    let square = 0;
+    let curly = 0;
+    let quote = null;
+    for (let i = 0; i < text.length; i += 1) {
+      const character = text[i];
+      if (quote) {
+        if (character === '\\') i += 1;
+        else if (character === quote) quote = null;
+        continue;
+      }
+      if (character === "'" || character === '"' || character === '`') { quote = character; continue; }
+      if (character === '(') round += 1;
+      else if (character === ')') round -= 1;
+      else if (character === '[') square += 1;
+      else if (character === ']') square -= 1;
+      else if (character === '{') curly += 1;
+      else if (character === '}') curly -= 1;
+      else if (character === '=' && round === 0 && square === 0 && curly === 0) return i;
+    }
+    return -1;
+  };
+  const aliasRhsRe = /^\s*(?:\(\s*)*(?:MODULES|AUDIT_UNITS)\b/u;
+  // A primitive length or a newly-created array returned by map/filter is not a reference to the
+  // declarative arrays.  Permit those derived values, including when the root is parenthesized
+  // or reached through a property/index chain; all other root-leading bindings remain forbidden.
+  const derivedRhsRe = new RegExp(
+    `^\\s*(?:\\(\\s*)*(?:${rootNames})\\b(?:\\s*\\)\\s*)*` +
+    `(?:\\s*(?:\\[[^\\]\\r\\n]*\\]|\\.[A-Za-z_$][A-Za-z0-9_$]*))*\\s*` +
+    `(?:\\.\\s*length\\b|\\[\\s*(?:'length'|\"length\")\\s*\\]|\\.\\s*(?:map|filter)\\s*\\()`,
+    'u',
+  );
+  const declarationKeywordRe = /\b(?:const|let|var)\b/g;
+  for (const declaration of source.matchAll(declarationKeywordRe)) {
+    // `source` is the executable, non-string view, so a small delimiter scan can safely span
+    // line breaks and destructuring defaults without treating an inner `=` as the declarator's
+    // assignment.  A missing semicolon simply makes this declaration run to EOF; later keywords
+    // are still visited independently.
+    let declarationEnd = source.length;
+    let round = 0;
+    let square = 0;
+    let curly = 0;
+    for (let i = declaration.index + declaration[0].length; i < source.length; i += 1) {
+      const character = source[i];
+      if (character === '(') round += 1;
+      else if (character === ')' && round > 0) round -= 1;
+      else if (character === '[') square += 1;
+      else if (character === ']' && square > 0) square -= 1;
+      else if (character === '{') curly += 1;
+      else if (character === '}' && curly > 0) curly -= 1;
+      else if (character === ';' && round === 0 && square === 0 && curly === 0) {
+        declarationEnd = i;
+        break;
+      }
+    }
+    const declarationTextStart = declaration.index + declaration[0].length;
+    const declarationText = source.slice(declarationTextStart, declarationEnd);
+    let declaratorSearchStart = 0;
+    for (const declarator of splitDeclaration(declarationText)) {
+      const equals = topLevelEquals(declarator);
+      const declaratorStart = declarationText.indexOf(declarator, declaratorSearchStart);
+      declaratorSearchStart = declaratorStart < 0 ? declaratorSearchStart : declaratorStart + declarator.length;
+      if (equals < 0 || declaratorStart < 0) continue;
+      const rhs = declarator.slice(equals + 1);
+      // `maskJsNonCode()` blanks quoted properties such as ['length']; use the raw, offset-stable
+      // source for the derived-value exception so an arbitrary quoted property is not mistaken
+      // for the primitive length accessor.
+      const rawRhs = rawSource.slice(declarationTextStart + declaratorStart + equals + 1);
+      if (aliasRhsRe.test(rhs) && !derivedRhsRe.test(rawRhs)) {
+        errors.push('workflow declarative arrays may not be aliased');
+        break;
       }
     }
   }
-  const mutationNames = [...aliases.keys()];
-  const mutationNameRe = mutationNames.map(escaped).join('|');
-  const assignmentRe = /^(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:=|\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=)(?!=|>)/;
-  const mutatorRe = /^(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/;
+
+  const assignmentRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:=|\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=)(?!=|>)/;
+  const mutatorRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/;
   const declarationRe = () => /\b(?:const|let|var)\s*$/;
-  for (const name of mutationNames) {
+  for (const name of names) {
     const identifierRe = new RegExp(`\\b${escaped(name)}\\b`, 'g');
     for (const match of source.matchAll(identifierRe)) {
       const index = match.index;
@@ -834,21 +854,15 @@ function workflowMutationCheck(source, names, rawSource = source) {
         errors.push(`workflow ${name}.${mutator[1]}() mutates declarative audit data`);
         continue;
       }
-      // Array `.length` is a primitive counter, not declarative audit data.  Its value may be
-      // copied or used as a mutable local; only record/nested-array references are protected.
-      const primitiveLengthAccess = /^\s*(?:\.\s*length|\[\s*(['"])length\1\s*\])\s*(?:=|\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=)(?!=|>)/u.test(afterRaw);
-      if (!primitiveLengthAccess && assignmentRe.test(after)) {
+      if (assignmentRe.test(after)) {
         errors.push(`workflow ${name} has an executable post-initialization assignment`);
-      }
-      if (!primitiveLengthAccess && /^\s*\[/u.test(after) && /^\s*\[[^\]\r\n]*\]\s*=/.test(after)) {
-        errors.push(`workflow ${name} has an executable indexed assignment`);
       }
     }
   }
-  const deleteRe = new RegExp(`\\bdelete\\s+(?:${mutationNameRe})\\b`);
-  if (deleteRe.test(source)) errors.push('workflow cannot delete from MODULES, AUDIT_UNITS, or their aliases');
-  const reflectSetRe = new RegExp(`\\bReflect\\s*\\.\\s*set\\s*\\([^)]*\\b(?:${mutationNameRe})\\b`);
-  if (reflectSetRe.test(source)) errors.push('workflow cannot use Reflect.set on MODULES, AUDIT_UNITS, or their aliases');
+  const deleteRe = new RegExp(`\\bdelete\\s+${rootChainRe}`);
+  if (deleteRe.test(source)) errors.push('workflow cannot delete from MODULES or AUDIT_UNITS');
+  const reflectSetRe = new RegExp(`\\bReflect\\s*\\.\\s*set\\s*\\(\\s*${rootChainRe}\\s*,`);
+  if (reflectSetRe.test(source)) errors.push('workflow cannot use Reflect.set on MODULES or AUDIT_UNITS');
 }
 workflowMutationCheck(executableWorkflowCode, ['MODULES', 'AUDIT_UNITS'], workflow);
 
