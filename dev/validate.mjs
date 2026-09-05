@@ -177,25 +177,61 @@ function findMatchingBracket(source, openingIndex) {
   let state = 'code';
   for (let i = openingIndex; i < source.length; i += 1) {
     const character = source[i];
+    const next = source[i + 1];
     if (state === 'single' || state === 'double' || state === 'template') {
       if (character === '\\') i += 1;
       else if ((state === 'single' && character === "'") || (state === 'double' && character === '"') || (state === 'template' && character === '`')) state = 'code';
       continue;
     }
+    if (state === 'regex') {
+      if (character === '\\') i += 1;
+      else if (character === '[') state = 'regex-class';
+      else if (character === '/') state = 'code';
+      continue;
+    }
+    if (state === 'regex-class') {
+      if (character === '\\') i += 1;
+      else if (character === ']') state = 'regex';
+      continue;
+    }
+    if (character === '/' && next === '/') { i += 1; state = 'line-comment'; continue; }
+    if (character === '/' && next === '*') { i += 1; state = 'block-comment'; continue; }
+    if (state === 'line-comment') {
+      if (character === '\n' || character === '\r') state = 'code';
+      continue;
+    }
+    if (state === 'block-comment') {
+      if (character === '*' && next === '/') { i += 1; state = 'code'; }
+      continue;
+    }
     if (character === "'") { state = 'single'; continue; }
     if (character === '"') { state = 'double'; continue; }
     if (character === '`') { state = 'template'; continue; }
+    if (character === '/' && isRegexLiteralStart(source, i)) { state = 'regex'; continue; }
     if (character === '[') depth += 1;
     else if (character === ']' && --depth === 0) return i;
   }
   return -1;
 }
 
+// A slash after an expression is division; after an assignment/operator or at the start of a
+// statement it starts a regexp literal.  This intentionally small token-context test is enough
+// for the declaration locator, while the regexp states above protect brackets in /.../[...]/.
+function isRegexLiteralStart(source, index) {
+  let i = index - 1;
+  while (i >= 0 && /\s/.test(source[i])) i -= 1;
+  if (i < 0) return true;
+  const previous = source[i];
+  if ('=([{,:;!&|?+-*%^~<>'.includes(previous)) return true;
+  const word = source.slice(Math.max(0, i - 12), i + 1).match(/[A-Za-z_$][A-Za-z0-9_$]*$/)?.[0];
+  return ['return', 'case', 'throw', 'typeof', 'void', 'delete', 'new', 'in', 'instanceof', 'yield', 'await'].includes(word);
+}
+
 // Find the real workflow declaration in JavaScript code.  A regex over a comment-masked
 // source is not enough: quoted strings and template literals retain their bytes so that
 // offsets stay stable, and a decoy `const MODULES = [` in either one would otherwise win.
 // Depth is tracked for all JavaScript grouping constructs so nested declarations are ignored.
-function findTopLevelModulesStart(source) {
+function findTopLevelArrayStart(source, name) {
   let state = 'code';
   let braceDepth = 0;
   let parenDepth = 0;
@@ -221,16 +257,28 @@ function findTopLevelModulesStart(source) {
       else if (character === '`') state = 'code';
       continue;
     }
+    if (state === 'regex') {
+      if (character === '\\') i += 1;
+      else if (character === '[') state = 'regex-class';
+      else if (character === '/') state = 'code';
+      continue;
+    }
+    if (state === 'regex-class') {
+      if (character === '\\') i += 1;
+      else if (character === ']') state = 'regex';
+      continue;
+    }
     if (character === '/' && next === '/') { i += 1; state = 'line-comment'; continue; }
     if (character === '/' && next === '*') { i += 1; state = 'block-comment'; continue; }
     if (character === "'") { state = 'single'; continue; }
     if (character === '"') { state = 'double'; continue; }
     if (character === '`') { state = 'template'; continue; }
+    if (character === '/' && isRegexLiteralStart(source, i)) { state = 'regex'; continue; }
     if (braceDepth === 0 && parenDepth === 0 && bracketDepth === 0
       && source.startsWith('const', i)
       && (i === 0 || !/[A-Za-z0-9_$]/.test(source[i - 1] || ''))
       && !/[A-Za-z0-9_$]/.test(source[i + 5] || '')) {
-      const assignment = source.slice(i).match(/^const\s+MODULES\s*=\s*\[/);
+      const assignment = source.slice(i).match(new RegExp(`^const\\s+${name}\\s*=\\s*\\[`));
       if (assignment) return i + assignment[0].lastIndexOf('[');
     }
     if (character === '{') braceDepth += 1;
@@ -246,21 +294,112 @@ function findTopLevelModulesStart(source) {
 const workflowWithoutComments = stripJsComments(workflow);
 // `modulesStart` deliberately comes from the original source: stripJsComments preserves byte
 // offsets, while the lexer above ignores comments/strings/templates before accepting a match.
-const modulesStart = findTopLevelModulesStart(workflow);
+const modulesStart = findTopLevelArrayStart(workflow, 'MODULES');
 const modulesEnd = modulesStart >= 0 ? findMatchingBracket(workflowWithoutComments, modulesStart) : -1;
 const modulesLiteral = modulesStart >= 0 && modulesEnd > modulesStart
   ? workflowWithoutComments.slice(modulesStart + 1, modulesEnd)
   : '';
+
+// Split a literal array into its complete top-level elements.  Regex extraction is unsafe here:
+// it silently drops malformed/alternate elements and accepts a valid-looking object after them.
+function topLevelArrayElements(source) {
+  const elements = [];
+  let start = 0;
+  let state = 'code';
+  let brace = 0; let paren = 0; let bracket = 0;
+  const push = (end) => {
+    const text = source.slice(start, end).trim();
+    if (!text) elements.push(null);
+    else elements.push(text);
+    start = end + 1;
+  };
+  for (let i = 0; i < source.length; i += 1) {
+    const c = source[i]; const n = source[i + 1];
+    if (state === 'line-comment') { if (c === '\n' || c === '\r') state = 'code'; continue; }
+    if (state === 'block-comment') { if (c === '*' && n === '/') { i += 1; state = 'code'; } continue; }
+    if (state === 'single' || state === 'double' || state === 'template') {
+      if (c === '\\') i += 1;
+      else if ((state === 'single' && c === "'") || (state === 'double' && c === '"') || (state === 'template' && c === '`')) state = 'code';
+      continue;
+    }
+    if (state === 'regex') { if (c === '\\') i += 1; else if (c === '[') state = 'regex-class'; else if (c === '/') state = 'code'; continue; }
+    if (state === 'regex-class') { if (c === '\\') i += 1; else if (c === ']') state = 'regex'; continue; }
+    if (c === '/' && n === '/') { i += 1; state = 'line-comment'; continue; }
+    if (c === '/' && n === '*') { i += 1; state = 'block-comment'; continue; }
+    if (c === "'") { state = 'single'; continue; }
+    if (c === '"') { state = 'double'; continue; }
+    if (c === '`') { state = 'template'; continue; }
+    if (c === '/' && isRegexLiteralStart(source, i)) { state = 'regex'; continue; }
+    if (c === '{') brace += 1;
+    else if (c === '}') brace -= 1;
+    else if (c === '(') paren += 1;
+    else if (c === ')') paren -= 1;
+    else if (c === '[') bracket += 1;
+    else if (c === ']') bracket -= 1;
+    else if (c === ',' && brace === 0 && paren === 0 && bracket === 0) push(i);
+  }
+  const tail = source.slice(start).trim();
+  if (tail) elements.push(tail);
+  else if (elements.length > 1 && elements[elements.length - 1] === null) elements.pop(); // one trailing comma
+  if (state !== 'code' || brace !== 0 || paren !== 0 || bracket !== 0) elements.push(null);
+  return elements;
+}
+
+function parseSingleQuoted(value) {
+  const match = value.match(/^'([^'\\]*)'$/s);
+  return match ? match[1] : null;
+}
+function parseStringArray(value) {
+  const text = value.trim();
+  if (!text.startsWith('[') || !text.endsWith(']')) return null;
+  const inner = text.slice(1, -1);
+  if (!inner.trim()) return [];
+  const parts = topLevelArrayElements(inner);
+  if (parts.some((part) => part === null)) return null;
+  const values = parts.map(parseSingleQuoted);
+  return values.some((part) => part === null) ? null : values;
+}
+
+function parseObjectFields(element) {
+  const text = element.trim();
+  if (!text.startsWith('{') || !text.endsWith('}')) return null;
+  const fields = topLevelArrayElements(text.slice(1, -1));
+  if (fields.some((field) => field === null)) return null;
+  const result = new Map();
+  for (const field of fields) {
+    const match = field.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*([\s\S]+)$/);
+    if (!match || result.has(match[1])) return null;
+    result.set(match[1], match[2].trim());
+  }
+  return result;
+}
+
+function parseModulesLiteral(literal) {
+  if (!literal) return null;
+  const elements = topLevelArrayElements(literal);
+  if (elements.some((element) => element === null)) return null;
+  const parsed = [];
+  for (const element of elements) {
+    const fields = parseObjectFields(element);
+    if (!fields || fields.size !== 2 || !fields.has('file') || !fields.has('categories')) return null;
+    const file = parseSingleQuoted(fields.get('file'));
+    const categories = parseStringArray(fields.get('categories'));
+    if (!file || !categories || categories.some((id) => !/^[A-Z]\d+[a-z]?$/.test(id))) return null;
+    parsed.push({ file, categories });
+  }
+  return parsed;
+}
 const workflowModuleCategories = new Map();
-for (const entry of modulesLiteral.matchAll(/\{\s*file:\s*'([^']+)',\s*categories:\s*\[([^\]]*)\]\s*\}/g)) {
-  const [, file, list] = entry;
+const parsedModules = parseModulesLiteral(modulesLiteral);
+if (!parsedModules) errors.push('workflow MODULES contains a null, unparsed, or unsupported top-level element');
+for (const entry of parsedModules || []) {
+  const { file, categories } = entry;
   if (workflowModuleCategories.has(file)) {
     errors.push(`workflow MODULES contains duplicate executable entry for ${file}`);
     continue;
   }
-  const ids = list.split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
   const seenIds = new Set();
-  for (const id of ids) {
+  for (const id of categories) {
     if (seenIds.has(id)) errors.push(`workflow MODULES entry for ${file} contains duplicate category §${id}`);
     seenIds.add(id);
   }
@@ -268,6 +407,86 @@ for (const entry of modulesLiteral.matchAll(/\{\s*file:\s*'([^']+)',\s*categorie
 }
 for (const module of ['async.md', 'concurrency-and-state.md', 'data-and-types.md', 'security.md', 'unsafe-and-ffi.md', 'drop-and-raii.md', 'deps-macros-ergonomics.md', 'lifetimes-and-api.md', 'testing.md', 'semantics-and-conformance.md']) {
   if (!workflowModuleCategories.has(module)) errors.push(`workflow missing module: ${module}`);
+}
+
+// AUDIT_UNITS is executable orchestration data too. Parse every top-level element and validate
+// the partition, so an inserted null/alternate object cannot quietly remove a module from the fanout.
+const auditUnitsStart = findTopLevelArrayStart(workflow, 'AUDIT_UNITS');
+const auditUnitsEnd = auditUnitsStart >= 0 ? findMatchingBracket(workflowWithoutComments, auditUnitsStart) : -1;
+const auditUnitsLiteral = auditUnitsStart >= 0 && auditUnitsEnd > auditUnitsStart
+  ? workflowWithoutComments.slice(auditUnitsStart + 1, auditUnitsEnd) : '';
+function parseAuditUnit(element) {
+  const fields = parseObjectFields(element);
+  if (!fields || !fields.has('module') || !fields.has('label')) return null;
+  const allowed = new Set(['module', 'label', 'onlyCategories', 'requiredArtifactGroups', 'requiresDocs']);
+  for (const key of fields.keys()) if (!allowed.has(key)) return null;
+  const module = parseSingleQuoted(fields.get('module'));
+  const label = parseSingleQuoted(fields.get('label'));
+  if (!module || !label) return null;
+  const onlyCategories = fields.has('onlyCategories') ? parseSingleQuoted(fields.get('onlyCategories')) : undefined;
+  if (fields.has('onlyCategories') && onlyCategories === null) return null;
+  const requiredArtifactGroups = fields.has('requiredArtifactGroups')
+    ? parseStringArray(fields.get('requiredArtifactGroups')) : [];
+  if (!requiredArtifactGroups || requiredArtifactGroups.some((group) => !/^[a-z]+$/.test(group))) return null;
+  const requiresDocs = fields.has('requiresDocs') ? fields.get('requiresDocs') : 'false';
+  if (requiresDocs !== 'true' && requiresDocs !== 'false') return null;
+  return { module, label, onlyCategories, requiredArtifactGroups, requiresDocs: requiresDocs === 'true' };
+}
+const auditUnitElements = auditUnitsLiteral ? topLevelArrayElements(auditUnitsLiteral) : [];
+const parsedAuditUnits = auditUnitsStart >= 0 && auditUnitsEnd > auditUnitsStart && auditUnitElements.every(Boolean)
+  ? auditUnitElements.map(parseAuditUnit) : null;
+if (!parsedAuditUnits || parsedAuditUnits.some((unit) => unit === null)) {
+  errors.push('workflow AUDIT_UNITS contains a null, unparsed, or unsupported top-level element');
+}
+const auditUnits = (parsedAuditUnits || []).filter(Boolean);
+const labels = new Set();
+for (const unit of auditUnits) {
+  if (labels.has(unit.label)) errors.push(`workflow AUDIT_UNITS contains duplicate label ${unit.label}`);
+  labels.add(unit.label);
+  if (!workflowModuleCategories.has(unit.module)) errors.push(`workflow AUDIT_UNITS references unknown module ${unit.module}`);
+}
+function expandOnlyCategories(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const expanded = [];
+  for (const raw of text.split(',')) {
+    const token = raw.trim();
+    const match = token.match(/^([A-Z]\d+)([a-z])?(?:\s*[\u2013-]\s*([a-z]))?$/);
+    if (!match || (match[3] && !match[2])) return null;
+    const [, base, first, last] = match;
+    if (!last) expanded.push(base + (first || ''));
+    else {
+      // Match the category-map notation (§B15 (a–e)): a family range covers its parent id as
+      // well as each lettered subsection.
+      expanded.push(base);
+      for (let code = first.charCodeAt(0); code <= last.charCodeAt(0); code += 1) expanded.push(base + String.fromCharCode(code));
+    }
+  }
+  return expanded;
+}
+for (const module of workflowModuleCategories.keys()) {
+  const units = auditUnits.filter((unit) => unit.module === module);
+  if (!units.length) { errors.push(`workflow AUDIT_UNITS has no unit for ${module}`); continue; }
+  if (module !== 'async.md') {
+    if (units.length !== 1) errors.push(`workflow module ${module} must have exactly one full audit unit`);
+    else if (units[0].onlyCategories !== undefined) errors.push(`workflow module ${module} must not use onlyCategories`);
+    continue;
+  }
+  const partial = units.filter((unit) => unit.onlyCategories !== undefined);
+  const full = units.filter((unit) => unit.onlyCategories === undefined);
+  if (partial.length && full.length) errors.push('workflow async.md mixes full and partial audit units');
+  if (!partial.length && full.length !== 1) errors.push('workflow async.md must have exactly one full unit when unsplit');
+  const expected = workflowModuleCategories.get(module);
+  const covered = new Set();
+  for (const unit of partial) {
+    const ids = expandOnlyCategories(unit.onlyCategories);
+    if (!ids) { errors.push(`workflow AUDIT_UNITS unit ${unit.label} has invalid onlyCategories`); continue; }
+    for (const id of ids) {
+      if (covered.has(id)) errors.push(`workflow async.md partial units overlap on category ${id}`);
+      covered.add(id);
+      if (!expected.has(id)) errors.push(`workflow async.md unit ${unit.label} references category ${id} not owned by MODULES`);
+    }
+  }
+  if (partial.length) for (const id of expected) if (!covered.has(id)) errors.push(`workflow async.md partial units omit category ${id}`);
 }
 
 // Category-id parity between SKILL.md's "Category map" table and the workflow's MODULES list.
@@ -301,6 +520,47 @@ function expandCategoryCell(cellText) {
     }
   }
   return ids;
+}
+// Strict companion for expandCategoryCell: preserve the historical expansion, but expose any
+// bytes that were not consumed so a malformed cell cannot appear to contain a valid subset.
+function parseCategoryCell(cellText) {
+  const ids = [];
+  let cursor = 0;
+  const fail = () => ({ ids, residue: cellText.slice(cursor).trim() || 'invalid category cell' });
+  while (cursor < cellText.length) {
+    while (/\s/.test(cellText[cursor] || '')) cursor += 1;
+    if (cellText[cursor] !== '\u00a7') return fail();
+    cursor += 1;
+    const baseMatch = cellText.slice(cursor).match(/^([A-Z]\d+)([a-z])?/);
+    if (!baseMatch) return fail();
+    const [, base, trailingLetter] = baseMatch;
+    cursor += baseMatch[0].length;
+    if (trailingLetter) ids.push(base + trailingLetter);
+    else {
+      ids.push(base);
+      while (/\s/.test(cellText[cursor] || '')) cursor += 1;
+      if (cellText[cursor] === '(') {
+        const close = cellText.indexOf(')', cursor + 1);
+        if (close < 0) return fail();
+        const suffix = cellText.slice(cursor + 1, close).trim();
+        const parts = suffix.split(',').map((part) => part.trim());
+        if (!suffix || parts.some((part) => !/^[a-z](?:[\u2013-][a-z])?$/.test(part))) return fail();
+        for (const part of parts) {
+          const range = part.match(/^([a-z])[\u2013-]([a-z])$/);
+          if (range) {
+            if (range[1] > range[2]) return fail();
+            for (let c = range[1].charCodeAt(0); c <= range[2].charCodeAt(0); c += 1) ids.push(base + String.fromCharCode(c));
+          } else ids.push(base + part);
+        }
+        cursor = close + 1;
+      }
+    }
+    while (/\s/.test(cellText[cursor] || '')) cursor += 1;
+    if (cursor >= cellText.length) break;
+    if (cellText[cursor] !== ',') return fail();
+    cursor += 1;
+  }
+  return { ids, residue: '' };
 }
 const categoryMapAnchor = '# Category map \u2014 which module holds each \u00a7';
 const categoryMapMatches = skillSource.flatMap((line, i) => !tableFenceMask[i] && line === categoryMapAnchor ? [i] : []);
@@ -349,7 +609,12 @@ for (const [offset, line] of skillSource.slice(categoryMapIndex + 6, categoryMap
     continue;
   }
   const [, cell, file] = row;
-  const ids = expandCategoryCell(cell);
+  const parsedCell = parseCategoryCell(cell);
+  if (parsedCell.residue || parsedCell.ids.length === 0) {
+    errors.push(`skill/SKILL.md:${lineNumber + 1}: Category map cell must contain at least one fully parsed category id${parsedCell.residue ? ` (unparsed residue: ${parsedCell.residue})` : ''}`);
+    continue;
+  }
+  const ids = parsedCell.ids;
   if (!specModuleCategories.has(file)) specModuleCategories.set(file, new Set());
   for (const id of ids) {
     const previous = specCategoryOwners.get(id);
@@ -387,7 +652,7 @@ for (const file of relativeFiles(canonicalSkill).filter((f) => f.endsWith('.md')
   const ids = new Set();
   for (let i = 0; i < lines.length; i += 1) {
     if (!fenceMask[i]) {
-      const match = lines[i].match(/^#{2,3} §([A-Z]\d+[a-z]*)\.\s/);
+      const match = lines[i].match(/^ {0,3}#{2,3} §([A-Z]\d+[a-z]*)\.\s/);
       if (match) {
         const id = match[1];
         const previous = moduleHeaderOwners.get(id);
@@ -428,7 +693,7 @@ for (const file of relativeFiles(canonicalSkill).filter((f) => f.endsWith('.md')
   const fenceMask = buildFenceMask(lines);
   for (let i = 0; i < lines.length; i += 1) {
     if (!fenceMask[i]) {
-      const match = lines[i].match(/^## §([A-Z]\d+)\.\s/);
+      const match = lines[i].match(/^ {0,3}## §([A-Z]\d+)\.\s/);
       if (match) numberedCategoryIds.add(match[1]);
     }
   }
@@ -955,7 +1220,11 @@ function positiveIntegerEnv(name, fallback) {
 // negative control spawns this script against a deliberately mutated repo state to prove the
 // category-count check fails — and this script would otherwise spawn validate-fixtures.mjs right
 // back, which runs that same negative control again, spawning this script again, without end.
-if (!process.env.RUST_INTEL_SKIP_NESTED_FIXTURES) {
+const skipNestedFixtures = process.env.RUST_INTEL_SKIP_NESTED_FIXTURES;
+if (skipNestedFixtures !== undefined && skipNestedFixtures !== '' && skipNestedFixtures !== '0' && skipNestedFixtures !== '1') {
+  errors.push('RUST_INTEL_SKIP_NESTED_FIXTURES must be exactly 1 to skip nested fixtures, or 0/unset to run them');
+}
+if (skipNestedFixtures !== '1') {
   const fixtureWatchdogMs = positiveIntegerEnv('RUST_INTEL_FIXTURE_WATCHDOG_MS', 15 * 60 * 1000);
   const fixtureRun = runNodeProbe([path.join(root, 'dev/validate-fixtures.mjs')], fixtureWatchdogMs);
   const fixtureOutput = fixtureRun.output;

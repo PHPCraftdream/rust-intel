@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: ninety-seven hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: one hundred thirteen hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -157,10 +157,15 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
       if (mutated === null) return { skipped: true };
       fs.writeFileSync(filePath, mutated);
     }
-    const run = spawnSync(process.execPath, [path.join(tmpRoot, 'dev', 'validate.mjs')], {
+    const script = spawnOptions.script || 'dev/validate.mjs';
+    const run = spawnSync(process.execPath, [path.join(tmpRoot, ...script.split('/'))], {
       encoding: 'utf8',
       timeout: spawnOptions.timeoutMs ?? 30_000,
-      env: { ...process.env, RUST_INTEL_SKIP_NESTED_FIXTURES: '1' },
+      env: {
+        ...process.env,
+        RUST_INTEL_SKIP_NESTED_FIXTURES: '1',
+        ...(spawnOptions.env || {}),
+      },
     });
     const error = run.error || null;
     return {
@@ -962,7 +967,42 @@ for (const [name, mutate] of [
   expectFixture(result, 'quoted MODULES decoys do not mask live corruption', 1, ['async.md']);
 }
 
-// Control 80: duplicate category ids within one executable MODULES entry are an integrity error,
+// Control 80: an executable MODULES array may not contain an extra unparsed element. A parser
+// that extracts only the recognizable object-shaped entries would silently accept this drift.
+{
+  const result = runValidateAgainstMutatedFiles([
+    'skill/audit-project.workflow.js',
+    'skills/rust-intel/audit-project.workflow.js',
+  ], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes('const MODULES = ['));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, '  null,');
+    return lines.join('\n');
+  });
+  expectFixture(result, 'unparsed MODULES element is rejected', 1, ['MODULES']);
+}
+
+// Control 81: a double-quoted object is not an executable MODULES entry in this workflow's
+// documented literal form. Removing the real entry and replacing it with a complete double-
+// quoted equivalent must remain a missing-route failure, not a parser false positive.
+{
+  const result = runValidateAgainstMutatedFiles([
+    'skill/audit-project.workflow.js',
+    'skills/rust-intel/audit-project.workflow.js',
+  ], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
+    if (at < 0) return null;
+    const quoted = lines[at].replaceAll("'", '"');
+    lines[at] = '//' + lines[at];
+    lines.splice(at + 1, 0, quoted);
+    return lines.join('\n');
+  });
+  expectFixture(result, 'double-quoted MODULES object is rejected', 1, ['async.md']);
+}
+
+// Control 82: duplicate category ids within one executable MODULES entry are an integrity error,
 // even though Set-based parity would otherwise hide the repeated token.
 {
   const result = runValidateAgainstMutatedFiles(['skill/audit-project.workflow.js'], (source) => {
@@ -975,7 +1015,7 @@ for (const [name, mutate] of [
   expectFixture(result, 'duplicate category id within MODULES entry', 1, ['duplicate category', 'async.md']);
 }
 
-// Controls 81-83: every Category-map ownership collision is rejected: repeated ids in one row,
+// Controls 83-85: every Category-map ownership collision is rejected: repeated ids in one row,
 // repeated rows, and the same id routed to two different module files.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1008,7 +1048,7 @@ for (const [name, mutate] of [
   expectFixture(result, 'cross-owner Category-map duplicate', 1, ['category map contains duplicate', '\u00a7B2']);
 }
 
-// Controls 84-85: live category headings are unique both within one module and across modules.
+// Controls 86-87: live category headings are unique both within one module and across modules.
 {
   const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
     const lines = splitFixtureLines(source);
@@ -1030,7 +1070,73 @@ for (const [name, mutate] of [
   expectFixture(result, 'duplicate live heading across modules', 1, ['live module headings contain duplicate', '\u00a7B2']);
 }
 
-// Control 86: an escaped angle-leading raw tag in a code-pattern first cell is still raw-markup
+// Control 88: a Category-map row whose category cell contains no category id is malformed, even
+// if its module filename happens to be valid.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes('| \u00a7B2,'));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, '| no-category-id | `async.md` |');
+    return lines.join('\n');
+  });
+  expectFixture(result, 'Category-map no-op cell is rejected', 1, ['Category map']);
+}
+
+// Control 89: recognized category ids may not be followed by unparsed residue. Otherwise a
+// typo in the ownership cell could be silently ignored while parity still appears correct.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes('| \u00a7B2,'));
+    if (at < 0) return null;
+    lines[at] = lines[at].replace('\u00a7B2,', '\u00a7B2, typo-residue,');
+    return lines.join('\n');
+  });
+  expectFixture(result, 'Category-map unparsed residue is rejected', 1, ['category map']);
+}
+
+// Control 90: a regex literal containing `[` before MODULES is not executable array syntax and
+// must not hide the real top-level assignment from the MODULES parser.
+{
+  const result = runValidateAgainstMutatedFiles([
+    'skill/audit-project.workflow.js',
+    'skills/rust-intel/audit-project.workflow.js',
+  ], (source) => {
+    const lines = splitFixtureLines(source);
+    const live = lines.findIndex((line) => line.includes('const MODULES = ['));
+    const asyncEntry = lines.findIndex((line, index) => index > live && line.includes("{ file: 'async.md', categories:"));
+    if (live < 0 || asyncEntry < 0) return null;
+    lines.splice(live, 0, 'const MODULES_REGEX_DECOY = /\\[/;');
+    const shiftedAsync = asyncEntry + 1;
+    lines[shiftedAsync] = '//' + lines[shiftedAsync];
+    return lines.join('\n');
+  });
+  expectFixture(result, 'regex literal before MODULES does not hide assignment', 1, ['async.md']);
+}
+
+// Controls 91-96: live module headings may be indented by 1-3 spaces in Markdown, and duplicate
+// detection must still see them both within one module and across module files.
+for (const spaces of [' ', '  ', '   ']) {
+  const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.startsWith('## \u00a7B2.'));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, spaces + lines[at]);
+    return lines.join('\n');
+  });
+  expectFixture(result, `${spaces.length}-space duplicate live heading within module`, 1, ['live module headings contain duplicate', '\u00a7B2']);
+  const cross = runValidateAgainstMutatedFiles(['skill/concurrency-and-state.md', 'skills/rust-intel/concurrency-and-state.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.startsWith('## \u00a7A2.'));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, spaces + '## \u00a7B2. duplicate cross-module heading');
+    return lines.join('\n');
+  });
+  expectFixture(cross, `${spaces.length}-space duplicate live heading across modules`, 1, ['live module headings contain duplicate', '\u00a7B2']);
+}
+
+// Control 97: an escaped angle-leading raw tag in a code-pattern first cell is still raw-markup
 // style outside code and must not evade the first-cell contract merely because the first byte is
 // a backslash.
 {
@@ -1042,7 +1148,7 @@ for (const [name, mutate] of [
   expectExactUnsupported(result, 'escaped raw HTML in code-pattern cell unsupported-style control', [lineNeedle, 'unsupported raw inline HTML/angle-leading construct']);
 }
 
-// Control 87: a four-backtick opener is not closed by a shorter three-backtick interior line.
+// Control 98: a four-backtick opener is not closed by a shorter three-backtick interior line.
 // The escaped quote remains inside the unclosed fence, so only the fence-state diagnostic is
 // expected.
 {
@@ -1055,18 +1161,19 @@ for (const [name, mutate] of [
   }
 }
 
-// Control 88: tab-indented fence-looking lines are not supported project fences. Both the fake
-// opener and fake closer therefore remain ordinary text, exposing the escape on the body line.
+// Control 99: a tab-indented fence-looking closer is not a project-fence closer. The valid opener
+// remains active through that fake closer, so the escape after it is still fenced; the later valid
+// closer then terminates the fence without producing an unclosed-fence diagnostic.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
-    appendProbe(source, ['', '\t' + fixtureTick.repeat(3) + 'md', 'let outside = "x \\" y";', '\t' + fixtureTick.repeat(3), '']));
-  expectFixture(result, 'tab-indented fence opener and closer are ignored', 1, ['literal \\" escape outside a fenced code block']);
-  if (!result.skipped && !result.executionFailure && result.output.includes('unclosed project fence')) {
-    failures.push('tab-indented fence opener and closer are ignored: fake tab fence produced an unclosed-fence diagnostic');
+    appendProbe(source, ['', fixtureTick.repeat(3) + 'md', 'let inside = "x \\" y";', '\t' + fixtureTick.repeat(3), 'let stillInside = "x \\" y";', fixtureTick.repeat(3), '']));
+  expectFixture(result, 'tab-indented fake closer is ignored', 0);
+  if (!result.skipped && !result.executionFailure && result.output.includes('literal \\" escape outside a fenced code block')) {
+    failures.push('tab-indented fake closer is ignored: escape after fake closer was treated as outside the fence');
   }
 }
 
-// Control 89: form-feed is not permitted after a fence marker. It must not close the opener or
+// Control 100: form-feed is not permitted after a fence marker. It must not close the opener or
 // suppress the eventual unclosed-fence diagnostic.
 {
   const t = fixtureTick;
@@ -1078,7 +1185,7 @@ for (const [name, mutate] of [
   }
 }
 
-// Control 90: NBSP-only content inside an anchored body is not an ASCII blank separator and must
+// Control 101: NBSP-only content inside an anchored body is not an ASCII blank separator and must
 // be diagnosed as a malformed-width body row.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1090,20 +1197,20 @@ for (const [name, mutate] of [
   expectStructural(result, 'NBSP-only anchored body line is not blank', ['code-pattern table body row has', 'expected 2']);
 }
 
-// Control 91: NBSP wrapped around the required delimiter marker changes its cells and must not
-// be accepted as the code-pattern delimiter scaffold.
+// Control 102: NBSP is not table whitespace. This exact three-column delimiter-looking line must
+// not be accepted as the two-column code-pattern delimiter scaffold.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
     const lines = splitFixtureLines(source);
     const header = lines.findIndex((line) => line === '| Code pattern in user input | Activates |');
     if (header < 0 || lines[header + 1] !== '|---|---|') return null;
-    lines[header + 1] = '\u00a0|---|---|\u00a0';
+    lines[header + 1] = '|\u00a0---\u00a0|---|---|';
     return lines.join('\n');
   });
   expectStructural(result, 'NBSP-wrapped delimiter marker is invalid', ['code-pattern table delimiter row has wrong width or syntax']);
 }
 
-// Controls 92-93: line-ending normalization is part of the validator contract. The complete
+// Controls 103-104: line-ending normalization is part of the validator contract. The complete
 // canonical and mirror skill trees must validate identically under CRLF and lone-CR input.
 for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
@@ -1111,7 +1218,7 @@ for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
   expectFixture(result, name + ' skill copies normalize successfully', 0);
 }
 
-// Control 94: a backtick-bearing info string is not a valid project fence opener. When inserted
+// Control 105: a backtick-bearing info string is not a valid project fence opener. When inserted
 // into the anchored body it must produce the exact body-width diagnostic, without creating an
 // unclosed-fence error.
 {
@@ -1126,15 +1233,16 @@ for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
   }
 }
 
-// Controls 95-97: leading ASCII whitespace preserves table-cell contents but violates this
-// repository's raw-column-1 pipe contract for the header, delimiter, and body row alike.
+// Controls 106-108: one leading ASCII space preserves the raw pipe and table cells but violates this
+// repository's column-1 contract. The validator must identify the whitespace, not report a generic
+// missing anchor or wrong width.
 for (const kind of ['header', 'delimiter', 'body']) {
   const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
   const hit = anchoredTableLine(original, 'code', kind);
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
-    mutateAnchoredLine(source, 'code', kind, (line) => ' ' + line.slice(1)));
+    mutateAnchoredLine(source, 'code', kind, (line) => ' ' + line));
   const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber}:`;
-  expectStructural(result, 'leading-whitespace code ' + kind + ' raw-pipe contract', [lineNeedle, 'missing its leading `|`']);
+  expectStructural(result, 'leading-whitespace code ' + kind + ' raw-pipe contract', [lineNeedle, 'has 1 leading space(s)']);
 }
 
 
@@ -1143,15 +1251,53 @@ for (const kind of ['header', 'delimiter', 'body']) {
 // invariant token, not whole paragraphs; the Codex mirror needs no separate check —
 // dev/validate.mjs enforces byte identity between the two trees.
 function sectionOf(text, header) {
-  const start = text.indexOf(header);
-  if (start === -1) return '';
-  const next = text.indexOf('\n## §', start + 1);
-  return next === -1 ? text.slice(start) : text.slice(start, next);
+  const lines = splitFixtureLines(text);
+  const mask = fixtureFenceMask(lines);
+  const start = lines.findIndex((line, i) => !mask[i] && line.includes(header));
+  if (start < 0) return '';
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (!mask[i] && /^## §/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).filter((_, offset) => !mask[start + offset]).join('\n');
 }
 
 function rowOf(text, anchor) {
-  const line = text.split('\n').find((row) => row.includes(anchor));
-  return line === undefined ? '' : line;
+  const lines = splitFixtureLines(text);
+  const mask = fixtureFenceMask(lines);
+  const index = lines.findIndex((row, i) => !mask[i] && row.includes(anchor));
+  return index < 0 ? '' : lines[index];
+}
+
+function fixtureFenceMask(lines) {
+  const mask = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (fence) {
+      mask[i] = true;
+      if (fixtureFenceCloser(line, fence)) fence = null;
+      continue;
+    }
+    const opener = fixtureFenceOpener(line);
+    if (opener) {
+      mask[i] = true;
+      fence = opener;
+    } else mask[i] = false;
+  }
+  return mask;
+}
+function fixtureFenceOpener(line) {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null;
+  return { marker: match[1][0], length: match[1].length };
+}
+function fixtureFenceCloser(line, fence) {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+  return match !== null && match[1][0] === fence.marker && match[1].length >= fence.length;
 }
 const ruleTextControls = [
   { name: 'B2 map-guard types (skill/async.md §B2)', file: 'skill/async.md', section: '## §B2.', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one', 'MappedRef', 'RefMulti', 'get_sync`/`get_async` return `Option<OccupiedEntry>`'] },
@@ -1176,6 +1322,63 @@ for (const control of ruleTextControls) {
   }
   for (const token of control.forbid || []) {
     if (scoped.includes(token)) failures.push(`${control.name}: forbidden signature "${token}" present — the corrected rule text looks reverted`);
+  }
+}
+
+// Controls 109-111: the nested-fixture escape hatch is intentionally a strict test-only switch.
+// A value of exactly "1" skips the nested suite; "0" runs it and must execute this deliberately
+// broken fixture sentinel; any other value is itself an explicit validator error. Mutating the
+// child script avoids recursively running this fixture suite from inside its own control.
+function breakFixtureScript(source) {
+  const marker = 'const failures = [];';
+  const replacement = `${marker}\nconsole.error('deliberately broken nested fixture sentinel');\nprocess.exit(23);`;
+  return source.includes(marker) ? source.replace(marker, replacement) : null;
+}
+for (const [value, status, needles, name] of [
+  ['1', 0, [], 'skip env exact one skips nested fixtures'],
+  ['0', 1, ['deliberately broken nested fixture sentinel'], 'skip env zero runs broken nested fixture'],
+  ['yes', 1, ['RUST_INTEL_SKIP_NESTED_FIXTURES'], 'skip env invalid value fails explicitly'],
+]) {
+  const result = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], breakFixtureScript, {
+    env: { RUST_INTEL_SKIP_NESTED_FIXTURES: value },
+    timeoutMs: 300_000,
+  });
+  expectFixture(result, name, status, needles);
+}
+
+// Controls 112-113: rule-text extraction must ignore signatures placed inside supported fenced
+// code. Removing the live signature while adding the same text as a fenced decoy must fail both
+// section-scoped and row-scoped rule controls.
+{
+  const control = ruleTextControls.find(({ name }) => name.startsWith('B14 JoinSet admission-gated drain'));
+  const original = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const lines = splitFixtureLines(original);
+  const start = lines.findIndex((line) => line.includes(control.section));
+  if (start < 0) {
+    failures.push('fenced section rule-text decoy: required section was not found');
+  } else {
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (/^## §/.test(lines[i])) { end = i; break; }
+    }
+    for (let i = start; i < end; i += 1) lines[i] = lines[i].replaceAll('poll_join_next', 'removed_join_next');
+    lines.splice(start + 1, 0, fixtureTick.repeat(3) + 'text', 'poll_join_next', fixtureTick.repeat(3));
+    const scoped = sectionOf(lines.join('\n'), control.section);
+    if (control.require.every((token) => scoped.includes(token))) failures.push('fenced section rule-text decoy unexpectedly satisfied the live rule');
+  }
+}
+{
+  const control = ruleTextControls.find(({ name }) => name.startsWith('B13 pure-reader exemption'));
+  const original = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const lines = splitFixtureLines(original);
+  const at = lines.findIndex((line) => line.includes(control.rowAnchor));
+  if (at < 0) {
+    failures.push('fenced row rule-text decoy: required row was not found');
+  } else {
+    lines[at] = lines[at].replace('need not hold the same guard', 'must hold a guard');
+    lines.splice(0, 0, fixtureTick.repeat(3) + 'text', 'pure reader that makes no check-then-act decision — need not hold the same guard', fixtureTick.repeat(3), '');
+    const scoped = rowOf(lines.join('\n'), control.rowAnchor);
+    if (control.require.every((token) => scoped.includes(token))) failures.push('fenced row rule-text decoy unexpectedly satisfied the live rule');
   }
 }
 

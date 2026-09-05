@@ -32,6 +32,7 @@ Its supported Markdown surface is explicit:
 - It recognizes exactly two global, top-level trigger-table anchors: `User request contains... | Activates category | Specific risk` and `Code pattern in user input | Activates`.
 - Each anchor has a canonical end/scaffold boundary (`**Triggered by code, not phrase**` or `When two or more triggers fire in one request`); raw column-1 leading pipes, declared widths, and a nonempty body are required. The scaffold continues through the `Category map`, whose module/category parity is checked.
 - Duplicate keys are the sorted set of inline-code tokens in a code-pattern row; ordinary emphasis, strong emphasis, and strikethrough remain allowed text, while prose-only rows (with no inline code) are not deduplicated. Any raw `<` outside inline code in a code-pattern row's first cell is unsupported and rejected explicitly (including raw-HTML/autolink-like syntax); bracketed link/image/reference-like syntax and a broad repository-style URI/email-like token ban outside inline code are also rejected. This is a documented repository subset, not an exact GFM claim.
+- In trigger-table cells, the repository convention treats a pipe preceded by an odd number of backslashes as escaped content; an even number leaves the pipe as a column separator. This parity convention is explicit repository policy, not a claim about GFM/cmark-gfm behavior.
 - Project fences are standalone and allow 0–3 leading spaces. Container-prefixed fences and angle-leading raw-HTML-style lines are rejected explicitly.
 
 ## Status
@@ -180,7 +181,7 @@ rust-cc-uninstall.bat -User
 
 Only touches the paths the installer creates. Other skills and commands under the target `.claude/` are not touched.
 
-### Verify
+### Verify Claude Code
 
 Start `claude` inside the directory you installed to (or anywhere if you used `--user`), ask for any Rust task, and the assistant should reference rules from §A1–§F4 unprompted. Try:
 
@@ -189,6 +190,10 @@ Start `claude` inside the directory you installed to (or anywhere if you used `-
 /rust-cc-fix  E0277: the trait bound `T: Send` is not satisfied
 /rust-cc-plan write a tokio task that consumes a sqlx stream and pushes to a websocket
 ```
+
+### Verify Codex
+
+Start a new Codex thread after installation. Use `/skills` to confirm that `rust-intel` is listed, then mention `$rust-intel` in a Rust request to activate it (see the [official Codex skills documentation](https://developers.openai.com/codex/skills)). The Codex installer installs the `rust-intel` skill only; it does not install Claude Code's `/rust-cc-audit`, `/rust-cc-fix`, or `/rust-cc-plan` commands.
 
 ### As a checklist for humans
 

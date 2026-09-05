@@ -21,7 +21,7 @@ desktop.ini
 
 # Project-local install target (when install.sh / install.ps1 are run without
 # --user from inside the repo, files land here). The repo source of truth is
-# rust-intel.md + commands/, not this dir.
+# skill/ + commands/rust-intel-cc/; skills/rust-intel/ is a derived mirror.
 /.claude/
 
 # Future tooling artifacts
