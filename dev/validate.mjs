@@ -2,6 +2,7 @@
 // Repository-level regression checks. Zero dependencies; run with Node >= 16.7.0 (dev/validate-fixtures.mjs uses fs.cpSync).
 
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -265,50 +266,117 @@ function isRegexLiteralStart(source, index) {
 // separate view from stripJsComments(): the semantic workflow checks below must not be satisfied
 // by a quoted example, a comment, or a regexp body containing the same spelling.
 function maskJsNonCode(source) {
-  let output = '';
-  let state = 'code';
-  for (let i = 0; i < source.length; i += 1) {
-    const character = source[i];
-    const next = source[i + 1];
-    const blank = character === '\n' || character === '\r' ? character : ' ';
-    if (state === 'line-comment') {
-      output += blank;
-      if (character === '\n' || character === '\r') state = 'code';
-      continue;
+  // Keep UTF-16 code-unit offsets identical to `source`: Array.from() would collapse astral
+  // characters (the workflow prompt contains emoji) and shift every later structural index.
+  const output = source.split('');
+  const blank = (index) => {
+    if (source[index] !== '\n' && source[index] !== '\r') output[index] = ' ';
+  };
+  const blankRange = (start, end) => {
+    for (let index = start; index < end; index += 1) blank(index);
+  };
+  const maskQuoted = (start, quote) => {
+    let index = start;
+    while (index < source.length) {
+      const character = source[index];
+      blank(index);
+      if (character === '\\' && index + 1 < source.length) {
+        blank(index + 1);
+        index += 2;
+      } else if (character === quote) {
+        return index + 1;
+      } else index += 1;
     }
-    if (state === 'block-comment') {
-      output += blank;
-      if (character === '*' && next === '/') { output += ' '; i += 1; state = 'code'; }
-      continue;
+    return index;
+  };
+  const maskRegex = (start) => {
+    let index = start;
+    let inClass = false;
+    while (index < source.length) {
+      const character = source[index];
+      blank(index);
+      if (character === '\\' && index + 1 < source.length) {
+        blank(index + 1);
+        index += 2;
+      } else if (character === '[') {
+        inClass = true;
+        index += 1;
+      } else if (character === ']' && inClass) {
+        inClass = false;
+        index += 1;
+      } else if (character === '/' && !inClass) {
+        return index + 1;
+      } else index += 1;
     }
-    if (state === 'single' || state === 'double' || state === 'template') {
-      output += blank;
-      if (character === '\\' && i + 1 < source.length) { output += source[i + 1] === '\n' || source[i + 1] === '\r' ? source[i + 1] : ' '; i += 1; }
-      else if ((state === 'single' && character === "'") || (state === 'double' && character === '"') || (state === 'template' && character === '`')) state = 'code';
-      continue;
+    return index;
+  };
+  let maskCode;
+  const maskTemplate = (start) => {
+    let index = start;
+    while (index < source.length) {
+      const character = source[index];
+      if (character === '\\' && index + 1 < source.length) {
+        blankRange(index, index + 2);
+        index += 2;
+      } else if (character === '`') {
+        blank(index);
+        return index + 1;
+      } else if (character === '$' && source[index + 1] === '{') {
+        blankRange(index, index + 2);
+        index = maskCode(index + 2, true);
+      } else {
+        blank(index);
+        index += 1;
+      }
     }
-    if (state === 'regex') {
-      output += blank;
-      if (character === '\\' && i + 1 < source.length) { output += source[i + 1] === '\n' || source[i + 1] === '\r' ? source[i + 1] : ' '; i += 1; }
-      else if (character === '[') state = 'regex-class';
-      else if (character === '/') state = 'code';
-      continue;
+    return index;
+  };
+  maskCode = (start, interpolation) => {
+    let index = start;
+    let braceDepth = 0;
+    while (index < source.length) {
+      const character = source[index];
+      const next = source[index + 1];
+      if (character === '/' && next === '/') {
+        blankRange(index, index + 2);
+        index += 2;
+        while (index < source.length && source[index] !== '\n' && source[index] !== '\r') { blank(index); index += 1; }
+        continue;
+      }
+      if (character === '/' && next === '*') {
+        blankRange(index, index + 2);
+        index += 2;
+        while (index < source.length) {
+          if (source[index] === '*' && source[index + 1] === '/') {
+            blankRange(index, index + 2);
+            index += 2;
+            break;
+          }
+          blank(index);
+          index += 1;
+        }
+        continue;
+      }
+      if (character === "'") { blank(index); index = maskQuoted(index + 1, "'"); continue; }
+      if (character === '"') { blank(index); index = maskQuoted(index + 1, '"'); continue; }
+      if (character === '`') { blank(index); index = maskTemplate(index + 1); continue; }
+      if (character === '/' && isRegexLiteralStart(source, index)) { blank(index); index = maskRegex(index + 1); continue; }
+      if (character === '{') { braceDepth += 1; index += 1; continue; }
+      if (character === '}' && interpolation) {
+        if (braceDepth === 0) {
+          blank(index);
+          return index + 1;
+        }
+        braceDepth -= 1;
+        index += 1;
+        continue;
+      }
+      index += 1;
     }
-    if (state === 'regex-class') {
-      output += blank;
-      if (character === '\\' && i + 1 < source.length) { output += source[i + 1] === '\n' || source[i + 1] === '\r' ? source[i + 1] : ' '; i += 1; }
-      else if (character === ']') state = 'regex';
-      continue;
-    }
-    if (character === '/' && next === '/') { output += '  '; i += 1; state = 'line-comment'; continue; }
-    if (character === '/' && next === '*') { output += '  '; i += 1; state = 'block-comment'; continue; }
-    if (character === "'") { output += ' '; state = 'single'; continue; }
-    if (character === '"') { output += ' '; state = 'double'; continue; }
-    if (character === '`') { output += ' '; state = 'template'; continue; }
-    if (character === '/' && isRegexLiteralStart(source, i)) { output += ' '; state = 'regex'; continue; }
-    output += character;
-  }
-  return output;
+    return index;
+  };
+  maskCode(0, false);
+  return output.join('');
 }
 
 // Find the real workflow declaration in JavaScript code.  A regex over a comment-masked
@@ -457,20 +525,23 @@ if (missingDeclarations.length !== 1 || missingDeclarationIndex < 0) {
 const missingLoopStart = findTopLevelForLoop(executableWorkflowCode, missingDeclarationIndex, /for\s*\(\s*const\s+unit\s+of\s+AUDIT_UNITS\s*\)\s*\{/);
 const missingLoopBodyStart = missingLoopStart >= 0 ? executableWorkflowCode.indexOf('{', missingLoopStart) : -1;
 const missingLoopBodyEnd = missingLoopBodyStart >= 0 ? findMatchingDelimiter(executableWorkflowCode, missingLoopBodyStart, '{', '}') : -1;
-const missingLoopCode = missingLoopBodyStart >= 0 && missingLoopBodyEnd > missingLoopBodyStart
-  ? executableWorkflowCode.slice(missingLoopStart, missingLoopBodyEnd + 1)
+// This is the raw UTF-8 SHA-256 of the canonical `missingUnitInputs` declaration through the
+// closing brace of its reachable AUDIT_UNITS loop (the repository's LF-canonical bytes). Pinning the complete block
+// makes every input obligation executable: expected/reviewed artifact construction, both
+// reachable loops, docs construction, the module helper branch, and the final assignment cannot
+// be weakened, moved into dead code, or replaced with aliases without changing this digest.
+const canonicalMissingUnitInputsSha256 = '1e0683bd828b7e22a25aaf49222d1b1f838d8a5449bbd77df433acf4c38cf891';
+const missingBlock = missingDeclarationIndex >= 0 && missingLoopBodyEnd > missingDeclarationIndex
+  ? workflow.slice(missingDeclarationIndex, missingLoopBodyEnd + 1)
   : '';
-const missingLoopShape = [
-  /^for\s*\(\s*const\s+unit\s+of\s+AUDIT_UNITS\s*\)\s*\{\s*const\s+result\s*=\s*resultsByLabel\.get\(\s*unit\.label\s*\)\s*const\s+missing\s*=\s*\[\s*\]\s*if\s*\(\s*!result\s*\)\s*missing\.push\(\s*\)\s*else\s+if\s*\(\s*!auditResultModuleMatches\(\s*result\s*,\s*unit\s*\)\s*\)\s*missing\.push\(/,
-  /const\s+requiredGroups\s*=\s*unit\.requiredArtifactGroups\s*\|\|\s*\[\s*\]\s*for\s*\(\s*const\s+group\s+of\s+requiredGroups\s*\)\s*\{[\s\S]*?for\s*\(\s*const\s+artifact\s+of\s+expected\s*\)\s*if\s*\(\s*!reviewed\.has\(\s*artifact\s*\)\s*\)\s*missing\.push\(\s*artifact\s*\)/,
-  /if\s*\(\s*unit\.requiresDocs\s*\)\s*\{[\s\S]*?for\s*\(\s*const\s+doc\s+of\s+\(scoperResult\s*&&\s*scoperResult\.docsFiles\)\s*\|\|\s*\[\s*\]\s*\)\s*if\s*\(\s*!reviewed\.has\(\s*doc\s*\)\s*\)\s*missing\.push\(\s*doc\s*\)/,
-  /if\s*\(\s*missing\.length\s*\)\s*missingUnitInputs\[\s*unit\.label\s*\]\s*=\s*missing/,
-];
-if (missingLoopShape.some((pattern) => !pattern.test(missingLoopCode))) {
-  errors.push('workflow missingUnitInputs loop must call auditResultModuleMatches in its module-mismatch branch');
+const missingBlockSha256 = missingBlock
+  ? createHash('sha256').update(missingBlock, 'utf8').digest('hex')
+  : '';
+if (missingDeclarations.length !== 1 || !missingBlock || missingBlockSha256 !== canonicalMissingUnitInputsSha256) {
+  errors.push('workflow missingUnitInputs block must match the canonical reachable input-coverage implementation');
 }
 const orchestrationDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'orchestrationComplete');
-const orchestrationExpression = /^const\s+orchestrationComplete\s*=\s*missingScopeFields\.length\s*===\s*0\s*&&\s*missingSlices\.length\s*===\s*0\s*&&\s*Object\.keys\(\s*missingUnitInputs\s*\)\.length\s*===\s*0\s*&&\s*strayLabels\.length\s*===\s*0\s*&&\s*dropped\s*===\s*0\s*;?[ \t\r]*(?:\n|$)/;
+const orchestrationExpression = /^const\s+orchestrationComplete\s*=\s*missingScopeFields\.length\s*===\s*0\s*&&\s*missingSlices\.length\s*===\s*0\s*&&\s*Object\.keys\(\s*missingUnitInputs\s*\)\.length\s*===\s*0\s*&&\s*strayLabels\.length\s*===\s*0\s*&&\s*dropped\s*===\s*0\s*;[ \t\r]*(?:\n|$)/;
 if (orchestrationDeclarations.length !== 1 || !orchestrationExpression.test(executableWorkflowCode.slice(orchestrationDeclarations[0] ?? 0))) {
   errors.push('workflow orchestrationComplete must be one top-level const with all five coverage conjuncts');
 }
@@ -643,24 +714,46 @@ const auditUnits = (parsedAuditUnits || []).filter(Boolean);
 function workflowMutationCheck(source, names) {
   const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
   const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const aliases = new Set();
-  // Track aliases to the immutable roots to a fixpoint.  The right-hand side is deliberately
-  // limited to one identifier plus property/index access: this catches nested artifact arrays
-  // without treating arbitrary bookkeeping expressions as aliases.  Include let/var because a
-  // mutable binding can still expose (and mutate) a frozen audit record.
-  const aliasRe = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)(?:(?:\s*\[[^\]\r\n]*\])|(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*))*/g;
+  const aliases = new Map(names.map((name) => [name, 'root']));
+  // Track only references whose runtime value is declarative audit data: a root array, one
+  // indexed record from that root, or one of the known nested array fields.  In particular,
+  // `.length`, primitive fields, and `.map(...)` results are not aliases merely because their
+  // spelling starts with MODULES/AUDIT_UNITS.  Include const/let/var and iterate to a fixpoint
+  // so alias-of-alias chains remain protected.
+  const aliasRe = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)/g;
+  const classifyReference = (base, suffix) => {
+    const baseKind = aliases.get(base);
+    if (!baseKind) return null;
+    const text = suffix.trim();
+    if (!text) return baseKind;
+    const parts = [];
+    const partRe = /\s*(\[[^\]\r\n]*\]|\.([A-Za-z_$][A-Za-z0-9_$]*))/g;
+    let consumed = 0;
+    for (const match of text.matchAll(partRe)) {
+      if (match.index !== consumed) return null;
+      consumed += match[0].length;
+      parts.push(match[1].startsWith('[') ? 'index' : match[2]);
+    }
+    if (consumed !== text.length) return null;
+    let kind = baseKind;
+    for (const part of parts) {
+      if (kind === 'root' && part === 'index') kind = 'record';
+      else if (kind === 'record' && (part === 'categories' || part === 'requiredArtifactGroups')) kind = 'array';
+      else return null;
+    }
+    return kind;
+  };
   let aliasesChanged = true;
   while (aliasesChanged) {
     aliasesChanged = false;
     for (const match of source.matchAll(aliasRe)) {
-      if (!names.includes(match[2]) && !aliases.has(match[2])) continue;
-      if (!aliases.has(match[1])) {
-        aliases.add(match[1]);
-        aliasesChanged = true;
-      }
+      const kind = classifyReference(match[2], match[3]);
+      if (!kind || aliases.has(match[1])) continue;
+      aliases.set(match[1], kind);
+      aliasesChanged = true;
     }
   }
-  const mutationNames = [...new Set([...names, ...aliases])];
+  const mutationNames = [...aliases.keys()];
   const mutationNameRe = mutationNames.map(escaped).join('|');
   const assignmentRe = /^(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:=|\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=)(?!=|>)/;
   const mutatorRe = /^(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/;

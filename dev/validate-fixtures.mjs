@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: one hundred sixty-five hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: one hundred eighty-one hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -1355,15 +1355,22 @@ function moduleTableRowOf(text, anchor, section = '## \u00a7C12.') {
 function numberedItemOf(text, anchor, section = '## Operating mode') {
   const lines = splitFixtureLines(text);
   const mask = fixtureFenceMask(lines);
+  const sections = lines.flatMap((line, i) => !mask[i] && headingMatches(line, section) ? [i] : []);
+  if (sections.length !== 1) return '';
   const bounds = sectionBounds(lines, mask, section);
   if (!bounds) return '';
   // Keep the lookup inside the named section and its contiguous numbered-list
   // block. A numbered item after an indented level-2 heading is a different list.
+  let target = '';
+  let targetCount = 0;
   for (let i = bounds.start; i < bounds.end; i += 1) {
     if (mask[i] || !/^\d+\.\s/.test(lines[i])) continue;
-    if (lines[i].includes(anchor)) return lines[i];
+    if (lines[i].includes(anchor)) {
+      target = lines[i];
+      targetCount += 1;
+    }
   }
-  return '';
+  return targetCount === 1 ? target : '';
 }
 
 function fixtureFenceMask(lines) {
@@ -1764,7 +1771,10 @@ for (const [name, mutate] of [
   expectFixture(result, 'multiline AUDIT_UNITS filter chain is rejected', 1);
 }
 
-// Control 141: a source that removes the outer freeze and then mutates an alias must still fail
+// Control 141: the multiline filter-chain mutation above is a separately numbered control.
+// It must be rejected even though `]).filter(Boolean)` is valid JavaScript.
+
+// Control 142: a source that removes the outer freeze and then mutates an alias must still fail
 // the declarative-data contract. The alias is intentionally not a separate static-mutation rule:
 // the pinned deep-freeze scaffold is the safety boundary for nested references.
 {
@@ -1778,7 +1788,7 @@ for (const [name, mutate] of [
   expectFixture(result, 'unfrozen nested alias mutation is rejected', 1);
 }
 
-// Controls 142-144: mutation through a let alias, an alias of an alias, or a nested-array alias
+// Controls 143-145: mutation through a let alias, an alias of an alias, or a nested-array alias
 // must be rejected after the immutable workflow declarations. These are separate controls so a
 // validator change that spots only one syntactic mutation shape cannot silently reopen the others.
 for (const [name, mutation] of [
@@ -1796,7 +1806,7 @@ for (const [name, mutation] of [
   expectFixture(result, name + ' is rejected', 1, ['workflow']);
 }
 
-// Control 145: a top-level loop decoy must not satisfy the runtime module-identity helper
+// Control 146: a top-level loop decoy must not satisfy the runtime module-identity helper
 // contract when the live helper is changed to compare a different field.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -1808,7 +1818,7 @@ for (const [name, mutation] of [
   expectFixture(result, 'top-level loop runtime helper decoy does not mask altered helper', 1, ['workflow']);
 }
 
-// Controls 146-150: every independent input to orchestrationComplete is part of the gate.
+// Controls 147-151: every independent input to orchestrationComplete is part of the gate.
 // Replace exactly one comparison with a literal while preserving the expression syntax; the
 // validator must reject each weakened gate with its structural workflow diagnostic.
 for (const [name, expression] of [
@@ -1825,7 +1835,7 @@ for (const [name, expression] of [
   expectFixture(result, 'orchestrationComplete ' + name + ' is required', 1, ['orchestrationComplete']);
 }
 
-// Control 151: an incorrect live runtime helper plus a dead canonical helper decoy must fail;
+// Control 152: an incorrect live runtime helper plus a dead canonical helper decoy must fail;
 // the decoy is deliberately a complete function so a broad text search cannot satisfy the
 // contract by finding the right expression in unreachable code.
 {
@@ -1838,7 +1848,7 @@ for (const [name, expression] of [
   expectFixture(result, 'dead runtime module comparison does not mask altered helper', 1, ['workflow']);
 }
 
-// Control 152: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
+// Control 153: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
 // the live row while cloning it under a wrong-header/wrong-width table must fail the scoped
 // rule-text oracle; a first-arbitrary-table lookup would incorrectly pass.
 {
@@ -1859,7 +1869,7 @@ for (const [name, expression] of [
   }
 }
 
-// Control 153: an earlier unfenced numbered item is outside the named Operating mode list.
+// Control 154: an earlier unfenced numbered item is outside the named Operating mode list.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
@@ -1877,7 +1887,7 @@ for (const [name, expression] of [
   }
 }
 
-// Control 154: a numbered item after an indented level-2 heading belongs to the following
+// Control 155: a numbered item after an indented level-2 heading belongs to the following
 // section, not to Operating mode. This protects the section boundary from first-match drift.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
@@ -1896,7 +1906,7 @@ for (const [name, expression] of [
   }
 }
 
-// Control 155: a true trailing array elision (`[...,,]`) is not the same thing as one legal
+// Control 156: a true trailing array elision (`[...,,]`) is not the same thing as one legal
 // trailing separator comma. Keep all
 // category ids and add the second comma at the end of the executable literal.
 {
@@ -1913,7 +1923,7 @@ for (const [name, expression] of [
   expectFixture(result, 'true trailing MODULES array elision is rejected', 1, ['workflow MODULES']);
 }
 
-// Controls 156-158: the per-unit coverage gate must retain both required-input loops and the
+// Controls 157-159: the per-unit coverage gate must retain both required-input loops and the
 // final assignment that records missing inputs. Deleting any one of these leaves the source
 // executable but turns an incomplete orchestration into a false complete result.
 for (const [name, fragment] of [
@@ -1928,7 +1938,7 @@ for (const [name, fragment] of [
   expectFixture(result, name, 1, ['workflow']);
 }
 
-// Control 159: the live deep-freeze helper must be canonical. A later helper-shaped declaration
+// Control 160: the live deep-freeze helper must be canonical. A later helper-shaped declaration
 // in dead code cannot repair a weakened live helper or satisfy a broad text search.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -1951,7 +1961,7 @@ for (const [name, fragment] of [
   expectFixture(result, 'dead deepFreezeRecords decoy does not mask weakened live helper', 1, ['deepFreeze']);
 }
 
-// Control 160: the live missingUnitInputs declaration is unique and top-level. A dead canonical
+// Control 161: the live missingUnitInputs declaration is unique and top-level. A dead canonical
 // declaration inserted after it must not mask changing the live object into another value.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -1963,7 +1973,7 @@ for (const [name, fragment] of [
   expectFixture(result, 'dead missingUnitInputs declaration decoy does not mask weakened live declaration', 1, ['missingUnitInputs']);
 }
 
-// Control 161: the live missing-input loop must be unique and top-level. A dead canonical loop
+// Control 162: the live missing-input loop must be unique and top-level. A dead canonical loop
 // after the live one must not mask deleting its unit iteration.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -1984,7 +1994,7 @@ for (const [name, fragment] of [
   expectFixture(result, 'dead missingUnitInputs loop decoy does not mask deleted live loop', 1, ['missingUnitInputs']);
 }
 
-// Control 162: orchestrationComplete is a unique top-level gate. A dead copy containing all
+// Control 163: orchestrationComplete is a unique top-level gate. A dead copy containing all
 // five conjuncts must not make a weakened live expression acceptable.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -1999,7 +2009,7 @@ for (const [name, fragment] of [
   expectFixture(result, 'dead orchestrationComplete decoy does not mask weakened live gate', 1, ['orchestrationComplete']);
 }
 
-// Control 163: two canonical catalog tables in the same module section, with the live row
+// Control 164: two canonical catalog tables in the same module section, with the live row
 // reverted and the earlier table still complete, must not satisfy moduleTableRowOf.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
@@ -2021,7 +2031,7 @@ for (const [name, fragment] of [
   }
 }
 
-// Control 164: two target rows in one canonical catalog are ambiguous and must not be accepted
+// Control 165: two target rows in one canonical catalog are ambiguous and must not be accepted
 // by a first-match lookup.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
@@ -2038,7 +2048,7 @@ for (const [name, fragment] of [
   }
 }
 
-// Control 165: two target numbered items in the named section, with the original reverted, must
+// Control 166: two target numbered items in the named section, with the original reverted, must
 // not satisfy numberedItemOf through the first matching item.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
@@ -2055,6 +2065,139 @@ for (const [name, fragment] of [
     const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
     if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate target numbered item unexpectedly satisfied the live rule');
   }
+}
+
+// Controls 167-170: the per-unit coverage proof must be semantic, not a text-shaped ornament.
+// Each mutant preserves a plausible JavaScript program while removing one live coverage edge:
+// erasing the expected artifact set, comparing against that expected set instead of the agent's
+// report, disabling the artifact loop in a dead branch, or skipping the documentation loop.
+for (const [name, mutate] of [
+  ['artifact expected set erased', (source) => source.replace(
+    'const expected = scoperResult && scoperResult.artifactFiles ? (scoperResult.artifactFiles[group] || []) : []',
+    'const expected = []',
+  )],
+  ['artifact reviewed set aliases expected set', (source) => source.replace(
+    'const reviewed = new Set(result ? (result.artifactsReviewed || []) : [])',
+    'const reviewed = new Set(expected)',
+  )],
+  ['artifact coverage loop hidden in if-false', (source) => source.replace(
+    'for (const artifact of expected) if (!reviewed.has(artifact)) missing.push(artifact)',
+    'if (false) { for (const artifact of expected) if (!reviewed.has(artifact)) missing.push(artifact) }',
+  )],
+  ['documentation coverage loop after continue', (source) => source.replace(
+    'for (const doc of (scoperResult && scoperResult.docsFiles) || []) if (!reviewed.has(doc)) missing.push(doc)',
+    'continue; for (const doc of (scoperResult && scoperResult.docsFiles) || []) if (!reviewed.has(doc)) missing.push(doc)',
+  )],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const mutated = mutate(source);
+    return mutated === source ? null : mutated;
+  });
+  expectFixture(result, name + ' is rejected', 1, ['workflow']);
+}
+
+// Controls 171-172: mutation calls inside template-literal interpolation are executable code,
+// not inert documentation. The second probe also passes through an alias so masking the whole
+// template while scanning JavaScript cannot hide the root's mutation provenance.
+for (const [name, mutation] of [
+  ['template interpolation MODULES mutation', "const templateProbe = `${MODULES.push({ file: 'template.md', categories: [] })}`;"],
+  ['template interpolation alias mutation', "const templateAlias = MODULES;\nconst templateProbe = `${templateAlias.push({ file: 'template-alias.md', categories: [] })}`;"],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'MODULES');
+      if (end < 0) return false;
+      lines.splice(end + 1, 0, mutation);
+      return true;
+    }));
+  expectFixture(result, name + ' is rejected', 1, ['workflow']);
+}
+
+// Controls 173-176: direct root, nested-array, delete, and Reflect.set mutations are all
+// forbidden. These isolated forms complement the alias-chain controls above and pin the exact
+// syntax families the mutation scanner promises to reject.
+for (const [name, mutation] of [
+  ['isolated direct MODULES.push mutation', "MODULES.push({ file: 'direct.md', categories: [] });"],
+  ['isolated direct nested categories.push mutation', "MODULES[0].categories.push('Z99');"],
+  ['isolated delete MODULES element mutation', 'delete MODULES[0];'],
+  ['isolated Reflect.set AUDIT_UNITS mutation', "Reflect.set(AUDIT_UNITS, 0, { module: 'decoy.md', label: 'decoy', requiredArtifactGroups: [] });"],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'MODULES');
+      if (end < 0) return false;
+      lines.splice(end + 1, 0, mutation);
+      return true;
+    }));
+  expectFixture(result, name + ' is rejected', 1, ['workflow']);
+}
+
+// Controls 177-178: ordinary bookkeeping that merely reads immutable declarations is allowed.
+// A shallow copy is independent data, so mutating that copy must not be confused with mutating
+// the frozen MODULES graph itself.
+for (const [name, mutation] of [
+  ['MODULES length read and counter mutation', 'let count = MODULES.length; count += 1;'],
+  ['mapped MODULES copy mutation', 'const copy = MODULES.map((entry) => entry); copy.push({ file: \'copy.md\', categories: [] });'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'MODULES');
+      if (end < 0) return false;
+      lines.splice(end + 1, 0, mutation);
+      return true;
+    }));
+  expectFixture(result, name + ' remains accepted', 0);
+}
+
+// Control 179: numberedItemOf requires one unambiguous live Operating mode section. Revert the
+// real item and place a complete decoy in a second same-named section; a global first-match scan
+// would incorrectly satisfy the rule-text oracle.
+{
+  const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
+  const original = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const lines = splitFixtureLines(original);
+  const section = lines.findIndex((line) => headingMatches(line, '## Operating mode'));
+  const live = lines.findIndex((line, index) => index > section && /^\d+\.\s/.test(line) && line.includes('Show the caller for the \u00a7B1a laundering shape'));
+  if (section < 0 || live < 0) {
+    failures.push('duplicate Operating mode section control: required live item was not found');
+  } else {
+    const decoy = lines[live];
+    lines[live] = lines[live].replace('fn remember', 'fn preserve');
+    lines.splice(live + 1, 0, '## Operating mode', decoy);
+    const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
+    if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate Operating mode section unexpectedly satisfied the live rule');
+  }
+}
+
+// Control 180: a good numbered-item decoy immediately before the reverted live item is still an
+// ambiguity. Exactly-one matching-item semantics must reject it rather than accepting the first.
+{
+  const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
+  const original = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const lines = splitFixtureLines(original);
+  const section = lines.findIndex((line) => headingMatches(line, '## Operating mode'));
+  const live = lines.findIndex((line, index) => index > section && /^\d+\.\s/.test(line) && line.includes('Show the caller for the \u00a7B1a laundering shape'));
+  if (section < 0 || live < 0) {
+    failures.push('duplicate target-before-live numbered item control: required live item was not found');
+  } else {
+    const decoy = lines[live];
+    lines[live] = lines[live].replace('fn remember', 'fn preserve');
+    lines.splice(live, 0, decoy);
+    const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
+    if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate target-before-live numbered item unexpectedly satisfied the live rule');
+  }
+}
+
+// Control 181: a truthy disjunction on a new line is still an unconditional bypass of the
+// orchestration gate. The source checker must validate the complete expression, not just the
+// first line or the presence of the five conjunct names.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const marker = '  dropped === 0;\n';
+    if (!source.includes(marker)) return null;
+    return source.replace(marker, '  dropped === 0 || true\n');
+  });
+  expectFixture(result, 'multiline orchestrationComplete disjunction bypass is rejected', 1, ['orchestrationComplete']);
 }
 
 for (const fixture of cases) {

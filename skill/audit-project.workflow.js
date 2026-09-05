@@ -380,7 +380,7 @@ const orchestrationComplete =
   missingSlices.length === 0 &&
   Object.keys(missingUnitInputs).length === 0 &&
   strayLabels.length === 0 &&
-  dropped === 0
+  dropped === 0;
 const totalSourceFiles = scoperResult && Array.isArray(scoperResult.files) ? scoperResult.files.length : 0
 const sourceSampling = {
   total: totalSourceFiles,
