@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: one hundred fifty-five hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: one hundred sixty-five hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -1329,13 +1329,27 @@ function moduleTableRowOf(text, anchor, section = '## \u00a7C12.') {
   // before the live catalog.
   const headerText = '| Task | Hand-rolled shape | Input where it is silently wrong | Crate (downloads) |';
   const delimiterText = '|---|---|---|---|';
-  for (let header = bounds.start; header + 1 < bounds.end; header += 1) {
-    if (mask[header] || lines[header] !== headerText || mask[header + 1] || lines[header + 1] !== delimiterText) continue;
-    for (let row = header + 2; row < bounds.end && !mask[row] && /^\|/.test(lines[row]); row += 1) {
-      if (lines[row].includes(anchor)) return lines[row];
+  const headers = [];
+  for (let header = bounds.start; header < bounds.end; header += 1) {
+    if (!mask[header] && lines[header] === headerText) headers.push(header);
+  }
+  if (headers.length !== 1) return '';
+
+  const header = headers[0];
+  if (header + 1 >= bounds.end || mask[header + 1] || lines[header + 1] !== delimiterText) return '';
+
+  let target = '';
+  let targetCount = 0;
+  // GFM table rows are contiguous. A blank line or a non-pipe line ends this table;
+  // rows after that belong to later prose/tables and must not satisfy this lookup.
+  for (let row = header + 2; row < bounds.end; row += 1) {
+    if (mask[row] || lines[row].trim() === '' || !/^\|/.test(lines[row])) break;
+    if (lines[row].includes(anchor)) {
+      target = lines[row];
+      targetCount += 1;
     }
   }
-  return '';
+  return targetCount === 1 ? target : '';
 }
 
 function numberedItemOf(text, anchor, section = '## Operating mode') {
@@ -1523,7 +1537,11 @@ function workflowArrayEnd(lines, name) {
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line === '| \u00a7B2, \u00a7B3, \u00a7B3a, \u00a7B8, \u00a7B11, \u00a7B15 (a\u2013e), \u00a7B21, \u00a7B22, \u00a7B23 | `async.md` |');
     if (at < 0) return null;
-    lines[at] = lines[at].replace('\u00a7B23 |', '\u00a7B23, |');
+    const intactCellEnd = '\u00a7B23 | `async.md` |';
+    if (!lines[at].includes(intactCellEnd)) return null;
+    // Append the comma immediately before the final column separator; every live id stays
+    // intact, so this is a pure trailing-residue mutation rather than an accidental omission.
+    lines[at] = lines[at].replace(intactCellEnd, '\u00a7B23, | `async.md` |');
     return lines.join('\n');
   });
   expectFixture(result, 'trailing Category-map category comma is rejected', 1, ['Category map']);
@@ -1760,13 +1778,13 @@ for (const [name, mutate] of [
   expectFixture(result, 'unfrozen nested alias mutation is rejected', 1);
 }
 
-// Controls 143-145: mutation through a direct reference, a nested reference, or a simple alias
+// Controls 142-144: mutation through a let alias, an alias of an alias, or a nested-array alias
 // must be rejected after the immutable workflow declarations. These are separate controls so a
 // validator change that spots only one syntactic mutation shape cannot silently reopen the others.
 for (const [name, mutation] of [
-  ['direct MODULES mutation', 'MODULES.push({ file: \'decoy.md\', categories: [] });'],
-  ['nested categories mutation', "MODULES[0].categories.push('Z99');"],
-  ['simple MODULES alias mutation', "const modulesAlias = MODULES;\nmodulesAlias.push({ file: 'decoy.md', categories: [] });"],
+  ['let MODULES alias mutation', "let modulesAlias = MODULES;\nmodulesAlias.push({ file: 'decoy.md', categories: [] });"],
+  ['alias-of-alias MODULES mutation', "const modulesAlias = MODULES;\nconst secondAlias = modulesAlias;\nsecondAlias.push({ file: 'decoy.md', categories: [] });"],
+  ['nested-array alias mutation', "const categoriesAlias = MODULES[0].categories;\ncategoriesAlias.push('Z99');"],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     const lines = splitFixtureLines(source);
@@ -1778,7 +1796,7 @@ for (const [name, mutation] of [
   expectFixture(result, name + ' is rejected', 1, ['workflow']);
 }
 
-// Control 146: a top-level loop decoy must not satisfy the runtime module-identity helper
+// Control 145: a top-level loop decoy must not satisfy the runtime module-identity helper
 // contract when the live helper is changed to compare a different field.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -1790,7 +1808,7 @@ for (const [name, mutation] of [
   expectFixture(result, 'top-level loop runtime helper decoy does not mask altered helper', 1, ['workflow']);
 }
 
-// Controls 147-151: every independent input to orchestrationComplete is part of the gate.
+// Controls 146-150: every independent input to orchestrationComplete is part of the gate.
 // Replace exactly one comparison with a literal while preserving the expression syntax; the
 // validator must reject each weakened gate with its structural workflow diagnostic.
 for (const [name, expression] of [
@@ -1807,7 +1825,7 @@ for (const [name, expression] of [
   expectFixture(result, 'orchestrationComplete ' + name + ' is required', 1, ['orchestrationComplete']);
 }
 
-// Control 152: an incorrect live runtime helper plus a dead canonical helper decoy must fail;
+// Control 151: an incorrect live runtime helper plus a dead canonical helper decoy must fail;
 // the decoy is deliberately a complete function so a broad text search cannot satisfy the
 // contract by finding the right expression in unreachable code.
 {
@@ -1820,7 +1838,7 @@ for (const [name, expression] of [
   expectFixture(result, 'dead runtime module comparison does not mask altered helper', 1, ['workflow']);
 }
 
-// Control 153: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
+// Control 152: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
 // the live row while cloning it under a wrong-header/wrong-width table must fail the scoped
 // rule-text oracle; a first-arbitrary-table lookup would incorrectly pass.
 {
@@ -1841,7 +1859,7 @@ for (const [name, expression] of [
   }
 }
 
-// Control 154: an earlier unfenced numbered item is outside the named Operating mode list.
+// Control 153: an earlier unfenced numbered item is outside the named Operating mode list.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
@@ -1859,7 +1877,7 @@ for (const [name, expression] of [
   }
 }
 
-// Control 155: a numbered item after an indented level-2 heading belongs to the following
+// Control 154: a numbered item after an indented level-2 heading belongs to the following
 // section, not to Operating mode. This protects the section boundary from first-match drift.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
@@ -1875,6 +1893,167 @@ for (const [name, expression] of [
     lines.splice(live + 1, 0, '  ## Following section boundary', decoy);
     const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
     if (control.require.every((token) => scoped.includes(token))) failures.push('indented following heading decoy unexpectedly satisfied the live rule');
+  }
+}
+
+// Control 155: a true trailing array elision (`[...,,]`) is not the same thing as one legal
+// trailing separator comma. Keep all
+// category ids and add the second comma at the end of the executable literal.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("categories: ['B2','B3'"));
+      if (at < 0) return false;
+      const original = lines[at];
+      const mutated = original.replace(/(categories:\s*\[[^\]]+)\]/u, '$1,,]');
+      if (mutated === original) return false;
+      lines[at] = mutated;
+      return true;
+    }));
+  expectFixture(result, 'true trailing MODULES array elision is rejected', 1, ['workflow MODULES']);
+}
+
+// Controls 156-158: the per-unit coverage gate must retain both required-input loops and the
+// final assignment that records missing inputs. Deleting any one of these leaves the source
+// executable but turns an incomplete orchestration into a false complete result.
+for (const [name, fragment] of [
+  ['artifact coverage loop deletion', 'for (const artifact of expected) if (!reviewed.has(artifact)) missing.push(artifact)'],
+  ['docs coverage loop deletion', 'for (const doc of (scoperResult && scoperResult.docsFiles) || []) if (!reviewed.has(doc)) missing.push(doc)'],
+  ['missingUnitInputs final assignment deletion', 'if (missing.length) missingUnitInputs[unit.label] = missing'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    if (!source.includes(fragment)) return null;
+    return source.replace(fragment, '');
+  });
+  expectFixture(result, name, 1, ['workflow']);
+}
+
+// Control 159: the live deep-freeze helper must be canonical. A later helper-shaped declaration
+// in dead code cannot repair a weakened live helper or satisfy a broad text search.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const weakened = source.replace('return Object.freeze(records)', 'return records');
+    if (weakened === source) return null;
+    const decoy = `if (false) {
+  const deepFreezeRecords = (records) => {
+    for (const record of records) {
+      for (const value of Object.values(record)) {
+        if (Array.isArray(value)) Object.freeze(value)
+      }
+      Object.freeze(record)
+    }
+    return Object.freeze(records)
+  };
+}
+`;
+    return weakened.replace('const MODULES = deepFreezeRecords([', decoy + 'const MODULES = deepFreezeRecords([');
+  });
+  expectFixture(result, 'dead deepFreezeRecords decoy does not mask weakened live helper', 1, ['deepFreeze']);
+}
+
+// Control 160: the live missingUnitInputs declaration is unique and top-level. A dead canonical
+// declaration inserted after it must not mask changing the live object into another value.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const weakened = source.replace('const missingUnitInputs = {}', 'const missingUnitInputs = []');
+    if (weakened === source) return null;
+    const decoy = 'if (false) { const missingUnitInputs = {}; }\n';
+    return weakened.replace('const orchestrationComplete =', decoy + 'const orchestrationComplete =');
+  });
+  expectFixture(result, 'dead missingUnitInputs declaration decoy does not mask weakened live declaration', 1, ['missingUnitInputs']);
+}
+
+// Control 161: the live missing-input loop must be unique and top-level. A dead canonical loop
+// after the live one must not mask deleting its unit iteration.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const live = 'for (const unit of AUDIT_UNITS) {';
+    if (!source.includes(live)) return null;
+    const weakened = source.replace(live, 'for (const currentUnit of AUDIT_UNITS) {');
+    const decoy = `if (false) {
+  for (const unit of AUDIT_UNITS) {
+    const result = resultsByLabel.get(unit.label)
+    const missing = []
+    if (!result) missing.push('agent result')
+    else if (!auditResultModuleMatches(result, unit)) missing.push('module-mismatch')
+  }
+}
+`;
+    return weakened.replace('const orchestrationComplete =', decoy + 'const orchestrationComplete =');
+  });
+  expectFixture(result, 'dead missingUnitInputs loop decoy does not mask deleted live loop', 1, ['missingUnitInputs']);
+}
+
+// Control 162: orchestrationComplete is a unique top-level gate. A dead copy containing all
+// five conjuncts must not make a weakened live expression acceptable.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const weakened = source.replace('missingScopeFields.length === 0', 'true');
+    if (weakened === source) return null;
+    const decoy = `if (false) {
+  const orchestrationComplete = missingScopeFields.length === 0 && missingSlices.length === 0 && Object.keys(missingUnitInputs).length === 0 && strayLabels.length === 0 && dropped === 0;
+}
+`;
+    return weakened.replace('const totalSourceFiles =', decoy + 'const totalSourceFiles =');
+  });
+  expectFixture(result, 'dead orchestrationComplete decoy does not mask weakened live gate', 1, ['orchestrationComplete']);
+}
+
+// Control 163: two canonical catalog tables in the same module section, with the live row
+// reverted and the earlier table still complete, must not satisfy moduleTableRowOf.
+{
+  const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
+  const original = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const lines = splitFixtureLines(original);
+  const section = lines.findIndex((line) => headingMatches(line, '## \u00a7C12.'));
+  const live = lines.findIndex((line, index) => index > section && line.startsWith('| Markdown rendering of untrusted content'));
+  const header = lines.findIndex((line, index) => index > section && line === '| Task | Hand-rolled shape | Input where it is silently wrong | Crate (downloads) |');
+  if (section < 0 || live < 0 || header < 0) {
+    failures.push('duplicate canonical module-table decoy: required C12 table was not found');
+  } else {
+    const decoy = lines[live];
+    lines[live] = lines[live].replace('either drop', 'drop one');
+    lines.splice(header, 0,
+      '| Task | Hand-rolled shape | Input where it is silently wrong | Crate (downloads) |',
+      '|---|---|---|---|', decoy);
+    const scoped = moduleTableRowOf(lines.join('\n'), control.moduleRowAnchor, control.section);
+    if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate canonical module-table decoy unexpectedly satisfied the live rule');
+  }
+}
+
+// Control 164: two target rows in one canonical catalog are ambiguous and must not be accepted
+// by a first-match lookup.
+{
+  const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
+  const original = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const lines = splitFixtureLines(original);
+  const section = lines.findIndex((line) => headingMatches(line, '## \u00a7C12.'));
+  const live = lines.findIndex((line, index) => index > section && line.startsWith('| Markdown rendering of untrusted content'));
+  if (section < 0 || live < 0) {
+    failures.push('duplicate target module-table row: required C12 row was not found');
+  } else {
+    lines.splice(live + 1, 0, lines[live]);
+    const scoped = moduleTableRowOf(lines.join('\n'), control.moduleRowAnchor, control.section);
+    if (scoped) failures.push('duplicate target module-table row unexpectedly returned a row');
+  }
+}
+
+// Control 165: two target numbered items in the named section, with the original reverted, must
+// not satisfy numberedItemOf through the first matching item.
+{
+  const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
+  const original = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const lines = splitFixtureLines(original);
+  const section = lines.findIndex((line) => headingMatches(line, '## Operating mode'));
+  const live = lines.findIndex((line, index) => index > section && /^\d+\.\s/.test(line) && line.includes('Show the caller for the \u00a7B1a laundering shape'));
+  if (section < 0 || live < 0) {
+    failures.push('duplicate target numbered item: required Operating mode item was not found');
+  } else {
+    const decoy = lines[live];
+    lines[live] = lines[live].replace('fn remember', 'fn preserve');
+    lines.splice(live + 1, 0, decoy);
+    const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
+    if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate target numbered item unexpectedly satisfied the live rule');
   }
 }
 

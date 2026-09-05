@@ -435,7 +435,7 @@ function findMatchingDelimiter(source, openingIndex, opener, closer) {
 
 const executableWorkflowCode = maskJsNonCode(workflow);
 const deepFreezeDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'deepFreezeRecords');
-const deepFreezeHelper = /const\s+deepFreezeRecords\s*=\s*\(\s*records\s*\)\s*=>\s*\{\s*for\s*\(\s*const\s+record\s+of\s+records\s*\)\s*\{\s*for\s*\(\s*const\s+value\s+of\s+Object\.values\(\s*record\s*\)\s*\)\s*\{\s*if\s*\(\s*Array\.isArray\(\s*value\s*\)\s*\)\s*Object\.freeze\(\s*value\s*\)\s*\}\s*Object\.freeze\(\s*record\s*\)\s*\}\s*return\s+Object\.freeze\(\s*records\s*\)\s*\};/;
+const deepFreezeHelper = /^const\s+deepFreezeRecords\s*=\s*\(\s*records\s*\)\s*=>\s*\{\s*for\s*\(\s*const\s+record\s+of\s+records\s*\)\s*\{\s*for\s*\(\s*const\s+value\s+of\s+Object\.values\(\s*record\s*\)\s*\)\s*\{\s*if\s*\(\s*Array\.isArray\(\s*value\s*\)\s*\)\s*Object\.freeze\(\s*value\s*\)\s*\}\s*Object\.freeze\(\s*record\s*\)\s*\}\s*return\s+Object\.freeze\(\s*records\s*\)\s*\};/;
 if (deepFreezeDeclarations.length !== 1 || !deepFreezeHelper.test(executableWorkflowCode.slice(deepFreezeDeclarations[0] ?? 0))) {
   errors.push('workflow must contain exactly one canonical deepFreezeRecords helper that freezes nested arrays, records, and the outer array');
 }
@@ -444,12 +444,12 @@ if (deepFreezeCalls.length !== 2) {
   errors.push('workflow must call deepFreezeRecords exactly for MODULES and AUDIT_UNITS');
 }
 const moduleMatchDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'auditResultModuleMatches');
-const moduleMatchHelper = /const\s+auditResultModuleMatches\s*=\s*\(\s*result\s*,\s*unit\s*\)\s*=>\s*result\.module\s*===\s*unit\.module\s*;/;
+const moduleMatchHelper = /^const\s+auditResultModuleMatches\s*=\s*\(\s*result\s*,\s*unit\s*\)\s*=>\s*result\.module\s*===\s*unit\.module\s*;/;
 if (moduleMatchDeclarations.length !== 1 || !moduleMatchHelper.test(executableWorkflowCode.slice(moduleMatchDeclarations[0] ?? 0))) {
   errors.push('workflow must contain exactly one canonical auditResultModuleMatches helper');
 }
 const missingDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'missingUnitInputs');
-const missingDeclaration = /const\s+missingUnitInputs\s*=\s*\{\s*\}/;
+const missingDeclaration = /^const\s+missingUnitInputs\s*=\s*\{\s*\}/;
 const missingDeclarationIndex = missingDeclarations.find((index) => missingDeclaration.test(executableWorkflowCode.slice(index))) ?? -1;
 if (missingDeclarations.length !== 1 || missingDeclarationIndex < 0) {
   errors.push('workflow must contain exactly one top-level const missingUnitInputs = {} declaration');
@@ -460,11 +460,17 @@ const missingLoopBodyEnd = missingLoopBodyStart >= 0 ? findMatchingDelimiter(exe
 const missingLoopCode = missingLoopBodyStart >= 0 && missingLoopBodyEnd > missingLoopBodyStart
   ? executableWorkflowCode.slice(missingLoopStart, missingLoopBodyEnd + 1)
   : '';
-if (!/for\s*\(\s*const\s+unit\s+of\s+AUDIT_UNITS\s*\)\s*\{\s*const\s+result\s*=\s*resultsByLabel\.get\(\s*unit\.label\s*\)\s*const\s+missing\s*=\s*\[\s*\]\s*if\s*\(\s*!result\s*\)\s*missing\.push\(\s*\)\s*else\s+if\s*\(\s*!auditResultModuleMatches\(\s*result\s*,\s*unit\s*\)\s*\)\s*missing\.push\(/.test(missingLoopCode)) {
+const missingLoopShape = [
+  /^for\s*\(\s*const\s+unit\s+of\s+AUDIT_UNITS\s*\)\s*\{\s*const\s+result\s*=\s*resultsByLabel\.get\(\s*unit\.label\s*\)\s*const\s+missing\s*=\s*\[\s*\]\s*if\s*\(\s*!result\s*\)\s*missing\.push\(\s*\)\s*else\s+if\s*\(\s*!auditResultModuleMatches\(\s*result\s*,\s*unit\s*\)\s*\)\s*missing\.push\(/,
+  /const\s+requiredGroups\s*=\s*unit\.requiredArtifactGroups\s*\|\|\s*\[\s*\]\s*for\s*\(\s*const\s+group\s+of\s+requiredGroups\s*\)\s*\{[\s\S]*?for\s*\(\s*const\s+artifact\s+of\s+expected\s*\)\s*if\s*\(\s*!reviewed\.has\(\s*artifact\s*\)\s*\)\s*missing\.push\(\s*artifact\s*\)/,
+  /if\s*\(\s*unit\.requiresDocs\s*\)\s*\{[\s\S]*?for\s*\(\s*const\s+doc\s+of\s+\(scoperResult\s*&&\s*scoperResult\.docsFiles\)\s*\|\|\s*\[\s*\]\s*\)\s*if\s*\(\s*!reviewed\.has\(\s*doc\s*\)\s*\)\s*missing\.push\(\s*doc\s*\)/,
+  /if\s*\(\s*missing\.length\s*\)\s*missingUnitInputs\[\s*unit\.label\s*\]\s*=\s*missing/,
+];
+if (missingLoopShape.some((pattern) => !pattern.test(missingLoopCode))) {
   errors.push('workflow missingUnitInputs loop must call auditResultModuleMatches in its module-mismatch branch');
 }
 const orchestrationDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'orchestrationComplete');
-const orchestrationExpression = /const\s+orchestrationComplete\s*=\s*missingScopeFields\.length\s*===\s*0\s*&&\s*missingSlices\.length\s*===\s*0\s*&&\s*Object\.keys\(\s*missingUnitInputs\s*\)\.length\s*===\s*0\s*&&\s*strayLabels\.length\s*===\s*0\s*&&\s*dropped\s*===\s*0\s*;?[ \t\r]*(?:\n|$)/;
+const orchestrationExpression = /^const\s+orchestrationComplete\s*=\s*missingScopeFields\.length\s*===\s*0\s*&&\s*missingSlices\.length\s*===\s*0\s*&&\s*Object\.keys\(\s*missingUnitInputs\s*\)\.length\s*===\s*0\s*&&\s*strayLabels\.length\s*===\s*0\s*&&\s*dropped\s*===\s*0\s*;?[ \t\r]*(?:\n|$)/;
 if (orchestrationDeclarations.length !== 1 || !orchestrationExpression.test(executableWorkflowCode.slice(orchestrationDeclarations[0] ?? 0))) {
   errors.push('workflow orchestrationComplete must be one top-level const with all five coverage conjuncts');
 }
@@ -527,7 +533,6 @@ function topLevelArrayElements(source) {
   }
   const tail = source.slice(start).trim();
   if (tail) elements.push(tail);
-  else if (elements.length > 1 && elements[elements.length - 1] === null) elements.pop(); // one trailing comma
   if (state !== 'code' || brace !== 0 || paren !== 0 || bracket !== 0) elements.push(null);
   return elements;
 }
@@ -540,9 +545,8 @@ function parseStringArray(value) {
   const text = value.trim();
   if (!text.startsWith('[') || !text.endsWith(']')) return null;
   const inner = text.slice(1, -1);
-  // JavaScript permits one trailing comma in an array literal; topLevelArrayElements removes
-  // that harmless elision. The category-map parser below intentionally keeps its own dangling
-  // comma rejection because that is a Markdown grammar error, not JavaScript syntax.
+  // JavaScript permits one trailing comma in an array literal; topLevelArrayElements accepts
+  // that final comma while retaining null elements for leading, repeated, or interior elisions.
   if (!inner.trim()) return [];
   const parts = topLevelArrayElements(inner);
   if (parts.some((part) => part === null)) return null;
@@ -640,13 +644,27 @@ function workflowMutationCheck(source, names) {
   const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
   const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const aliases = new Set();
-  const aliasRe = /\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*((?:MODULES|AUDIT_UNITS)(?:(?:\s*\[[^\]\r\n]*\])|(?:\s*\.\s*(?:categories|requiredArtifactGroups)))*)/g;
-  for (const match of source.matchAll(aliasRe)) aliases.add(match[1]);
+  // Track aliases to the immutable roots to a fixpoint.  The right-hand side is deliberately
+  // limited to one identifier plus property/index access: this catches nested artifact arrays
+  // without treating arbitrary bookkeeping expressions as aliases.  Include let/var because a
+  // mutable binding can still expose (and mutate) a frozen audit record.
+  const aliasRe = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)(?:(?:\s*\[[^\]\r\n]*\])|(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*))*/g;
+  let aliasesChanged = true;
+  while (aliasesChanged) {
+    aliasesChanged = false;
+    for (const match of source.matchAll(aliasRe)) {
+      if (!names.includes(match[2]) && !aliases.has(match[2])) continue;
+      if (!aliases.has(match[1])) {
+        aliases.add(match[1]);
+        aliasesChanged = true;
+      }
+    }
+  }
   const mutationNames = [...new Set([...names, ...aliases])];
   const mutationNameRe = mutationNames.map(escaped).join('|');
   const assignmentRe = /^(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:=|\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=)(?!=|>)/;
   const mutatorRe = /^(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/;
-  const declarationRe = () => /\bconst\s*$/;
+  const declarationRe = () => /\b(?:const|let|var)\s*$/;
   for (const name of mutationNames) {
     const identifierRe = new RegExp(`\\b${escaped(name)}\\b`, 'g');
     for (const match of source.matchAll(identifierRe)) {
