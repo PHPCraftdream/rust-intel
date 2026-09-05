@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: two hundred seventeen hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: two hundred thirty-eight hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2382,6 +2382,83 @@ for (const [number, name, root] of [
   auditUnitsAlias.push('local-audit');
 }`));
   expectFixture(result, 'Control 217: unrelated local alias names remain accepted', 0);
+}
+
+// Control 218: a short-circuit expression that returns the immutable root on its truthy side is
+// still an alias. The binding-site check must not be bypassed by the intervening `.length &&`.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    insertWorkflowMutation(source, 'MODULES', 'const conditionalAlias = MODULES.length && MODULES; conditionalAlias.push({ file: \'conditional.md\', categories: [] });'));
+  expectFixture(result, 'Control 218: conditional MODULES alias mutation is rejected', 1, ['workflow', 'alias']);
+}
+
+// Controls 219-220: parenthesized primitive length reads remain safe. These are deliberately
+// full binding expressions so the derived-value exception cannot accidentally depend on the root
+// being the first unparenthesized token or on dot notation alone.
+for (const [number, name, root, expression] of [
+  [219, 'full-parenthesized MODULES length read', 'MODULES', '(MODULES.length)'],
+  [220, 'full-parenthesized AUDIT_UNITS bracket-length read', 'AUDIT_UNITS', "(AUDIT_UNITS['length'])"],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    insertWorkflowMutation(source, root, `const safeCount${number} = ${expression}; void safeCount${number};`));
+  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+}
+
+// Controls 221-224: binding-site diagnostics must fire even when the bound value is never
+// mutated. This isolates direct roots, destructuring, and method-result bindings from the later
+// mutation scanner and prevents an alias from becoming invisible merely because it is unused.
+for (const [number, name, root, mutation] of [
+  [221, 'direct MODULES alias binding', 'MODULES', 'const unusedModulesAlias = MODULES; void unusedModulesAlias;'],
+  [222, 'destructured MODULES binding', 'MODULES', 'const [unusedModuleRecord] = MODULES; void unusedModuleRecord;'],
+  [223, 'bound MODULES map result', 'MODULES', 'const unusedModuleEntries = MODULES.map((entry) => entry); void unusedModuleEntries;'],
+  [224, 'bound AUDIT_UNITS filter result', 'AUDIT_UNITS', 'const unusedAuditEntries = AUDIT_UNITS.filter((entry) => entry); void unusedAuditEntries;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected at binding site`, 1, ['workflow', 'alias']);
+}
+
+// Controls 225-227: both increment directions are writes, whether applied to a root, a nested
+// value, or the length property. Keep these as separate controls so each operator family remains
+// visible when a regex branch is changed.
+for (const [number, name, root, mutation] of [
+  [225, 'prefix root increment', 'MODULES', '++MODULES;'],
+  [226, 'postfix nested decrement', 'MODULES', 'MODULES[0].categories[0]--;'],
+  [227, 'postfix length increment', 'AUDIT_UNITS', 'AUDIT_UNITS.length++;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+
+// Controls 228-234: assignment operators beyond plain/arithmetical/logical assignment must be
+// covered on root, nested, and length targets. The list mirrors every extra operator family in
+// workflowMutationCheck's write recognizer, including bitwise and all three shifts.
+for (const [number, name, root, mutation] of [
+  [228, 'exponentiation root assignment', 'MODULES', 'MODULES **= 1;'],
+  [229, 'bitwise-and nested assignment', 'MODULES', 'MODULES[0].categories[0] &= 1;'],
+  [230, 'bitwise-or length assignment', 'MODULES', 'MODULES.length |= 1;'],
+  [231, 'bitwise-xor nested assignment', 'AUDIT_UNITS', 'AUDIT_UNITS[0].requiredArtifactGroups[0] ^= 1;'],
+  [232, 'left-shift length assignment', 'AUDIT_UNITS', 'AUDIT_UNITS.length <<= 1;'],
+  [233, 'right-shift nested assignment', 'MODULES', 'MODULES[0].categories[0] >>= 1;'],
+  [234, 'unsigned-right-shift nested assignment', 'AUDIT_UNITS', 'AUDIT_UNITS[0].requiredArtifactGroups[0] >>>= 1;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+
+// Controls 235-238: logical/nullish assignment remains forbidden, while pure comparison and
+// arrow-function reads remain legal. Keep reads as expression statements so they cannot be
+// confused with a binding whose RHS begins with a declarative root.
+for (const [number, name, root, mutation] of [
+  [235, 'logical-and root assignment', 'MODULES', 'MODULES &&= [];'],
+  [236, 'logical-or nested assignment', 'MODULES', 'MODULES[0].categories ||= [];'],
+  [237, 'nullish-coalescing length assignment', 'AUDIT_UNITS', 'AUDIT_UNITS.length ??= 0;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'AUDIT_UNITS', `void (MODULES === AUDIT_UNITS);\nvoid (MODULES.length >= AUDIT_UNITS['length']);\nvoid (() => MODULES[0].file)();`));
+  expectFixture(result, 'Control 238: comparison and arrow reads remain accepted', 0);
 }
 
 for (const fixture of cases) {

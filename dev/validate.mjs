@@ -729,79 +729,161 @@ function workflowMutationCheck(source, names, rawSource = source) {
   const rootNames = names.map(escaped).join('|');
   const rootChainRe = `(?:\\(\\s*)*(?:${rootNames})\\b(?:\\s*\\)\\s*)*(?:\\s*(?:\\[[^\\]\\r\\n]*\\]|\\.[A-Za-z_$][A-Za-z0-9_$]*))*(?:\\s*\\)\\s*)*`;
 
-  // Reject first-order aliases, including destructuring and values derived by a method/property
-  // access.  Only the beginning of the RHS matters: a nested inline use such as
-  // `new Set(MODULES.map(...))` remains valid, while `const ids = MODULES.map(...)` is rejected.
-  // Split declaration lists at top-level commas so `const keep = 1, copy = MODULES` is covered.
+  // Return source spans, rather than strings, so every declarator is checked against its own
+  // bounded RHS.  A declaration without a semicolon may end at ASI before the next declaration;
+  // scanning to EOF would turn an otherwise safe `MODULES.length` into a false alias.
   const splitDeclaration = (text) => {
     const parts = [];
     let start = 0;
     let round = 0;
     let square = 0;
     let curly = 0;
-    let quote = null;
     for (let i = 0; i < text.length; i += 1) {
       const character = text[i];
-      if (quote) {
-        if (character === '\\') i += 1;
-        else if (character === quote) quote = null;
-        continue;
-      }
-      if (character === "'" || character === '"' || character === '`') { quote = character; continue; }
       if (character === '(') round += 1;
-      else if (character === ')') round -= 1;
+      else if (character === ')' && round > 0) round -= 1;
       else if (character === '[') square += 1;
-      else if (character === ']') square -= 1;
+      else if (character === ']' && square > 0) square -= 1;
       else if (character === '{') curly += 1;
-      else if (character === '}') curly -= 1;
+      else if (character === '}' && curly > 0) curly -= 1;
       else if (character === ',' && round === 0 && square === 0 && curly === 0) {
-        parts.push(text.slice(start, i));
+        parts.push({ start, end: i, text: text.slice(start, i) });
         start = i + 1;
       }
     }
-    parts.push(text.slice(start));
+    parts.push({ start, end: text.length, text: text.slice(start) });
     return parts;
   };
   const topLevelEquals = (text) => {
     let round = 0;
     let square = 0;
     let curly = 0;
-    let quote = null;
     for (let i = 0; i < text.length; i += 1) {
       const character = text[i];
-      if (quote) {
-        if (character === '\\') i += 1;
-        else if (character === quote) quote = null;
-        continue;
-      }
-      if (character === "'" || character === '"' || character === '`') { quote = character; continue; }
       if (character === '(') round += 1;
-      else if (character === ')') round -= 1;
+      else if (character === ')' && round > 0) round -= 1;
       else if (character === '[') square += 1;
-      else if (character === ']') square -= 1;
+      else if (character === ']' && square > 0) square -= 1;
       else if (character === '{') curly += 1;
-      else if (character === '}') curly -= 1;
-      else if (character === '=' && round === 0 && square === 0 && curly === 0) return i;
+      else if (character === '}' && curly > 0) curly -= 1;
+      else if (character === '=' && round === 0 && square === 0 && curly === 0
+        && text[i - 1] !== '=' && text[i + 1] !== '=' && text[i + 1] !== '>') return i;
     }
     return -1;
   };
-  const aliasRhsRe = /^\s*(?:\(\s*)*(?:MODULES|AUDIT_UNITS)\b/u;
-  // A primitive length is not a reference to the declarative arrays.  Permit that derived value,
-  // including when the root is parenthesized or reached through a property/index chain; map/filter
-  // results are still bound arrays and therefore remain forbidden.  Inline map/filter consumption
-  // is unaffected because this check only examines declaration RHSs.
-  const derivedRhsRe = new RegExp(
-    `^\\s*(?:\\(\\s*)*(?:${rootNames})\\b(?:\\s*\\)\\s*)*` +
-    `(?:\\s*(?:\\[[^\\]\\r\\n]*\\]|\\.[A-Za-z_$][A-Za-z0-9_$]*))*\\s*` +
-    `(?:\\.\\s*length\\b|\\[\\s*(?:'length'|\"length\")\\s*\\])`,
-    'u',
-  );
+
+  // Tokenize only the tiny expression language needed by the primitive exemption.  This keeps
+  // quoted bracket properties intact while rejecting operators, calls, templates, regexps, and
+  // any other expression that merely starts with a declarative root.
+  const lengthExpressionTokens = (text) => {
+    const tokens = [];
+    for (let i = 0; i < text.length;) {
+      const character = text[i];
+      if (/\s/u.test(character)) { i += 1; continue; }
+      if (character === '/' && text[i + 1] === '/') {
+        i += 2;
+        while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i += 1;
+        continue;
+      }
+      if (character === '/' && text[i + 1] === '*') {
+        const end = text.indexOf('*/', i + 2);
+        if (end < 0) return null;
+        i = end + 2;
+        continue;
+      }
+      if (character === "'" || character === '"') {
+        const quote = character;
+        const start = i;
+        i += 1;
+        while (i < text.length) {
+          if (text[i] === '\\') i += 2;
+          else if (text[i] === quote) { i += 1; break; }
+          else i += 1;
+        }
+        if (text[i - 1] !== quote) return null;
+        tokens.push({ kind: 'string', value: text.slice(start, i) });
+        continue;
+      }
+      if (/[A-Za-z_$]/u.test(character)) {
+        const start = i;
+        i += 1;
+        while (i < text.length && /[A-Za-z0-9_$]/u.test(text[i])) i += 1;
+        tokens.push({ kind: 'word', value: text.slice(start, i) });
+        continue;
+      }
+      if ('()[].'.includes(character)) tokens.push({ kind: 'punct', value: character });
+      else tokens.push({ kind: 'other', value: character });
+      i += 1;
+    }
+    return tokens;
+  };
+  const isPureLengthExpression = (text) => {
+    const tokens = lengthExpressionTokens(text);
+    if (!tokens) return false;
+    let expression = tokens;
+    // Strip only parentheses that enclose the complete expression.  Parentheses around the root
+    // are handled separately below, so `(MODULES).length` remains valid.
+    while (expression[0]?.value === '(') {
+      let depth = 0;
+      let closesAt = -1;
+      for (let i = 0; i < expression.length; i += 1) {
+        if (expression[i].value === '(') depth += 1;
+        else if (expression[i].value === ')' && --depth === 0) { closesAt = i; break; }
+      }
+      if (closesAt !== expression.length - 1) break;
+      expression = expression.slice(1, -1);
+    }
+    let cursor = 0;
+    let rootParens = 0;
+    while (expression[cursor]?.value === '(') { rootParens += 1; cursor += 1; }
+    if (expression[cursor]?.kind !== 'word' || !names.includes(expression[cursor].value)) return false;
+    cursor += 1;
+    while (rootParens > 0) {
+      if (expression[cursor]?.value !== ')') return false;
+      rootParens -= 1;
+      cursor += 1;
+    }
+    if (expression[cursor]?.value === '.') {
+      if (expression[cursor + 1]?.kind !== 'word' || expression[cursor + 1].value !== 'length') return false;
+      cursor += 2;
+    } else if (expression[cursor]?.value === '['
+      && expression[cursor + 1]?.kind === 'string'
+      && /^(['"])length\1$/u.test(expression[cursor + 1].value)
+      && expression[cursor + 2]?.value === ']') {
+      cursor += 3;
+    } else return false;
+    return cursor === expression.length;
+  };
+  const hasOnlyLengthRootReferences = (text) => {
+    const tokens = lengthExpressionTokens(text);
+    if (!tokens) return false;
+    let found = false;
+    for (let i = 0; i < tokens.length; i += 1) {
+      if (tokens[i].kind !== 'word' || !names.includes(tokens[i].value)) continue;
+      found = true;
+      let cursor = i + 1;
+      while (tokens[cursor]?.value === ')') cursor += 1;
+      const dotLength = tokens[cursor]?.value === '.'
+        && tokens[cursor + 1]?.kind === 'word'
+        && tokens[cursor + 1].value === 'length';
+      const bracketLength = tokens[cursor]?.value === '['
+        && tokens[cursor + 1]?.kind === 'string'
+        && /^(['"])length\1$/u.test(tokens[cursor + 1].value)
+        && tokens[cursor + 2]?.value === ']';
+      if (!dotLength && !bracketLength) return false;
+    }
+    // Expressions such as `MODULES.length - other.length` are scalar reads, not aliases.  The
+    // exact expression above is the primitive exemption; this supplemental check only keeps the
+    // existing workflow's scalar bookkeeping legal while still rejecting a bare root in a mixed
+    // expression (`MODULES.length && MODULES`).
+    return found;
+  };
+  const aliasRhsRe = new RegExp(`^\\s*(?:\\(\\s*)*(?:${rootNames})\\b`, 'u');
   const declarationKeywordRe = /\b(?:const|let|var)\b/g;
   for (const declaration of source.matchAll(declarationKeywordRe)) {
     // `source` is the executable, non-string view, so a small delimiter scan can safely span
     // line breaks and destructuring defaults without treating an inner `=` as the declarator's
-    // assignment.  A missing semicolon simply makes this declaration run to EOF; later keywords
-    // are still visited independently.
+    // assignment.  Stop at semicolons, block ends, or an ASI line before another statement.
     let declarationEnd = source.length;
     let round = 0;
     let square = 0;
@@ -817,29 +899,40 @@ function workflowMutationCheck(source, names, rawSource = source) {
       else if (character === ';' && round === 0 && square === 0 && curly === 0) {
         declarationEnd = i;
         break;
+      } else if (character === '}' && round === 0 && square === 0 && curly === 0) {
+        declarationEnd = i;
+        break;
+      } else if ((character === '\n' || character === '\r') && round === 0 && square === 0 && curly === 0) {
+        let previous = i - 1;
+        while (previous >= declaration.index && /[ \t\r\n]/u.test(source[previous])) previous -= 1;
+        let next = i + 1;
+        while (next < source.length && /[ \t]/u.test(source[next])) next += 1;
+        const previousCanEnd = previous >= 0 && !'=,+-*/%&|^!?<>.:'.includes(source[previous]);
+        const nextStartsContinuation = Boolean(next) && ('([.`+-*/%&|^!?<>'.includes(source[next])
+          || source.slice(next).match(/^(?:\?|\.|&&|\|\||\?\?)/u));
+        if (previousCanEnd && !nextStartsContinuation) {
+          declarationEnd = i;
+          break;
+        }
       }
     }
     const declarationTextStart = declaration.index + declaration[0].length;
     const declarationText = source.slice(declarationTextStart, declarationEnd);
-    let declaratorSearchStart = 0;
     for (const declarator of splitDeclaration(declarationText)) {
-      const equals = topLevelEquals(declarator);
-      const declaratorStart = declarationText.indexOf(declarator, declaratorSearchStart);
-      declaratorSearchStart = declaratorStart < 0 ? declaratorSearchStart : declaratorStart + declarator.length;
-      if (equals < 0 || declaratorStart < 0) continue;
-      const rhs = declarator.slice(equals + 1);
-      // `maskJsNonCode()` blanks quoted properties such as ['length']; use the raw, offset-stable
-      // source for the derived-value exception so an arbitrary quoted property is not mistaken
-      // for the primitive length accessor.
-      const rawRhs = rawSource.slice(declarationTextStart + declaratorStart + equals + 1);
-      if (aliasRhsRe.test(rhs) && !derivedRhsRe.test(rawRhs)) {
+      const equals = topLevelEquals(declarator.text);
+      if (equals < 0) continue;
+      const rhs = declarator.text.slice(equals + 1);
+      const rawRhs = rawSource.slice(declarationTextStart + declarator.start + equals + 1, declarationTextStart + declarator.end);
+      if (aliasRhsRe.test(rhs) && !isPureLengthExpression(rawRhs)
+        && !hasOnlyLengthRootReferences(rawRhs)) {
         errors.push('workflow declarative arrays may not be aliased');
         break;
       }
     }
   }
 
-  const assignmentRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:=|\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=)(?!=|>)/;
+  const assignmentRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:>>>=|\*\*=|<<=|>>=|&&=|\|\|=|\?\?=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|=)(?!=|>)/;
+  const incrementRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:\+\+|--)(?![+\-])/;
   const mutatorRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/;
   const declarationRe = () => /\b(?:const|let|var)\s*$/;
   for (const name of names) {
@@ -848,7 +941,9 @@ function workflowMutationCheck(source, names, rawSource = source) {
       const index = match.index;
       const before = source.slice(Math.max(0, index - 40), index);
       const after = source.slice(index + name.length);
-      const afterRaw = rawSource.slice(index + name.length);
+      let previous = index - 1;
+      while (previous >= 0 && /\s/u.test(source[previous])) previous -= 1;
+      if (source[previous] === '.') continue;
       if (declarationRe().test(before)) continue;
       const mutator = after.match(mutatorRe);
       if (mutator && mutators.has(mutator[1])) {
@@ -857,6 +952,15 @@ function workflowMutationCheck(source, names, rawSource = source) {
       }
       if (assignmentRe.test(after)) {
         errors.push(`workflow ${name} has an executable post-initialization assignment`);
+        continue;
+      }
+      if (incrementRe.test(after)) {
+        errors.push(`workflow ${name} has an executable increment/decrement mutation`);
+        continue;
+      }
+      const prefix = source.slice(Math.max(0, index - 8), index);
+      if (/(?:^|[^A-Za-z0-9_$])(?:\+\+|--)\s*$/u.test(prefix)) {
+        errors.push(`workflow ${name} has an executable increment/decrement mutation`);
       }
     }
   }
