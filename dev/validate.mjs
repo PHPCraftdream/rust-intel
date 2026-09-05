@@ -362,7 +362,7 @@ function findTopLevelArrayStart(source, name) {
       && source.startsWith('const', i)
       && (i === 0 || !/[A-Za-z0-9_$]/.test(source[i - 1] || ''))
       && !/[A-Za-z0-9_$]/.test(source[i + 5] || '')) {
-      const assignment = source.slice(i).match(new RegExp(`^const\\s+${name}\\s*=\\s*\\[`));
+      const assignment = source.slice(i).match(new RegExp(`^const\\s+${name}\\s*=\\s*deepFreezeRecords\\s*\\(\\s*\\[`));
       if (assignment) return i + assignment[0].lastIndexOf('[');
     }
     if (character === '{') braceDepth += 1;
@@ -376,8 +376,27 @@ function findTopLevelArrayStart(source, name) {
 }
 
 const executableWorkflowCode = maskJsNonCode(workflow);
-if (!/\bresult\s*\.\s*module\s*!==\s*unit\s*\.\s*module\b/.test(executableWorkflowCode)) {
-  errors.push('workflow runtime audit-unit gate must compare result.module !== unit.module (module mismatch)');
+const deepFreezeHelper = /function\s+deepFreezeRecords\s*\(\s*records\s*\)\s*\{\s*for\s*\(\s*const\s+record\s+of\s+records\s*\)\s*\{\s*for\s*\(\s*const\s+value\s+of\s+Object\.values\s*\(\s*record\s*\)\s*\)\s*\{\s*if\s*\(\s*Array\.isArray\s*\(\s*value\s*\)\s*\)\s*Object\.freeze\s*\(\s*value\s*\)\s*\}\s*Object\.freeze\s*\(\s*record\s*\)\s*\}\s*return\s+Object\.freeze\s*\(\s*records\s*\)\s*\}/g;
+if ((executableWorkflowCode.match(deepFreezeHelper) || []).length !== 1) {
+  errors.push('workflow must contain exactly one canonical deepFreezeRecords helper that freezes nested arrays, records, and the outer array');
+}
+const deepFreezeCalls = executableWorkflowCode.match(/\bdeepFreezeRecords\s*\(/g) || [];
+if (deepFreezeCalls.length !== 3) {
+  errors.push('workflow must call deepFreezeRecords exactly for MODULES and AUDIT_UNITS');
+}
+const moduleMatchHelper = /function\s+auditResultModuleMatches\s*\(\s*result\s*,\s*unit\s*\)\s*\{\s*return\s+result\.module\s*===\s*unit\.module\s*\}/g;
+if ((executableWorkflowCode.match(moduleMatchHelper) || []).length !== 1) {
+  errors.push('workflow must contain exactly one canonical auditResultModuleMatches helper');
+}
+const missingLoopStart = executableWorkflowCode.indexOf('const missingUnitInputs = {}');
+const missingLoopEnd = missingLoopStart >= 0
+  ? executableWorkflowCode.indexOf('if (missing.length) missingUnitInputs', missingLoopStart)
+  : -1;
+const missingLoopCode = missingLoopStart >= 0 && missingLoopEnd > missingLoopStart
+  ? executableWorkflowCode.slice(missingLoopStart, missingLoopEnd)
+  : '';
+if (!/for\s*\(\s*const\s+unit\s+of\s+AUDIT_UNITS\s*\)\s*\{\s*const\s+result\s*=\s*resultsByLabel\.get\(\s*unit\.label\s*\)\s*const\s+missing\s*=\s*\[\s*\]\s*if\s*\(\s*!result\s*\)\s*missing\.push\(\s*\)\s*else\s+if\s*\(\s*!auditResultModuleMatches\(\s*result\s*,\s*unit\s*\)\s*\)\s*missing\.push\(/.test(missingLoopCode)) {
+  errors.push('workflow missingUnitInputs loop must call auditResultModuleMatches in its module-mismatch branch');
 }
 
 const workflowWithoutComments = stripJsComments(workflow);
@@ -392,8 +411,8 @@ function requirePureArrayInitializer(name, openingIndex, closingIndex) {
   if (openingIndex < 0 || closingIndex <= openingIndex) return;
   const lineEnd = workflow.indexOf('\n', closingIndex + 1);
   const suffix = workflow.slice(closingIndex + 1, lineEnd < 0 ? workflow.length : lineEnd);
-  if (!/^[ \t\r]*;?[ \t\r]*$/.test(suffix)) {
-    errors.push(`workflow ${name} initializer must end after its closing ] (only optional semicolon/whitespace is allowed)`);
+  if (!/^[ \t\r]*\);[ \t\r]*$/.test(suffix)) {
+    errors.push(`workflow ${name} initializer must end with a standalone ); after its closing ]`);
   }
 }
 requirePureArrayInitializer('MODULES', modulesStart, modulesEnd);
@@ -581,80 +600,6 @@ for (const unit of auditUnits) {
 }
 for (const [label] of auditUnitPolicy) if (!labels.has(label)) errors.push(`workflow AUDIT_UNITS is missing policy-matrix label ${label}`);
 
-// MODULES and AUDIT_UNITS are declarative inputs.  Once their literal has been parsed, later
-// writes or mutating calls would make the checked source differ from the data used at runtime.
-// Scan JavaScript tokens rather than the raw text so examples, comments, regexp bodies (including
-// character classes), and templates cannot manufacture a mutation hit.
-function workflowMutationCheck(source, names, declarationOpenings) {
-  const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
-  const declarationNames = new Set();
-  for (const [name, opening] of declarationOpenings) {
-    const nameIndex = source.lastIndexOf(name, opening);
-    if (nameIndex >= 0) declarationNames.add(`${name}:${nameIndex}`);
-  }
-  const isBoundary = (character) => !character || !/[A-Za-z0-9_$]/.test(character);
-  const skipSpace = (index) => {
-    while (index < source.length && /\s/.test(source[index])) index += 1;
-    return index;
-  };
-  const assignmentAt = (index) => /^(?:\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=|=(?!=|>))/.test(source.slice(index));
-  let state = 'code';
-  for (let i = 0; i < source.length; i += 1) {
-    const character = source[i];
-    const next = source[i + 1];
-    if (state === 'line-comment') { if (character === '\n' || character === '\r') state = 'code'; continue; }
-    if (state === 'block-comment') { if (character === '*' && next === '/') { i += 1; state = 'code'; } continue; }
-    if (state === 'single' || state === 'double' || state === 'template') {
-      if (character === '\\') i += 1;
-      else if ((state === 'single' && character === "'") || (state === 'double' && character === '"') || (state === 'template' && character === '`')) state = 'code';
-      continue;
-    }
-    if (state === 'regex') {
-      if (character === '\\') i += 1;
-      else if (character === '[') state = 'regex-class';
-      else if (character === '/') state = 'code';
-      continue;
-    }
-    if (state === 'regex-class') {
-      if (character === '\\') i += 1;
-      else if (character === ']') state = 'regex';
-      continue;
-    }
-    if (character === '/' && next === '/') { i += 1; state = 'line-comment'; continue; }
-    if (character === '/' && next === '*') { i += 1; state = 'block-comment'; continue; }
-    if (character === "'") { state = 'single'; continue; }
-    if (character === '"') { state = 'double'; continue; }
-    if (character === '`') { state = 'template'; continue; }
-    if (character === '/' && isRegexLiteralStart(source, i)) { state = 'regex'; continue; }
-    for (const name of names) {
-      if (!source.startsWith(name, i) || !isBoundary(source[i - 1]) || !isBoundary(source[i + name.length])) continue;
-      let cursor = skipSpace(i + name.length);
-      const declaration = declarationNames.has(`${name}:${i}`);
-      if (assignmentAt(cursor)) {
-        if (!declaration) errors.push(`workflow ${name} is assigned after its declaration`);
-        continue;
-      }
-      if (source[cursor] === '.') {
-        const method = source.slice(cursor + 1).match(/^([A-Za-z_$][A-Za-z0-9_$]*)/);
-        if (method && mutators.has(method[1]) && source[skipSpace(cursor + 1 + method[1].length)] === '(') {
-          errors.push(`workflow ${name}.${method[1]}() mutates the declarative array`);
-        } else if (method) {
-          const afterProperty = skipSpace(cursor + 1 + method[1].length);
-          if (assignmentAt(afterProperty)) errors.push(`workflow ${name}.${method[1]} is assigned after its declaration`);
-        }
-        continue;
-      }
-      if (source[cursor] === '[') {
-        const close = findMatchingBracket(workflowWithoutComments, cursor);
-        if (close >= 0 && assignmentAt(skipSpace(close + 1))) errors.push(`workflow ${name} has an indexed assignment after its declaration`);
-      }
-    }
-  }
-}
-workflowMutationCheck(workflow, ['MODULES', 'AUDIT_UNITS'], new Map([
-  ['MODULES', modulesStart],
-  ['AUDIT_UNITS', auditUnitsStart],
-]));
 function expandOnlyCategories(text) {
   if (typeof text !== 'string' || !text.trim()) return null;
   const expanded = [];
@@ -706,33 +651,8 @@ for (const module of workflowModuleCategories.keys()) {
 // That is exactly the gap that let §C12/§C12a ship invisible to the fan-out audit in v0.6.0:
 // the category existed, its module file was already wired, but its id was absent from the
 // module's category list, so the slicer never extracted its trigger rows or 🔴 items for it.
-function expandCategoryCell(cellText) {
-  // Two DIFFERENT notations for a lettered sub-section appear in the table, and both must be
-  // handled: written out as its own token directly against the digits ("§B3a", no separator —
-  // matched by the optional trailing [a-z] below), or compacted into a parenthetical suffix on
-  // the base id ("§B4 (a)", "§B1 (a, b)", "§B15 (a–e)" with an en dash range).
-  const ids = [];
-  const re = /§([A-Z]\d+)([a-z])?(?:\s*\(([^)]+)\))?/g;
-  let m;
-  while ((m = re.exec(cellText))) {
-    const [, base, trailingLetter, parenSuffix] = m;
-    if (trailingLetter) { ids.push(base + trailingLetter); continue; }
-    ids.push(base);
-    if (!parenSuffix) continue;
-    for (const rawPart of parenSuffix.split(',')) {
-      const part = rawPart.trim();
-      const range = part.match(/^([a-z])[–-]([a-z])$/); // – = en dash, as used in "a–e"
-      if (range) {
-        for (let c = range[1].charCodeAt(0); c <= range[2].charCodeAt(0); c += 1) ids.push(base + String.fromCharCode(c));
-      } else if (/^[a-z]$/.test(part)) {
-        ids.push(base + part);
-      }
-    }
-  }
-  return ids;
-}
-// Strict companion for expandCategoryCell: preserve the historical expansion, but expose any
-// bytes that were not consumed so a malformed cell cannot appear to contain a valid subset.
+// Parse the category-map cell while exposing any unconsumed bytes, so a malformed cell cannot
+// appear to contain a valid subset.
 function parseCategoryCell(cellText) {
   const ids = [];
   let cursor = 0;
@@ -769,6 +689,8 @@ function parseCategoryCell(cellText) {
     if (cursor >= cellText.length) break;
     if (cellText[cursor] !== ',') return fail();
     cursor += 1;
+    while (/\s/.test(cellText[cursor] || '')) cursor += 1;
+    if (cursor >= cellText.length) return fail();
   }
   return { ids, residue: '' };
 }

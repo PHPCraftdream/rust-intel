@@ -24,8 +24,18 @@ if (!args.skillDir) {
   throw new Error('audit-rust-project: missing required arg "skillDir" (path to the rust-intel skill dir holding SKILL.md + modules)')
 }
 
+function deepFreezeRecords(records) {
+  for (const record of records) {
+    for (const value of Object.values(record)) {
+      if (Array.isArray(value)) Object.freeze(value)
+    }
+    Object.freeze(record)
+  }
+  return Object.freeze(records)
+}
+
 // Module -> category-ids it owns. Mirrors the category->module map in SKILL.md.
-const MODULES = [
+const MODULES = deepFreezeRecords([
   { file: 'async.md', categories: ['B2','B3','B3a','B8','B11','B15','B15a','B15b','B15c','B15d','B15e','B21','B22','B23','C3','C9','E1'] },
   { file: 'concurrency-and-state.md', categories: ['A2','B9','B10','B13','B14','B17','B19','C8','E4'] },
   { file: 'data-and-types.md', categories: ['B6','B16','B20','B26','B27','B28','B29','C4','E2','E3'] },
@@ -36,10 +46,10 @@ const MODULES = [
   { file: 'lifetimes-and-api.md', categories: ['B1','B1a','B1b','C1','C1a','A3'] },
   { file: 'testing.md', categories: ['D1','D1a','D2','D3','D4','D5','E6'] },
   { file: 'semantics-and-conformance.md', categories: ['F1','F2','F3','F4'] },
-]
+]);
 
 // One audit agent per unit. async.md splits into two (discipline vs machinery, G6).
-const AUDIT_UNITS = [
+const AUDIT_UNITS = deepFreezeRecords([
   { module: 'async.md', label: 'async/discipline', onlyCategories: 'B2, B3, B3a, B8, B11, B21, B22, B23', requiredArtifactGroups: [] },
   { module: 'async.md', label: 'async/machinery', onlyCategories: 'B15a–e, C3, C9, E1', requiredArtifactGroups: [] },
   { module: 'concurrency-and-state.md', label: 'concurrency', requiredArtifactGroups: [] },
@@ -52,7 +62,7 @@ const AUDIT_UNITS = [
   { module: 'testing.md', label: 'testing', requiredArtifactGroups: ['configs', 'ci', 'scripts'] },
   // §F1/§F2 need the project's own spec/README/docs, not just source — see scoper docsFiles + auditPrompt.
   { module: 'semantics-and-conformance.md', label: 'semantics', requiredArtifactGroups: [], requiresDocs: true },
-]
+]);
 
 const SLICER_SCHEMA = {
   type: 'object',
@@ -340,12 +350,15 @@ const knownLabels = new Set(AUDIT_UNITS.map((unit) => unit.label))
 const strayLabels = [...new Set(auditResults.map((result) => result.label).filter((label) => !knownLabels.has(label)))]
 if (strayLabels.length) log(`WARNING: audit unit(s) returned unrecognized label(s): ${strayLabels.join(', ')}`)
 const resultsByLabel = new Map(auditResults.filter((result) => knownLabels.has(result.label)).map((result) => [result.label, result]))
+function auditResultModuleMatches(result, unit) {
+  return result.module === unit.module
+}
 const missingUnitInputs = {}
 for (const unit of AUDIT_UNITS) {
   const result = resultsByLabel.get(unit.label)
   const missing = []
   if (!result) missing.push('agent result')
-  else if (result.module !== unit.module) missing.push(`module-mismatch: expected ${unit.module}, got ${result.module || '(missing)'}`)
+  else if (!auditResultModuleMatches(result, unit)) missing.push(`module-mismatch: expected ${unit.module}, got ${result.module || '(missing)'}`)
   const requiredGroups = unit.requiredArtifactGroups || []
   for (const group of requiredGroups) {
     const expected = scoperResult && scoperResult.artifactFiles ? (scoperResult.artifactFiles[group] || []) : []

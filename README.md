@@ -143,7 +143,7 @@ rust-cc-install.bat -User             # user-global
 # Note: --symlink is bash-only. PowerShell and cmd.exe installers always copy.
 ```
 
-`CLAUDE_CONFIG_DIR` env var overrides the target for the npx and shell installers if set.
+`CLAUDE_CONFIG_DIR` affects the npx installer only when `--user` is passed; without `--user`, npx always targets the current project's `./.claude/`. The shell installers always honor `CLAUDE_CONFIG_DIR` when it is set, overriding their default and `--user`/`-User` target.
 
 The installer copies:
 - `skill/**/*.{md,js}` → `<target>/skills/rust-intel/` (the modular skill, including `references/`; Claude Code activates it automatically on Rust tasks)
