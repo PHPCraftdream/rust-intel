@@ -154,6 +154,28 @@ function stripJsComments(source) {
       }
       continue;
     }
+    if (state === 'regex') {
+      output += character;
+      if (character === '\\' && i + 1 < source.length) {
+        output += source[i + 1];
+        i += 1;
+      } else if (character === '[') {
+        state = 'regex-class';
+      } else if (character === '/') {
+        state = 'code';
+      }
+      continue;
+    }
+    if (state === 'regex-class') {
+      output += character;
+      if (character === '\\' && i + 1 < source.length) {
+        output += source[i + 1];
+        i += 1;
+      } else if (character === ']') {
+        state = 'regex';
+      }
+      continue;
+    }
     if (character === '/' && next === '/') {
       output += '  ';
       i += 1;
@@ -162,6 +184,9 @@ function stripJsComments(source) {
       output += '  ';
       i += 1;
       state = 'block-comment';
+    } else if (character === '/' && isRegexLiteralStart(source, i)) {
+      output += character;
+      state = 'regex';
     } else {
       output += character;
       if (character === "'") state = 'single';
@@ -223,8 +248,67 @@ function isRegexLiteralStart(source, index) {
   if (i < 0) return true;
   const previous = source[i];
   if ('=([{,:;!&|?+-*%^~<>'.includes(previous)) return true;
+  // A regexp may begin in statement position immediately after a control-header `)`:
+  // `if (ready) /[/]/.test(value)`.  A call followed by division (`factory() / 2`) is
+  // intentionally left as division.  Keep this check line-bounded so a comment/string
+  // elsewhere cannot manufacture a fake statement prefix.
+  if (previous === ')') {
+    const lineStart = source.lastIndexOf('\n', index - 1) + 1;
+    const prefix = source.slice(lineStart, index);
+    if (/\b(?:if|while|for|with|switch|catch)\s*\([^\n]*\)\s*$/.test(prefix)) return true;
+  }
   const word = source.slice(Math.max(0, i - 12), i + 1).match(/[A-Za-z_$][A-Za-z0-9_$]*$/)?.[0];
   return ['return', 'case', 'throw', 'typeof', 'void', 'delete', 'new', 'in', 'instanceof', 'yield', 'await'].includes(word);
+}
+
+// Keep only executable JavaScript while preserving offsets/newlines.  This is deliberately a
+// separate view from stripJsComments(): the semantic workflow checks below must not be satisfied
+// by a quoted example, a comment, or a regexp body containing the same spelling.
+function maskJsNonCode(source) {
+  let output = '';
+  let state = 'code';
+  for (let i = 0; i < source.length; i += 1) {
+    const character = source[i];
+    const next = source[i + 1];
+    const blank = character === '\n' || character === '\r' ? character : ' ';
+    if (state === 'line-comment') {
+      output += blank;
+      if (character === '\n' || character === '\r') state = 'code';
+      continue;
+    }
+    if (state === 'block-comment') {
+      output += blank;
+      if (character === '*' && next === '/') { output += ' '; i += 1; state = 'code'; }
+      continue;
+    }
+    if (state === 'single' || state === 'double' || state === 'template') {
+      output += blank;
+      if (character === '\\' && i + 1 < source.length) { output += source[i + 1] === '\n' || source[i + 1] === '\r' ? source[i + 1] : ' '; i += 1; }
+      else if ((state === 'single' && character === "'") || (state === 'double' && character === '"') || (state === 'template' && character === '`')) state = 'code';
+      continue;
+    }
+    if (state === 'regex') {
+      output += blank;
+      if (character === '\\' && i + 1 < source.length) { output += source[i + 1] === '\n' || source[i + 1] === '\r' ? source[i + 1] : ' '; i += 1; }
+      else if (character === '[') state = 'regex-class';
+      else if (character === '/') state = 'code';
+      continue;
+    }
+    if (state === 'regex-class') {
+      output += blank;
+      if (character === '\\' && i + 1 < source.length) { output += source[i + 1] === '\n' || source[i + 1] === '\r' ? source[i + 1] : ' '; i += 1; }
+      else if (character === ']') state = 'regex';
+      continue;
+    }
+    if (character === '/' && next === '/') { output += '  '; i += 1; state = 'line-comment'; continue; }
+    if (character === '/' && next === '*') { output += '  '; i += 1; state = 'block-comment'; continue; }
+    if (character === "'") { output += ' '; state = 'single'; continue; }
+    if (character === '"') { output += ' '; state = 'double'; continue; }
+    if (character === '`') { output += ' '; state = 'template'; continue; }
+    if (character === '/' && isRegexLiteralStart(source, i)) { output += ' '; state = 'regex'; continue; }
+    output += character;
+  }
+  return output;
 }
 
 // Find the real workflow declaration in JavaScript code.  A regex over a comment-masked
@@ -291,6 +375,11 @@ function findTopLevelArrayStart(source, name) {
   return -1;
 }
 
+const executableWorkflowCode = maskJsNonCode(workflow);
+if (!/\bresult\s*\.\s*module\s*!==\s*unit\s*\.\s*module\b/.test(executableWorkflowCode)) {
+  errors.push('workflow runtime audit-unit gate must compare result.module !== unit.module (module mismatch)');
+}
+
 const workflowWithoutComments = stripJsComments(workflow);
 // `modulesStart` deliberately comes from the original source: stripJsComments preserves byte
 // offsets, while the lexer above ignores comments/strings/templates before accepting a match.
@@ -299,6 +388,15 @@ const modulesEnd = modulesStart >= 0 ? findMatchingBracket(workflowWithoutCommen
 const modulesLiteral = modulesStart >= 0 && modulesEnd > modulesStart
   ? workflowWithoutComments.slice(modulesStart + 1, modulesEnd)
   : '';
+function requirePureArrayInitializer(name, openingIndex, closingIndex) {
+  if (openingIndex < 0 || closingIndex <= openingIndex) return;
+  const lineEnd = workflow.indexOf('\n', closingIndex + 1);
+  const suffix = workflow.slice(closingIndex + 1, lineEnd < 0 ? workflow.length : lineEnd);
+  if (!/^[ \t\r]*;?[ \t\r]*$/.test(suffix)) {
+    errors.push(`workflow ${name} initializer must end after its closing ] (only optional semicolon/whitespace is allowed)`);
+  }
+}
+requirePureArrayInitializer('MODULES', modulesStart, modulesEnd);
 
 // Split a literal array into its complete top-level elements.  Regex extraction is unsafe here:
 // it silently drops malformed/alternate elements and accepts a valid-looking object after them.
@@ -353,6 +451,7 @@ function parseStringArray(value) {
   const text = value.trim();
   if (!text.startsWith('[') || !text.endsWith(']')) return null;
   const inner = text.slice(1, -1);
+  if (/,[ \t\r\n]*$/.test(inner)) return null;
   if (!inner.trim()) return [];
   const parts = topLevelArrayElements(inner);
   if (parts.some((part) => part === null)) return null;
@@ -415,6 +514,7 @@ const auditUnitsStart = findTopLevelArrayStart(workflow, 'AUDIT_UNITS');
 const auditUnitsEnd = auditUnitsStart >= 0 ? findMatchingBracket(workflowWithoutComments, auditUnitsStart) : -1;
 const auditUnitsLiteral = auditUnitsStart >= 0 && auditUnitsEnd > auditUnitsStart
   ? workflowWithoutComments.slice(auditUnitsStart + 1, auditUnitsEnd) : '';
+requirePureArrayInitializer('AUDIT_UNITS', auditUnitsStart, auditUnitsEnd);
 function parseAuditUnit(element) {
   const fields = parseObjectFields(element);
   if (!fields || !fields.has('module') || !fields.has('label')) return null;
@@ -425,8 +525,8 @@ function parseAuditUnit(element) {
   if (!module || !label) return null;
   const onlyCategories = fields.has('onlyCategories') ? parseSingleQuoted(fields.get('onlyCategories')) : undefined;
   if (fields.has('onlyCategories') && onlyCategories === null) return null;
-  const requiredArtifactGroups = fields.has('requiredArtifactGroups')
-    ? parseStringArray(fields.get('requiredArtifactGroups')) : [];
+  if (!fields.has('requiredArtifactGroups')) return null;
+  const requiredArtifactGroups = parseStringArray(fields.get('requiredArtifactGroups'));
   if (!requiredArtifactGroups || requiredArtifactGroups.some((group) => !/^[a-z]+$/.test(group))) return null;
   const requiresDocs = fields.has('requiresDocs') ? fields.get('requiresDocs') : 'false';
   if (requiresDocs !== 'true' && requiresDocs !== 'false') return null;
@@ -445,6 +545,116 @@ for (const unit of auditUnits) {
   labels.add(unit.label);
   if (!workflowModuleCategories.has(unit.module)) errors.push(`workflow AUDIT_UNITS references unknown module ${unit.module}`);
 }
+// Keep the fan-out policy executable and reviewable: changing a label's module, category slice,
+// required artifact set, or documentation obligation must be an intentional validator change,
+// not a silent reshuffle of work between agents.
+const auditUnitPolicy = new Map([
+  ['async/discipline', { module: 'async.md', onlyCategories: 'B2, B3, B3a, B8, B11, B21, B22, B23', groups: [], requiresDocs: false }],
+  ['async/machinery', { module: 'async.md', onlyCategories: 'B15a–e, C3, C9, E1', groups: [], requiresDocs: false }],
+  ['concurrency', { module: 'concurrency-and-state.md', groups: [], requiresDocs: false }],
+  ['data-types', { module: 'data-and-types.md', groups: [], requiresDocs: false }],
+  ['security', { module: 'security.md', groups: ['manifests', 'configs'], requiresDocs: false }],
+  ['unsafe-ffi', { module: 'unsafe-and-ffi.md', groups: ['manifests', 'configs', 'scripts', 'ffi'], requiresDocs: false }],
+  ['drop-raii', { module: 'drop-and-raii.md', groups: [], requiresDocs: false }],
+  ['deps-macros', { module: 'deps-macros-ergonomics.md', groups: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts'], requiresDocs: false }],
+  ['lifetimes-api', { module: 'lifetimes-and-api.md', groups: ['manifests', 'toolchains'], requiresDocs: false }],
+  ['testing', { module: 'testing.md', groups: ['configs', 'ci', 'scripts'], requiresDocs: false }],
+  ['semantics', { module: 'semantics-and-conformance.md', groups: [], requiresDocs: true }],
+]);
+const allowedArtifactGroups = new Set(['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts', 'ffi']);
+if (auditUnits.length !== auditUnitPolicy.size) errors.push('workflow AUDIT_UNITS does not contain exactly the policy-matrix labels');
+for (const unit of auditUnits) {
+  const expected = auditUnitPolicy.get(unit.label);
+  if (!expected) {
+    errors.push(`workflow AUDIT_UNITS contains label outside the policy matrix: ${unit.label}`);
+    continue;
+  }
+  if (unit.module !== expected.module) errors.push(`workflow AUDIT_UNITS label ${unit.label} must target ${expected.module}`);
+  if ((unit.onlyCategories ?? undefined) !== (expected.onlyCategories ?? undefined)) errors.push(`workflow AUDIT_UNITS label ${unit.label} has an unexpected onlyCategories slice`);
+  const groups = unit.requiredArtifactGroups;
+  if (groups.some((group) => !allowedArtifactGroups.has(group))) errors.push(`workflow AUDIT_UNITS label ${unit.label} has an unsupported required artifact group`);
+  if (new Set(groups).size !== groups.length) errors.push(`workflow AUDIT_UNITS label ${unit.label} repeats a required artifact group`);
+  if (groups.length !== expected.groups.length || groups.some((group, index) => group !== expected.groups[index])) {
+    errors.push(`workflow AUDIT_UNITS label ${unit.label} has the wrong required artifact groups`);
+  }
+  if (unit.requiresDocs !== expected.requiresDocs) errors.push(`workflow AUDIT_UNITS label ${unit.label} has the wrong requiresDocs policy`);
+}
+for (const [label] of auditUnitPolicy) if (!labels.has(label)) errors.push(`workflow AUDIT_UNITS is missing policy-matrix label ${label}`);
+
+// MODULES and AUDIT_UNITS are declarative inputs.  Once their literal has been parsed, later
+// writes or mutating calls would make the checked source differ from the data used at runtime.
+// Scan JavaScript tokens rather than the raw text so examples, comments, regexp bodies (including
+// character classes), and templates cannot manufacture a mutation hit.
+function workflowMutationCheck(source, names, declarationOpenings) {
+  const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
+  const declarationNames = new Set();
+  for (const [name, opening] of declarationOpenings) {
+    const nameIndex = source.lastIndexOf(name, opening);
+    if (nameIndex >= 0) declarationNames.add(`${name}:${nameIndex}`);
+  }
+  const isBoundary = (character) => !character || !/[A-Za-z0-9_$]/.test(character);
+  const skipSpace = (index) => {
+    while (index < source.length && /\s/.test(source[index])) index += 1;
+    return index;
+  };
+  const assignmentAt = (index) => /^(?:\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=|=(?!=|>))/.test(source.slice(index));
+  let state = 'code';
+  for (let i = 0; i < source.length; i += 1) {
+    const character = source[i];
+    const next = source[i + 1];
+    if (state === 'line-comment') { if (character === '\n' || character === '\r') state = 'code'; continue; }
+    if (state === 'block-comment') { if (character === '*' && next === '/') { i += 1; state = 'code'; } continue; }
+    if (state === 'single' || state === 'double' || state === 'template') {
+      if (character === '\\') i += 1;
+      else if ((state === 'single' && character === "'") || (state === 'double' && character === '"') || (state === 'template' && character === '`')) state = 'code';
+      continue;
+    }
+    if (state === 'regex') {
+      if (character === '\\') i += 1;
+      else if (character === '[') state = 'regex-class';
+      else if (character === '/') state = 'code';
+      continue;
+    }
+    if (state === 'regex-class') {
+      if (character === '\\') i += 1;
+      else if (character === ']') state = 'regex';
+      continue;
+    }
+    if (character === '/' && next === '/') { i += 1; state = 'line-comment'; continue; }
+    if (character === '/' && next === '*') { i += 1; state = 'block-comment'; continue; }
+    if (character === "'") { state = 'single'; continue; }
+    if (character === '"') { state = 'double'; continue; }
+    if (character === '`') { state = 'template'; continue; }
+    if (character === '/' && isRegexLiteralStart(source, i)) { state = 'regex'; continue; }
+    for (const name of names) {
+      if (!source.startsWith(name, i) || !isBoundary(source[i - 1]) || !isBoundary(source[i + name.length])) continue;
+      let cursor = skipSpace(i + name.length);
+      const declaration = declarationNames.has(`${name}:${i}`);
+      if (assignmentAt(cursor)) {
+        if (!declaration) errors.push(`workflow ${name} is assigned after its declaration`);
+        continue;
+      }
+      if (source[cursor] === '.') {
+        const method = source.slice(cursor + 1).match(/^([A-Za-z_$][A-Za-z0-9_$]*)/);
+        if (method && mutators.has(method[1]) && source[skipSpace(cursor + 1 + method[1].length)] === '(') {
+          errors.push(`workflow ${name}.${method[1]}() mutates the declarative array`);
+        } else if (method) {
+          const afterProperty = skipSpace(cursor + 1 + method[1].length);
+          if (assignmentAt(afterProperty)) errors.push(`workflow ${name}.${method[1]} is assigned after its declaration`);
+        }
+        continue;
+      }
+      if (source[cursor] === '[') {
+        const close = findMatchingBracket(workflowWithoutComments, cursor);
+        if (close >= 0 && assignmentAt(skipSpace(close + 1))) errors.push(`workflow ${name} has an indexed assignment after its declaration`);
+      }
+    }
+  }
+}
+workflowMutationCheck(workflow, ['MODULES', 'AUDIT_UNITS'], new Map([
+  ['MODULES', modulesStart],
+  ['AUDIT_UNITS', auditUnitsStart],
+]));
 function expandOnlyCategories(text) {
   if (typeof text !== 'string' || !text.trim()) return null;
   const expanded = [];

@@ -40,8 +40,8 @@ const MODULES = [
 
 // One audit agent per unit. async.md splits into two (discipline vs machinery, G6).
 const AUDIT_UNITS = [
-  { module: 'async.md', label: 'async/discipline', onlyCategories: 'B2, B3, B3a, B8, B11, B21, B22, B23' },
-  { module: 'async.md', label: 'async/machinery', onlyCategories: 'B15a–e, C3, C9, E1' },
+  { module: 'async.md', label: 'async/discipline', onlyCategories: 'B2, B3, B3a, B8, B11, B21, B22, B23', requiredArtifactGroups: [] },
+  { module: 'async.md', label: 'async/machinery', onlyCategories: 'B15a–e, C3, C9, E1', requiredArtifactGroups: [] },
   { module: 'concurrency-and-state.md', label: 'concurrency', requiredArtifactGroups: [] },
   { module: 'data-and-types.md', label: 'data-types', requiredArtifactGroups: [] },
   { module: 'security.md', label: 'security', requiredArtifactGroups: ['manifests', 'configs'] },
@@ -53,7 +53,6 @@ const AUDIT_UNITS = [
   // §F1/§F2 need the project's own spec/README/docs, not just source — see scoper docsFiles + auditPrompt.
   { module: 'semantics-and-conformance.md', label: 'semantics', requiredArtifactGroups: [], requiresDocs: true },
 ]
-for (const unit of AUDIT_UNITS) unit.requiredArtifactGroups ||= []
 
 const SLICER_SCHEMA = {
   type: 'object',
@@ -346,6 +345,7 @@ for (const unit of AUDIT_UNITS) {
   const result = resultsByLabel.get(unit.label)
   const missing = []
   if (!result) missing.push('agent result')
+  else if (result.module !== unit.module) missing.push(`module-mismatch: expected ${unit.module}, got ${result.module || '(missing)'}`)
   const requiredGroups = unit.requiredArtifactGroups || []
   for (const group of requiredGroups) {
     const expected = scoperResult && scoperResult.artifactFiles ? (scoperResult.artifactFiles[group] || []) : []

@@ -133,4 +133,16 @@ jobs:
       - name: Validate at the supported Node floor
         run: npm run validate
       - name: Smoke-test the npm installer at the supported Node floor
-        run: node bin/install.js --help
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="$(mktemp -d)"
+          trap 'rm -rf "$install_root"' EXIT
+          (
+            cd "$install_root"
+            node "$GITHUB_WORKSPACE/bin/install.js"
+          )
+          test -f "$install_root/.claude/skills/rust-intel/SKILL.md"
+          for command_name in audit fix plan; do
+            test -f "$install_root/.claude/commands/rust-cc-${command_name}.md"
+          done

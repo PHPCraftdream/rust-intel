@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: one hundred thirteen hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: one hundred thirty-four hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -1233,16 +1233,16 @@ for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
   }
 }
 
-// Controls 106-108: one leading ASCII space preserves the raw pipe and table cells but violates this
-// repository's column-1 contract. The validator must identify the whitespace, not report a generic
-// missing anchor or wrong width.
-for (const kind of ['header', 'delimiter', 'body']) {
+// Controls 106-111: one or three leading ASCII spaces preserve the raw pipe and table cells but
+// violate this repository's column-1 contract. The validator must identify the whitespace, not
+// report a generic missing anchor or wrong width.
+for (const spaces of [' ', '   ']) for (const kind of ['header', 'delimiter', 'body']) {
   const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
   const hit = anchoredTableLine(original, 'code', kind);
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
-    mutateAnchoredLine(source, 'code', kind, (line) => ' ' + line));
+    mutateAnchoredLine(source, 'code', kind, (line) => spaces + line));
   const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber}:`;
-  expectStructural(result, 'leading-whitespace code ' + kind + ' raw-pipe contract', [lineNeedle, 'has 1 leading space(s)']);
+  expectStructural(result, `${spaces.length}-space leading-whitespace code ${kind} raw-pipe contract`, [lineNeedle, `has ${spaces.length} leading space(s)`]);
 }
 
 
@@ -1253,11 +1253,16 @@ for (const kind of ['header', 'delimiter', 'body']) {
 function sectionOf(text, header) {
   const lines = splitFixtureLines(text);
   const mask = fixtureFenceMask(lines);
-  const start = lines.findIndex((line, i) => !mask[i] && line.includes(header));
+  const isRequestedHeading = (line) => {
+    const leading = line.match(/^ */)?.[0].length ?? 0;
+    const body = line.slice(leading);
+    return leading <= 3 && body.startsWith(header) && (body.length === header.length || /\s/.test(body[header.length]));
+  };
+  const start = lines.findIndex((line, i) => !mask[i] && isRequestedHeading(line));
   if (start < 0) return '';
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i += 1) {
-    if (!mask[i] && /^## §/.test(lines[i])) {
+    if (!mask[i] && /^ {0,3}## \u00a7[A-Z]\d+[a-z]?\./.test(lines[i])) {
       end = i;
       break;
     }
@@ -1265,10 +1270,47 @@ function sectionOf(text, header) {
   return lines.slice(start, end).filter((_, offset) => !mask[start + offset]).join('\n');
 }
 
-function rowOf(text, anchor) {
+function triggerTableBodyRanges(text) {
   const lines = splitFixtureLines(text);
   const mask = fixtureFenceMask(lines);
-  const index = lines.findIndex((row, i) => !mask[i] && row.includes(anchor));
+  const tables = [
+    ['| User request contains... | Activates category | Specific risk |', '**Triggered by code, not phrase**'],
+    ['| Code pattern in user input | Activates |', 'When two or more triggers fire in one request'],
+  ];
+  const ranges = [];
+  for (const [tableHeader, marker] of tables) {
+    const headers = lines.flatMap((line, i) => !mask[i] && line === tableHeader ? [i] : []);
+    if (headers.length !== 1) continue;
+    const headerIndex = headers[0];
+    const delimiterIndex = headerIndex + 1;
+    if (mask[delimiterIndex] || !/^\|[-:| ]+\|$/.test(lines[delimiterIndex])) continue;
+    const end = lines.findIndex((line, i) => i > delimiterIndex && !mask[i] && line.startsWith(marker));
+    if (end < 0) continue;
+    ranges.push([delimiterIndex + 1, end]);
+  }
+  return { lines, mask, ranges };
+}
+
+function rowOf(text, anchor) {
+  const { lines, mask, ranges } = triggerTableBodyRanges(text);
+  for (const [start, end] of ranges) {
+    const index = lines.findIndex((row, i) => i >= start && i < end && !mask[i] && row.includes(anchor));
+    if (index >= 0) return lines[index];
+  }
+  return '';
+}
+
+function moduleTableRowOf(text, anchor) {
+  const lines = splitFixtureLines(text);
+  const mask = fixtureFenceMask(lines);
+  const index = lines.findIndex((row, i) => !mask[i] && /^\|/.test(row) && row.includes(anchor));
+  return index < 0 ? '' : lines[index];
+}
+
+function numberedItemOf(text, anchor) {
+  const lines = splitFixtureLines(text);
+  const mask = fixtureFenceMask(lines);
+  const index = lines.findIndex((line, i) => !mask[i] && /^\d+\.\s/.test(line) && line.includes(anchor));
   return index < 0 ? '' : lines[index];
 }
 
@@ -1306,17 +1348,20 @@ const ruleTextControls = [
   { name: 'B14 JoinSet admission-gated drain (skill/concurrency-and-state.md §B14)', file: 'skill/concurrency-and-state.md', section: '## §B14.', require: ['poll_join_next', 'len() < N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
   { name: 'B14 JoinSet trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'constructed or grown by any operation that adds tasks', require: ['poll_join_next', 'len() < N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
   { name: 'C12 either-defense Markdown row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'Markdown-to-HTML renderer', require: ['Event::Html', 'Event::InlineHtml', 'either one alone satisfies this obligation'] },
-  { name: 'C12 either-defense catalog row (skill/deps-macros-ergonomics.md)', file: 'skill/deps-macros-ergonomics.md', rowAnchor: 'Markdown rendering of untrusted content', require: ['either drop', '`Html`/`InlineHtml` events or'] },
+  { name: 'C12 either-defense catalog row (skill/deps-macros-ergonomics.md)', file: 'skill/deps-macros-ergonomics.md', moduleRowAnchor: 'Markdown rendering of untrusted content', require: ['either drop', '`Html`/`InlineHtml` events or'] },
   { name: 'F1 decode-observable corpus oracle (skill/semantics-and-conformance.md §F1)', file: 'skill/semantics-and-conformance.md', section: '## §F1.', require: ['finite graph of distinct serialized type/variant definitions', 'two representatives, not every runtime depth', 'decode-observable, not typed-value-level', 'schema-mutation negative control'] },
   { name: 'F1 corpus trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'golden-bytes decode **corpus**', require: ['finite graph of distinct serialized type/variant definitions', 'two representatives, not every runtime depth', 'decode-observable, not typed-value-level', 'schema-mutation negative control'] },
   { name: 'B12 Argon2/OsRng feature obligations (skill/security.md §B12)', file: 'skill/security.md', section: '## §B12.', require: ['State both obligations', 'getrandom` feature for `OsRng` to source entropy'] },
   { name: 'B12 clean-TOML recipe row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'store a password', require: ['rand_core = { version = "0.6", features = ["getrandom"] }', 'two feature obligations, not one'] },
-  { name: 'B1a out-parameter cache witness (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'Show the caller for the §B1a laundering shape', require: ['fn remember', 'captured into a longer-lived cache/container that outlives the call'] },
+  { name: 'B1a out-parameter cache witness (skill/SKILL.md)', file: 'skill/SKILL.md', listItemAnchor: 'Show the caller for the §B1a laundering shape', require: ['fn remember', 'captured into a longer-lived cache/container that outlives the call'] },
   { name: 'B13 pure-reader exemption (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'pure reader that makes no check-then-act decision', require: ['need not hold the same guard'] },
 ];
 for (const control of ruleTextControls) {
   const text = fs.readFileSync(path.join(root, control.file), 'utf8');
-  const scoped = control.section ? sectionOf(text, control.section) : control.rowAnchor ? rowOf(text, control.rowAnchor) : text;
+  const scoped = control.section ? sectionOf(text, control.section)
+    : control.rowAnchor ? rowOf(text, control.rowAnchor)
+      : control.moduleRowAnchor ? moduleTableRowOf(text, control.moduleRowAnchor)
+        : control.listItemAnchor ? numberedItemOf(text, control.listItemAnchor) : text;
   for (const token of control.require || []) {
     if (!scoped.includes(token)) failures.push(`${control.name}: required signature "${token}" absent — the correction this control pins looks reverted or reworded past its greppable signature`);
   }
@@ -1325,7 +1370,7 @@ for (const control of ruleTextControls) {
   }
 }
 
-// Controls 109-111: the nested-fixture escape hatch is intentionally a strict test-only switch.
+// Controls 112-114: the nested-fixture escape hatch is intentionally a strict test-only switch.
 // A value of exactly "1" skips the nested suite; "0" runs it and must execute this deliberately
 // broken fixture sentinel; any other value is itself an explicit validator error. Mutating the
 // child script avoids recursively running this fixture suite from inside its own control.
@@ -1346,7 +1391,7 @@ for (const [value, status, needles, name] of [
   expectFixture(result, name, status, needles);
 }
 
-// Controls 112-113: rule-text extraction must ignore signatures placed inside supported fenced
+// Controls 115-116: rule-text extraction must ignore signatures placed inside supported fenced
 // code. Removing the live signature while adding the same text as a fenced decoy must fail both
 // section-scoped and row-scoped rule controls.
 {
@@ -1379,6 +1424,224 @@ for (const [value, status, needles, name] of [
     lines.splice(0, 0, fixtureTick.repeat(3) + 'text', 'pure reader that makes no check-then-act decision — need not hold the same guard', fixtureTick.repeat(3), '');
     const scoped = rowOf(lines.join('\n'), control.rowAnchor);
     if (control.require.every((token) => scoped.includes(token))) failures.push('fenced row rule-text decoy unexpectedly satisfied the live rule');
+  }
+}
+
+const workflowFiles = ['skill/audit-project.workflow.js', 'skills/rust-intel/audit-project.workflow.js'];
+function mutateWorkflowLines(source, mutate) {
+  const lines = splitFixtureLines(source);
+  return mutate(lines) ? lines.join('\n') : null;
+}
+function workflowArrayEnd(lines, name) {
+  const start = lines.findIndex((line) => line.includes(`const ${name} = [`));
+  if (start < 0) return -1;
+  const end = lines.findIndex((line, index) => index > start && line.trim() === ']');
+  return end;
+}
+
+// Control 117: a tab-indented fence-looking line is not a standalone project fence opener. The
+// escape on the following line is therefore outside a fence and must remain observable.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    appendProbe(source, ['', '\t' + fixtureTick.repeat(3) + 'md', 'let escaped = "x \\" y";', '']));
+  expectFixture(result, 'tab-indented fake fence opener is not active', 1, ['literal \\" escape outside a fenced code block']);
+}
+
+// Control 118: a malformed Category-map cell with a category-shaped prefix must not be silently
+// treated as a no-op row. The whole cell is validated, not just successfully extracted ids.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes('| \u00a7B2,'));
+    if (at < 0) return null;
+    lines[at] = lines[at].replace('\u00a7B2,', '\u00a7not-an-id,');
+    return lines.join('\n');
+  });
+  expectFixture(result, 'malformed Category-map id cell is rejected', 1, ['Category map']);
+}
+
+// Control 119: regexp literals, including character classes and a regexp in statement position,
+// are decoys. They must neither become the MODULES declaration nor confuse its bracket matcher.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes('const MODULES = ['));
+      if (at < 0) return false;
+      lines.splice(at, 0,
+        'const MODULES_REGEX_DECOY_CLASS = /[/*]/;',
+        'if(flag) /\\[/;',
+        'const MODULES_REGEX_DECOY_CLASS_2 = /[/*]/;');
+      return true;
+    }));
+  expectFixture(result, 'regexp decoys before MODULES are ignored', 0);
+}
+
+// Control 120: a dangling comma inside a category array is not a valid MODULES literal element.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("categories: ['B2','B3'"));
+      if (at < 0) return false;
+      lines[at] = lines[at].replace("categories: ['B2','B3'", "categories: ['B2',,'B3'");
+      return true;
+    }));
+  expectFixture(result, 'dangling category comma is rejected', 1, ['workflow MODULES']);
+}
+
+// Controls 121-131: AUDIT_UNITS is a complete, statically validated partition of the workflow.
+// Each mutation targets one invariant while leaving the mirror tree byte-identical.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'AUDIT_UNITS');
+      if (end < 0) return false;
+      lines.splice(end, 0, '  null,');
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS extra null is rejected', 1, ['AUDIT_UNITS']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("module: 'testing.md'"));
+      if (at < 0) return false;
+      lines[at] = '//' + lines[at];
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS missing testing unit is rejected', 1, ['testing.md']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("onlyCategories: 'B2, B3, B3a"));
+      if (at < 0) return false;
+      lines[at] = lines[at].replace('B3a, ', '');
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS async category omission is rejected', 1, ['omit']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("onlyCategories: 'B15a–e"));
+      if (at < 0) return false;
+      lines[at] = lines[at].replace("E1'", "E1, B2'");
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS async category overlap is rejected', 1, ['overlap']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("requiredArtifactGroups: ['manifests', 'configs']"));
+      if (at < 0) return false;
+      lines[at] = lines[at].replace("'configs']", "'unknown']");
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS unknown artifact group is rejected', 1, ['AUDIT_UNITS']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("requiredArtifactGroups: ['manifests', 'configs']"));
+      if (at < 0) return false;
+      lines[at] = lines[at].replace("'configs']", "'configs', 'configs']");
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS duplicate artifact group is rejected', 1, ['artifact group']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("module: 'security.md'"));
+      if (at < 0) return false;
+      lines[at] = lines[at].replace("requiredArtifactGroups: ['manifests', 'configs']", 'requiredArtifactGroups: []');
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS altered security artifact groups are rejected', 1, ['wrong required artifact groups']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("module: 'deps-macros-ergonomics.md'"));
+      if (at < 0) return false;
+      lines[at] = lines[at].replace("'ci', 'scripts']", "'ci']");
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS altered dependency artifact groups are rejected', 1, ['wrong required artifact groups']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("module: 'semantics-and-conformance.md'"));
+      if (at < 0) return false;
+      lines[at] = lines[at].replace(', requiresDocs: true', '');
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS semantics docs obligation is required', 1, ['requiresDocs']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'AUDIT_UNITS');
+      if (end < 0) return false;
+      lines[end] = '].filter(Boolean)';
+      return true;
+    }));
+  expectFixture(result, 'AUDIT_UNITS chained filter suffix is rejected', 1, ['AUDIT_UNITS']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'AUDIT_UNITS');
+      if (end < 0) return false;
+      lines.splice(end + 1, 0, 'AUDIT_UNITS.pop();');
+      return true;
+    }));
+  expectFixture(result, 'later AUDIT_UNITS pop mutation is rejected', 1, ['AUDIT_UNITS']);
+}
+
+// Control 132: the runtime merger must reject an audit result whose module disagrees with the
+// assigned unit, even when its label is valid. This is a source-presence contract: changing the
+// module comparison to another field must make the validator fail the workflow check.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    if (!source.includes('result.module')) return null;
+    return source.replaceAll('result.module', 'result.label');
+  });
+  if (result.skipped) failures.push('runtime result.module mismatch control: workflow source has no module identity check');
+  else if (result.executionFailure) failures.push(`runtime result.module mismatch control: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
+  else if (result.status === 0 || !/module|result/i.test(result.output)) failures.push('runtime result.module mismatch control: replacing result.module checks did not fail the workflow contract: ' + result.output.trim());
+}
+
+// Control 133: a category-map boundary indented by one space is not the live scaffold marker.
+// It must be diagnosed as a malformed boundary, not accepted as a second live table.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.startsWith('# Category map'));
+    if (at < 0) return null;
+    lines[at] = ' ' + lines[at];
+    return lines.join('\n');
+  });
+  expectFixture(result, 'indented Category-map boundary is rejected', 1, ['Category map']);
+}
+
+// Control 134: a fenced prose decoy containing a required row must not satisfy the rule-text
+// oracle when the live row is reverted. The same text outside a fence is only a decoy if it is
+// outside both anchored trigger-table body ranges.
+{
+  const control = ruleTextControls.find(({ name }) => name.startsWith('B13 pure-reader exemption'));
+  const original = fs.readFileSync(path.join(root, control.file), 'utf8');
+  const lines = splitFixtureLines(original);
+  const at = lines.findIndex((line) => line.startsWith('|') && line.includes(control.rowAnchor));
+  if (at < 0) {
+    failures.push('unfenced rule-text prose decoy: required live row was not found');
+  } else {
+    lines[at] = lines[at].replace('need not hold the same guard', 'must hold a guard');
+    lines.push('', 'prose decoy: pure reader that makes no check-then-act decision — need not hold the same guard');
+    const scoped = rowOf(lines.join('\n'), control.rowAnchor);
+    if (control.require.every((token) => scoped.includes(token))) failures.push('unfenced prose row decoy unexpectedly satisfied the live rule');
   }
 }
 
