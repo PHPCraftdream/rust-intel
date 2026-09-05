@@ -550,7 +550,7 @@ const coverageBlock = coverageStart >= 0 && orchestrationEnd > coverageStart
   ? workflow.slice(coverageStart, orchestrationEnd + 1).replace(/\r\n?/g, '\n')
   : '';
 // SHA-256 of the canonical coverage-production block in skill/audit-project.workflow.js.
-const canonicalCoverageProductionSha256 = '9bc1aa34a14b07a6b76739e1d2cd279eb1678ee52064542a2663baf456f4e6c7';
+const canonicalCoverageProductionSha256 = '2d635a082a92d0364c86726e038daf90c02d1bce0a4f684c7c0c20994e2dd331';
 if (coverageStartDeclarations.length !== 1 || orchestrationDeclarations.length !== 1 || !coverageBlock
   || createHash('sha256').update(coverageBlock, 'utf8').digest('hex') !== canonicalCoverageProductionSha256) {
   errors.push('workflow coverage-production block must match the canonical reachable implementation from dropped through orchestrationComplete');
@@ -786,13 +786,14 @@ function workflowMutationCheck(source, names, rawSource = source) {
     return -1;
   };
   const aliasRhsRe = /^\s*(?:\(\s*)*(?:MODULES|AUDIT_UNITS)\b/u;
-  // A primitive length or a newly-created array returned by map/filter is not a reference to the
-  // declarative arrays.  Permit those derived values, including when the root is parenthesized
-  // or reached through a property/index chain; all other root-leading bindings remain forbidden.
+  // A primitive length is not a reference to the declarative arrays.  Permit that derived value,
+  // including when the root is parenthesized or reached through a property/index chain; map/filter
+  // results are still bound arrays and therefore remain forbidden.  Inline map/filter consumption
+  // is unaffected because this check only examines declaration RHSs.
   const derivedRhsRe = new RegExp(
     `^\\s*(?:\\(\\s*)*(?:${rootNames})\\b(?:\\s*\\)\\s*)*` +
     `(?:\\s*(?:\\[[^\\]\\r\\n]*\\]|\\.[A-Za-z_$][A-Za-z0-9_$]*))*\\s*` +
-    `(?:\\.\\s*length\\b|\\[\\s*(?:'length'|\"length\")\\s*\\]|\\.\\s*(?:map|filter)\\s*\\()`,
+    `(?:\\.\\s*length\\b|\\[\\s*(?:'length'|\"length\")\\s*\\])`,
     'u',
   );
   const declarationKeywordRe = /\b(?:const|let|var)\b/g;

@@ -188,7 +188,6 @@ const FINDINGS_SCHEMA = {
 }
 
 function slicerPrompt() {
-  const map = MODULES.map((m) => `- ${m.file}: ${m.categories.join(', ')}`).join('\n')
   return `You are slicing the trigger tables of the rust-intel skill so per-module audit agents each get only the rows relevant to their module.
 
 Read: ${args.skillDir}/SKILL.md
@@ -203,7 +202,7 @@ For EACH module below, extract verbatim (do not paraphrase, copy the markdown ro
 A row may belong to several modules — duplicate it into each. If a module has none for a field, return an empty string for that field.
 
 Module -> category ids:
-${map}
+${MODULES.map((m) => `- ${m.file}: ${m.categories.join(', ')}`).join('\n')}
 
 Return SLICER_SCHEMA: one entry per module above (key = filename), with the three verbatim text fields.`
 }
@@ -327,9 +326,14 @@ const missingScopeFields = !scoperResult
       ...['versions', 'files', 'artifactFiles', 'docsFiles', 'docsDigest'].filter((field) => scoperResult[field] === undefined),
       ...(!scoperResult.artifactFiles ? [] : artifactGroups.filter((field) => !Array.isArray(scoperResult.artifactFiles[field])).map((field) => `artifactFiles.${field}`)),
     ]
-const missingSlices = !slicerResult
-  ? ['slicer result']
-  : MODULES.filter((module) => !(slicerResult.modules || []).some((slice) => slice.module === module.file)).map((module) => module.file)
+const missingSlices = []
+if (!slicerResult) {
+  missingSlices.push('slicer result')
+} else {
+  for (const module of MODULES) {
+    if (!(slicerResult.modules || []).some((slice) => slice.module === module.file)) missingSlices.push(module.file)
+  }
+}
 const expectedArtifacts = scoperResult && scoperResult.artifactFiles
   ? [...new Set(artifactGroups.flatMap((group) => scoperResult.artifactFiles[group] || []))]
   : []
@@ -397,9 +401,10 @@ const sourceSampling = {
 // silently counted as evidence.
 const scopedFileSet = scoperResult && Array.isArray(scoperResult.files) ? new Set(scoperResult.files) : new Set()
 const invalidSourceEvidence = {}
-const noSourceEvidence = AUDIT_UNITS.filter((unit) => {
+const noSourceEvidence = []
+for (const unit of AUDIT_UNITS) {
   const result = resultsByLabel.get(unit.label)
-  if (!result) return false
+  if (!result) continue
   const slice = sliceFor(unit.module)
   const hadCandidates = slice && ((slice.codePatternRows || '').trim().length > 0 || (slice.phraseRows || '').trim().length > 0)
   const hadFiles = totalSourceFiles > 0
@@ -407,8 +412,8 @@ const noSourceEvidence = AUDIT_UNITS.filter((unit) => {
   const inScopeCount = reviewed.filter((file) => scopedFileSet.has(file)).length
   const outOfScope = reviewed.filter((file) => !scopedFileSet.has(file))
   if (outOfScope.length) invalidSourceEvidence[unit.label] = outOfScope
-  return hadCandidates && hadFiles && inScopeCount === 0
-}).map((unit) => unit.label)
+  if (hadCandidates && hadFiles && inScopeCount === 0) noSourceEvidence.push(unit.label)
+}
 const coverageStatus = {
   orchestrationComplete,
   missingScopeFields,

@@ -1991,7 +1991,7 @@ for (const [name, fragment] of [
 `;
     return weakened.replace('const orchestrationComplete =', decoy + 'const orchestrationComplete =');
   });
-  expectFixture(result, 'dead missingUnitInputs loop decoy does not mask deleted live loop', 1, ['missingUnitInputs']);
+  expectFixture(result, 'dead missingUnitInputs loop decoy does not mask deleted live loop', 1, ['coverage-production']);
 }
 
 // Control 163: orchestrationComplete is a unique top-level gate. A dead copy containing all
@@ -2133,11 +2133,11 @@ for (const [name, mutation] of [
 }
 
 // Controls 177-178: ordinary bookkeeping that merely reads immutable declarations is allowed.
-// A shallow copy is independent data, so mutating that copy must not be confused with mutating
-// the frozen MODULES graph itself.
+// Length is a primitive, including through quoted bracket notation, so changing the local
+// counter cannot mutate the frozen MODULES graph.
 for (const [name, mutation] of [
   ['MODULES length read and counter mutation', 'let count = MODULES.length; count += 1;'],
-  ['mapped MODULES copy mutation', 'const copy = MODULES.map((entry) => entry); copy.push({ file: \'copy.md\', categories: [] });'],
+  ['MODULES bracket-length read and counter mutation', 'let bracketCount = MODULES[\'length\']; bracketCount += 1;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
@@ -2280,10 +2280,10 @@ function insertWorkflowMutation(source, name, mutation) {
   });
 }
 
-// Controls 189-199: direct bindings into the frozen MODULES graph are rejected, including
+// Controls 189-197: direct bindings into the frozen MODULES graph are rejected, including
 // parenthesized/const/let/var roots, alias chains, array and object destructuring, and bracket
-// nested-array aliases. Derived primitive/copy bindings (`.length` and `.map()`) are intentionally
-// covered as positive controls below because they no longer name the declarative graph.
+// nested-array aliases. Derived `.map()` bindings remain rejected because their entries can still
+// reference the frozen graph; only primitive length bindings are positive controls.
 for (const [number, name, mutation] of [
   [189, 'parenthesized MODULES alias', 'const modulesAlias = (MODULES); modulesAlias.pop();'],
   [190, 'const MODULES alias', 'const modulesConstAlias = MODULES; modulesConstAlias.pop();'],
@@ -2299,14 +2299,15 @@ for (const [number, name, mutation] of [
   expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias']);
 }
 
-// Controls 198-199: bindings to a primitive length or a newly allocated map result are safe;
-// mutating those derived locals must not be confused with mutating the frozen MODULES graph.
+// Controls 198-199: binding a `.map()` result is an alias boundary, not a safe-copy boundary. The
+// callback can return source entries, so mutating a descendant through the bound result must be
+// rejected just like a direct MODULES alias.
 for (const [number, name, mutation] of [
-  [198, 'MODULES length binding', 'const moduleCount = MODULES.length; moduleCount += 1;'],
-  [199, 'MODULES map-copy binding', 'const moduleCopy = MODULES.map((entry) => entry); moduleCopy.push({ file: \'copy.md\', categories: [] });'],
+  [198, 'MODULES map binding with descendant mutation', "const moduleEntries = MODULES.map((entry) => entry); moduleEntries[0].categories.push('Z99');"],
+  [199, 'parenthesized MODULES map binding with descendant mutation', "const moduleEntries = (MODULES.map((entry) => entry)); moduleEntries[0].categories.push('Z99');"],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
-  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias']);
 }
 
 // Controls 200-203: direct assignments to the root array's length are mutations too. Keep both
@@ -2324,7 +2325,7 @@ for (const [number, name, root, property] of [
   expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
 }
 
-// Controls 204-214: the same direct-alias contract applies to AUDIT_UNITS, including all
+// Controls 204-212: the same direct-alias contract applies to AUDIT_UNITS, including all
 // declaration kinds, alias chains, both destructuring forms, and bracket nested-array access.
 for (const [number, name, mutation] of [
   [204, 'parenthesized AUDIT_UNITS alias', 'const auditUnitsAlias = (AUDIT_UNITS); auditUnitsAlias.pop();'],
@@ -2344,25 +2345,27 @@ for (const [number, name, mutation] of [
   expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias']);
 }
 
-// Controls 213-214: length is a primitive and filter allocates a new array, so bindings to
-// those results remain safe even when the derived local is subsequently changed.
+// Controls 213-214: length is a primitive and remains safe through quoted bracket notation, but a
+// `.filter()` result is still an alias boundary when it carries source entries to a descendant.
 for (const [number, name, mutation] of [
-  [213, 'AUDIT_UNITS bracket-length binding', "const auditUnitCount = AUDIT_UNITS['length']; auditUnitCount += 1;"],
-  [214, 'AUDIT_UNITS filter-copy binding', "const auditUnitCopy = AUDIT_UNITS.filter((entry) => entry); auditUnitCopy.push({ module: 'decoy.md', label: 'decoy', requiredArtifactGroups: [] });"],
+  [213, 'AUDIT_UNITS bracket-length binding', "let auditUnitCount = AUDIT_UNITS['length']; auditUnitCount += 1;"],
+  [214, 'AUDIT_UNITS filter binding with descendant mutation', "const auditEntries = AUDIT_UNITS.filter((entry) => entry); auditEntries[0].requiredArtifactGroups.push('decoy');"],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'AUDIT_UNITS', mutation));
-  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+  const expected = number === 213 ? 0 : 1;
+  const required = number === 213 ? [] : ['workflow', 'alias'];
+  expectFixture(result, `Control ${number}: ${name} ${expected ? 'is rejected' : 'remains accepted'}`, expected, required);
 }
 
-// Controls 215-216: inline reads are not bindings and remain legal. These positive controls are
-// deliberately expression statements, so a validator that rejects every occurrence of the root
-// identifier (rather than RHS-leading declarations) would be too broad.
+// Controls 215-216: inline consumption/iteration is not binding and remains legal. These positive
+// controls deliberately consume mapped primitive values and iterate the root directly, so a
+// validator that rejects every occurrence of the root identifier would be too broad.
 for (const [number, name, root] of [
-  [215, 'inline MODULES length/map reads', 'MODULES'],
-  [216, 'inline AUDIT_UNITS length/map reads', 'AUDIT_UNITS'],
+  [215, 'inline MODULES map consumption and primitive iteration', 'MODULES'],
+  [216, 'inline AUDIT_UNITS map consumption and primitive iteration', 'AUDIT_UNITS'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
-    insertWorkflowMutation(source, root, `{ ${root}.length; ${root}.map((entry) => entry); }`));
+    insertWorkflowMutation(source, root, `{ ${root}.map((entry) => entry.file || entry.label).join(','); for (const entry of ${root}) { void (entry.file || entry.label); } }`));
   expectFixture(result, `Control ${number}: ${name} remain accepted`, 0);
 }
 
