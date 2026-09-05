@@ -538,8 +538,23 @@ function splitTableCells(text) {
   return cells;
 }
 function contractRow(line) {
+  // Accept up to three literal spaces for recognition only.  The contract remains strict about
+  // column one, but recognizing the anchored row lets the diagnostic identify the whitespace
+  // violation instead of degrading into a missing-anchor or wrong-width error.
+  const indentation = line.match(/^ {1,3}(?=\|)/)?.[0] || '';
+  const normalized = indentation ? line.slice(indentation.length) : line;
   const rawLeadingPipe = line.startsWith('|');
-  return { rawLeadingPipe, cells: splitTableCells(rawLeadingPipe ? line.slice(1) : line) };
+  const startsWithPipe = normalized.startsWith('|');
+  return {
+    rawLeadingPipe,
+    leadingWhitespace: indentation,
+    cells: splitTableCells(startsWithPipe ? normalized.slice(1) : normalized),
+  };
+}
+function leadingPipeDiagnostic(role, row) {
+  return row.leadingWhitespace
+    ? `skill/SKILL.md: table ${role} row has ${row.leadingWhitespace.length} leading space(s) before its required column-1 \`|\` — repository trigger tables require raw column-1 pipes`
+    : `skill/SKILL.md: table ${role} row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`;
 }
 function isDelimiterCells(cells, width) {
   return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell));
@@ -672,14 +687,14 @@ for (const contract of tableContracts) {
     continue;
   }
   const header = contractRow(skillSource[headerIndex]);
-  if (!header.rawLeadingPipe) errors.push(`skill/SKILL.md:${headerIndex + 1}: table header row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`);
+  if (!header.rawLeadingPipe) errors.push(`skill/SKILL.md:${headerIndex + 1}: ${leadingPipeDiagnostic('header', header).replace('skill/SKILL.md: ', '')}`);
   const delimiterIndex = headerIndex + 1;
   const delimiter = delimiterIndex < skillSource.length ? contractRow(skillSource[delimiterIndex]) : null;
   if (tableFenceMask[headerIndex] || tableFenceMask[delimiterIndex]) errors.push(`skill/SKILL.md:${delimiterIndex + 1}: ${contract.name} table scaffold must remain outside supported fences`);
   if (!delimiter || !isDelimiterCells(delimiter.cells, contract.width)) {
     errors.push(`skill/SKILL.md:${delimiterIndex + 1}: ${contract.name} table delimiter row has wrong width or syntax`);
   } else if (!delimiter.rawLeadingPipe) {
-    errors.push(`skill/SKILL.md:${delimiterIndex + 1}: table delimiter row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`);
+    errors.push(`skill/SKILL.md:${delimiterIndex + 1}: ${leadingPipeDiagnostic('delimiter', delimiter).replace('skill/SKILL.md: ', '')}`);
   }
   const endMatches = skillSource.flatMap((line, i) => !tableFenceMask[i] && line.startsWith(contract.endMarker) ? [i] : []);
   if (endMatches.length !== 1) errors.push(`skill/SKILL.md: ${contract.name} table end marker must occur exactly once (found ${endMatches.length})`);
@@ -733,7 +748,7 @@ for (const range of contractRanges) {
       continue;
     }
     if (!row.rawLeadingPipe) {
-      errors.push(`skill/SKILL.md:${i + 1}: table row missing its leading \`|\` — repository trigger tables require raw column-1 pipes`);
+      errors.push(`skill/SKILL.md:${i + 1}: ${leadingPipeDiagnostic('body', row).replace('skill/SKILL.md: ', '')}`);
       continue;
     }
     if (contract.name !== 'code-pattern') continue;
@@ -921,16 +936,31 @@ function assertProbeCompleted(label, probe) {
   return true;
 }
 
+function positiveIntegerEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  if (!/^[1-9]\d*$/.test(raw)) {
+    errors.push(`${name} must be a positive integer in milliseconds; using the default watchdog`);
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    errors.push(`${name} must be a safe positive integer in milliseconds; using the default watchdog`);
+    return fallback;
+  }
+  return value;
+}
+
 // RUST_INTEL_SKIP_NESTED_FIXTURES breaks a self-spawn cycle: validate-fixtures.mjs's README.md
 // negative control spawns this script against a deliberately mutated repo state to prove the
 // category-count check fails — and this script would otherwise spawn validate-fixtures.mjs right
 // back, which runs that same negative control again, spawning this script again, without end.
 if (!process.env.RUST_INTEL_SKIP_NESTED_FIXTURES) {
-  const fixtureTimeoutMs = 120_000;
-  const fixtureRun = runNodeProbe([path.join(root, 'dev/validate-fixtures.mjs')], fixtureTimeoutMs);
+  const fixtureWatchdogMs = positiveIntegerEnv('RUST_INTEL_FIXTURE_WATCHDOG_MS', 15 * 60 * 1000);
+  const fixtureRun = runNodeProbe([path.join(root, 'dev/validate-fixtures.mjs')], fixtureWatchdogMs);
   const fixtureOutput = fixtureRun.output;
   if (fixtureRun.error) {
-    errors.push(`fixture validation failed to start or timed out after ${fixtureTimeoutMs}ms: ${fixtureRun.error.message}${fixtureOutput ? ` (${fixtureOutput})` : ''}`);
+    errors.push(`fixture validation failed to start or its watchdog expired after ${fixtureWatchdogMs}ms: ${fixtureRun.error.message}${fixtureOutput ? ` (${fixtureOutput})` : ''}`);
   } else if (fixtureRun.status === null || fixtureRun.status !== 0) {
     const termination = fixtureRun.signal ? ` (terminated by ${fixtureRun.signal})` : '';
     errors.push(`fixture validation failed${termination}: ${fixtureOutput || `exit status ${fixtureRun.status ?? 'unknown'}`}`);

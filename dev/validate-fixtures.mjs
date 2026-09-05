@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: eighty-six hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: ninety-seven hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -362,7 +362,8 @@ for (const [name, rows] of [
   expectFixture(result, 'body-vs-header duplicate exclusion', 1, ['[body-only-signature]']);
 }
 
-// Controls 14-15: odd/even escaped-pipe parity is applied before cell extraction.
+// Controls 14-15: odd/even escaped-pipe parity is applied before cell extraction. This is the
+// repository's raw-pipe convention, not a claim that GFM's table parser exposes this exact API.
 for (const [name, row, token] of [
   ['odd escaped-pipe parity', '| ' + fixtureTick + 'odd-parity' + fixtureTick + ' \\| second cell | body |', '[odd-parity]'],
   ['even escaped-pipe parity', '| ' + fixtureTick + 'even-parity' + fixtureTick + ' \\\\| body |', '[even-parity]'],
@@ -769,8 +770,9 @@ for (const [name, row] of [
   expectFixture(result, 'escaped multi-backtick suffix opener', 1, ['[suffix-opener]']);
 }
 
-// Controls 66-67: delimiter escaping uses slash parity. One slash escapes the opener; two
-// slashes escape the slash and leave an active opener.
+// Controls 66-67: this repository's code-span scanner uses slash parity for delimiter escaping.
+// One slash escapes the opener; two slashes escape the slash and leave an active opener. This is
+// a validator convention, not a claim about GFM table-cell parsing.
 {
   const t = fixtureTick;
   const oddRow = '| \\' + t + 'odd-slash' + t + ' | body |';
@@ -1038,6 +1040,101 @@ for (const [name, mutate] of [
     insertCodeRows(source, ['| prose \\<custom> | body |']));
   const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber + 1}:`;
   expectExactUnsupported(result, 'escaped raw HTML in code-pattern cell unsupported-style control', [lineNeedle, 'unsupported raw inline HTML/angle-leading construct']);
+}
+
+// Control 87: a four-backtick opener is not closed by a shorter three-backtick interior line.
+// The escaped quote remains inside the unclosed fence, so only the fence-state diagnostic is
+// expected.
+{
+  const t = fixtureTick;
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    appendProbe(source, ['', t.repeat(4) + 'md', 'let inside = "x \\" y";', t.repeat(3), '']));
+  expectFixture(result, 'short fence line does not close four-backtick opener', 1, ['unclosed project fence']);
+  if (!result.skipped && !result.executionFailure && result.output.includes('literal \\" escape outside a fenced code block')) {
+    failures.push('short fence line does not close four-backtick opener: interior escape was incorrectly treated as outside the fence');
+  }
+}
+
+// Control 88: tab-indented fence-looking lines are not supported project fences. Both the fake
+// opener and fake closer therefore remain ordinary text, exposing the escape on the body line.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    appendProbe(source, ['', '\t' + fixtureTick.repeat(3) + 'md', 'let outside = "x \\" y";', '\t' + fixtureTick.repeat(3), '']));
+  expectFixture(result, 'tab-indented fence opener and closer are ignored', 1, ['literal \\" escape outside a fenced code block']);
+  if (!result.skipped && !result.executionFailure && result.output.includes('unclosed project fence')) {
+    failures.push('tab-indented fence opener and closer are ignored: fake tab fence produced an unclosed-fence diagnostic');
+  }
+}
+
+// Control 89: form-feed is not permitted after a fence marker. It must not close the opener or
+// suppress the eventual unclosed-fence diagnostic.
+{
+  const t = fixtureTick;
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    appendProbe(source, ['', t.repeat(3) + 'md', 'let inside = "x \\" y";', t.repeat(3) + '\f', '']));
+  expectFixture(result, 'form-feed fence suffix is not a closer', 1, ['unclosed project fence']);
+  if (!result.skipped && !result.executionFailure && result.output.includes('literal \\" escape outside a fenced code block')) {
+    failures.push('form-feed fence suffix is not a closer: interior escape was incorrectly treated as outside the fence');
+  }
+}
+
+// Control 90: NBSP-only content inside an anchored body is not an ASCII blank separator and must
+// be diagnosed as a malformed-width body row.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const hit = anchoredTableLine(source, 'code', 'body');
+    if (!hit) return null;
+    hit.lines.splice(hit.target, 0, '\u00a0');
+    return hit.lines.join('\n');
+  });
+  expectStructural(result, 'NBSP-only anchored body line is not blank', ['code-pattern table body row has', 'expected 2']);
+}
+
+// Control 91: NBSP wrapped around the required delimiter marker changes its cells and must not
+// be accepted as the code-pattern delimiter scaffold.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const header = lines.findIndex((line) => line === '| Code pattern in user input | Activates |');
+    if (header < 0 || lines[header + 1] !== '|---|---|') return null;
+    lines[header + 1] = '\u00a0|---|---|\u00a0';
+    return lines.join('\n');
+  });
+  expectStructural(result, 'NBSP-wrapped delimiter marker is invalid', ['code-pattern table delimiter row has wrong width or syntax']);
+}
+
+// Controls 92-93: line-ending normalization is part of the validator contract. The complete
+// canonical and mirror skill trees must validate identically under CRLF and lone-CR input.
+for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    source.replace(/\r\n?|\n/g, ending));
+  expectFixture(result, name + ' skill copies normalize successfully', 0);
+}
+
+// Control 94: a backtick-bearing info string is not a valid project fence opener. When inserted
+// into the anchored body it must produce the exact body-width diagnostic, without creating an
+// unclosed-fence error.
+{
+  const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
+  const hit = anchoredTableLine(original, 'code', 'delimiter');
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    insertCodeRows(source, [fixtureTick.repeat(3) + 'bad' + fixtureTick]));
+  const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber + 1}:`;
+  expectStructural(result, 'invalid backtick info string is a body row', [lineNeedle, 'code-pattern table body row has 1 cells; expected 2']);
+  if (!result.skipped && !result.executionFailure && result.output.includes('unclosed project fence')) {
+    failures.push('invalid backtick info string is a body row: invalid opener was treated as an open fence');
+  }
+}
+
+// Controls 95-97: leading ASCII whitespace preserves table-cell contents but violates this
+// repository's raw-column-1 pipe contract for the header, delimiter, and body row alike.
+for (const kind of ['header', 'delimiter', 'body']) {
+  const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
+  const hit = anchoredTableLine(original, 'code', kind);
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    mutateAnchoredLine(source, 'code', kind, (line) => ' ' + line.slice(1)));
+  const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber}:`;
+  expectStructural(result, 'leading-whitespace code ' + kind + ' raw-pipe contract', [lineNeedle, 'missing its leading `|`']);
 }
 
 
