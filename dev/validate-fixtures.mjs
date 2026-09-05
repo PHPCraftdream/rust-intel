@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: sixty-eight hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: seventy-eight hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -531,15 +531,18 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
   else if (result.status === 0 || !/blank|end marker|table/i.test(result.output)) failures.push('missing end-marker blank: expected required-blank structural diagnostic, got: ' + result.output.trim());
 }
 
-// Control 41: a parser-termination smoke probe over many unmatched, differing backtick runs. The
-// validator's deterministic linear-operation budget is the primary oracle (a budget diagnostic
-// is a failure); the generous timeout is only a last-resort safety watchdog against nontermination.
+// Control 41: a parser-termination smoke probe over many unmatched, differing backtick runs. Each
+// candidate has a constant-size synthetic suffix and an escaped multi-tick opener; the run lengths
+// are deliberately distinct and increasing, so no candidate has an equal closer anywhere in the probe. The validator's
+// deterministic linear-operation budget is the primary oracle (a budget diagnostic is a failure);
+// the generous timeout is only a last-resort safety watchdog against nontermination.
 {
-  const runs = Array.from({ length: 128 }, (_, index) => fixtureTick.repeat(index + 3)).join(' token ');
+  const runs = Array.from({ length: 96 }, (_, index) => '\\' + fixtureTick.repeat(index + 3) + 'synthetic').join(' token ');
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, ['| ' + runs + ' | termination smoke |']), { timeoutMs: 30_000 });
   if (result.skipped || result.executionFailure || result.status !== 0 || /linear operation budget/i.test(result.output)) {
-    failures.push('unmatched-backtick termination smoke control: validator failed its deterministic operation-budget oracle: ' + (result.error || result.output.trim()));
+    const detail = result.error || result.output?.trim() || (result.skipped ? 'mutation was skipped' : 'unknown failure');
+    failures.push('unmatched-backtick termination smoke control: validator failed its deterministic operation-budget oracle: ' + detail);
   }
 }
 
@@ -787,6 +790,146 @@ for (const [name, row] of [
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row]));
   expectUnsupported(result, 'escaped false-span outside angle markup control');
+}
+
+// Control 69: a complete Category map-looking table inside a supported fence is a decoy. It
+// must not become the map of record or add a made-up category to the live parity graph.
+{
+  const t = fixtureTick;
+  const mapAnchor = '# Category map \u2014 which module holds each \u00a7';
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const live = lines.findIndex((line) => line === mapAnchor);
+    const neutral = lines.findIndex((line) => line === '# Self-monitoring: prompt triggers that activate failure modes');
+    if (live < 0 || neutral < 0 || neutral > live) return null;
+    lines.splice(neutral, 0,
+      t.repeat(3) + 'md',
+      mapAnchor,
+      '| Category | Module |',
+      '|---|---|',
+      '| \u00a7Z99 | ' + t + 'async.md' + t + ' |',
+      t.repeat(3),
+      '');
+    return lines.join('\n');
+  });
+  expectFixture(result, 'fenced Category map decoy is ignored', 0);
+}
+
+// Control 70: a fenced category heading is not a live module heading and must not inflate the
+// derived numbered-category count. The unknown id makes accidental fence inclusion observable.
+{
+  const t = fixtureTick;
+  const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const live = lines.findIndex((line) => line.startsWith('## \u00a7B2.'));
+    if (live < 0) return null;
+    lines.splice(live, 0, t.repeat(3) + 'md', '## \u00a7Z99. fenced decoy', t.repeat(3));
+    return lines.join('\n');
+  });
+  expectFixture(result, 'fenced category heading does not inflate count', 0);
+}
+
+// Control 71: moving the only live B2 heading into a fence must not replace the real module
+// heading. This is deliberately a failure: the map still routes B2, but the body no longer does.
+{
+  const t = fixtureTick;
+  const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const live = lines.findIndex((line) => line.startsWith('## \u00a7B2.'));
+    if (live < 0) return null;
+    const heading = lines[live];
+    lines.splice(live, 1, t.repeat(3) + 'md', heading, t.repeat(3));
+    return lines.join('\n');
+  });
+  expectFixture(result, 'fenced heading cannot replace live category heading', 1, ['B2']);
+}
+
+// Controls 72-74: the Category map scaffold is load-bearing. Deleting its prose, header, or
+// delimiter must fail even when all of the category rows remain present and parity is otherwise
+// recoverable.
+for (const [name, mutate] of [
+  ['Category map prose deletion', (lines) => {
+    const at = lines.findIndex((line) => line.startsWith('The category bodies live in sibling modules'));
+    if (at < 0) return false;
+    lines.splice(at, 1);
+    return true;
+  }],
+  ['Category map header deletion', (lines) => {
+    const at = lines.findIndex((line) => line === '| Category | Module |');
+    if (at < 0) return false;
+    lines.splice(at, 1);
+    return true;
+  }],
+  ['Category map delimiter corruption', (lines) => {
+    const at = lines.findIndex((line) => line === '|---|---|');
+    if (at < 0) return false;
+    lines[at] = '|---|';
+    return true;
+  }],
+]) {
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    return mutate(lines) ? lines.join('\n') : null;
+  });
+  expectFixture(result, name, 1);
+}
+
+// Control 75: commenting out a workflow MODULES entry must not make the parity check silently
+// accept a missing route. The textual module-presence loop still sees the filename in the comment,
+// so this specifically exercises the structured MODULES parser.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/audit-project.workflow.js'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
+    if (at < 0) return null;
+    lines[at] = '//' + lines[at];
+    return lines.join('\n');
+  });
+  expectFixture(result, 'commented workflow MODULES entry fails parity', 1, ['async.md']);
+}
+
+// Control 76: force the deterministic code-span budget path directly. This keeps the guard pinned
+// even on a fast machine where the wall-time termination smoke test would not distinguish a missing
+// charge from a correctly bounded scanner.
+{
+  const result = runValidateAgainstMutatedFiles([
+    'dev/validate.mjs',
+    'skill/SKILL.md',
+    'skills/rust-intel/SKILL.md',
+  ], (source) => {
+    if (source.includes('const operationLimit = 128 + text.length * 64;')) {
+      return source.replace('const operationLimit = 128 + text.length * 64;', 'const operationLimit = 1;');
+    }
+    return insertCodeRows(source, ['| ' + fixtureTick + 'budget-probe' + fixtureTick + ' | body |']);
+  });
+  expectFixture(result, 'forced code-span operation budget', 1, ['codeSpanTokens exceeded its linear operation budget']);
+}
+
+// Control 77: the map prose and the cross-reference note are separated by exactly one blank
+// line. Removing that final blank must fail the Category map scaffold check.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const marker = lines.findIndex((line) => line.startsWith('**Cross-reference note:**'));
+    if (marker <= 0 || !/^[ \t]*$/.test(lines[marker - 1])) return null;
+    lines.splice(marker - 1, 1);
+    return lines.join('\n');
+  });
+  expectFixture(result, 'Category map final blank before cross-reference', 1);
+}
+
+// Control 78: a second executable MODULES object for the same file is an integrity error, even
+// though the last parsed entry would otherwise overwrite the first and leave parity apparently
+// correct.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/audit-project.workflow.js'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, lines[at]);
+    return lines.join('\n');
+  });
+  expectFixture(result, 'duplicate executable workflow MODULES entry', 1, ['async.md']);
 }
 
 

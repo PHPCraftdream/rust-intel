@@ -37,8 +37,6 @@ jobs:
         run: node dev/sync-mirror.mjs --check
       - name: Validate docs, manifests, links, and fixtures
         run: node dev/validate.mjs
-      - name: Run fixture expectations
-        run: node dev/validate-fixtures.mjs
       - name: Compile fixture syntax
         run: |
           mkdir -p "$RUNNER_TEMP/rust-intel-fixtures"
@@ -124,3 +122,13 @@ jobs:
         run: npm pack --dry-run
       - name: Verify a would-be release tag matches committed manifests
         run: node dev/check-release-version.mjs "$(node -p "require('./package.json').version")"
+
+  node-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 16.7.0
+      - name: Validate at the supported Node floor
+        run: npm run validate

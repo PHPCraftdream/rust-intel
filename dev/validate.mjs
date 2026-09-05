@@ -24,6 +24,42 @@ const required = [
 const errors = [];
 for (const rel of required) if (!fs.existsSync(path.join(root, rel))) errors.push(`missing required file: ${rel}`);
 
+// Normalize line endings and mask supported standalone fenced blocks before any line-oriented
+// extraction.  All downstream contracts use this same view so examples cannot impersonate live
+// category headings, trigger rows, or scaffold anchors.
+function splitGfmLines(source) {
+  return source.replace(/\r\n?/g, '\n').split('\n');
+}
+function projectFenceOpener(line) {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null;
+  return { marker: match[1][0], length: match[1].length };
+}
+function projectFenceCloser(line, fence) {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+  return match !== null && match[1][0] === fence.marker && match[1].length >= fence.length;
+}
+const skillSource = splitGfmLines(fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8'));
+function buildFenceMask(lines) {
+  const mask = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (fence) {
+      mask[i] = true;
+      if (projectFenceCloser(line, fence)) fence = null;
+      continue;
+    }
+    const opener = projectFenceOpener(line);
+    if (opener) {
+      mask[i] = true;
+      fence = opener;
+    } else mask[i] = false;
+  }
+  return mask;
+}
+const tableFenceMask = buildFenceMask(skillSource);
+
 function markdownUnder(dir) {
   const markdownFiles = [];
   function walk(current) {
@@ -73,8 +109,106 @@ function relativeFiles(dir) {
 }
 
 const workflow = fs.readFileSync(path.join(root, 'skill/audit-project.workflow.js'), 'utf8');
+
+// Remove JavaScript comments without touching quoted strings or template literals.  Replacing
+// comment bytes with spaces preserves offsets and leaves a bounded, linear source view for the
+// MODULES literal parser below.  The workflow's module list is data, so regex/comment syntax
+// outside that literal does not need to be interpreted as executable JavaScript.
+function stripJsComments(source) {
+  let output = '';
+  let state = 'code';
+  for (let i = 0; i < source.length; i += 1) {
+    const character = source[i];
+    const next = source[i + 1];
+    if (state === 'line-comment') {
+      output += character === '\n' || character === '\r' ? character : ' ';
+      if (character === '\n' || character === '\r') state = 'code';
+      continue;
+    }
+    if (state === 'block-comment') {
+      output += character === '\n' || character === '\r' ? character : ' ';
+      if (character === '*' && next === '/') {
+        output += ' ';
+        i += 1;
+        state = 'code';
+      }
+      continue;
+    }
+    if (state === 'single' || state === 'double') {
+      output += character;
+      if (character === '\\' && i + 1 < source.length) {
+        output += source[i + 1];
+        i += 1;
+      } else if ((state === 'single' && character === "'") || (state === 'double' && character === '"')) {
+        state = 'code';
+      }
+      continue;
+    }
+    if (state === 'template') {
+      output += character;
+      if (character === '\\' && i + 1 < source.length) {
+        output += source[i + 1];
+        i += 1;
+      } else if (character === '`') {
+        state = 'code';
+      }
+      continue;
+    }
+    if (character === '/' && next === '/') {
+      output += '  ';
+      i += 1;
+      state = 'line-comment';
+    } else if (character === '/' && next === '*') {
+      output += '  ';
+      i += 1;
+      state = 'block-comment';
+    } else {
+      output += character;
+      if (character === "'") state = 'single';
+      else if (character === '"') state = 'double';
+      else if (character === '`') state = 'template';
+    }
+  }
+  return output;
+}
+
+function findMatchingBracket(source, openingIndex) {
+  let depth = 0;
+  let state = 'code';
+  for (let i = openingIndex; i < source.length; i += 1) {
+    const character = source[i];
+    if (state === 'single' || state === 'double' || state === 'template') {
+      if (character === '\\') i += 1;
+      else if ((state === 'single' && character === "'") || (state === 'double' && character === '"') || (state === 'template' && character === '`')) state = 'code';
+      continue;
+    }
+    if (character === "'") { state = 'single'; continue; }
+    if (character === '"') { state = 'double'; continue; }
+    if (character === '`') { state = 'template'; continue; }
+    if (character === '[') depth += 1;
+    else if (character === ']' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+const workflowWithoutComments = stripJsComments(workflow);
+const modulesAssignment = workflowWithoutComments.match(/\bconst\s+MODULES\s*=\s*\[/);
+const modulesStart = modulesAssignment ? modulesAssignment.index + modulesAssignment[0].lastIndexOf('[') : -1;
+const modulesEnd = modulesStart >= 0 ? findMatchingBracket(workflowWithoutComments, modulesStart) : -1;
+const modulesLiteral = modulesStart >= 0 && modulesEnd > modulesStart
+  ? workflowWithoutComments.slice(modulesStart + 1, modulesEnd)
+  : '';
+const workflowModuleCategories = new Map();
+for (const entry of modulesLiteral.matchAll(/\{\s*file:\s*'([^']+)',\s*categories:\s*\[([^\]]*)\]\s*\}/g)) {
+  const [, file, list] = entry;
+  if (workflowModuleCategories.has(file)) {
+    errors.push(`workflow MODULES contains duplicate executable entry for ${file}`);
+    continue;
+  }
+  workflowModuleCategories.set(file, new Set(list.split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean)));
+}
 for (const module of ['async.md', 'concurrency-and-state.md', 'data-and-types.md', 'security.md', 'unsafe-and-ffi.md', 'drop-and-raii.md', 'deps-macros-ergonomics.md', 'lifetimes-and-api.md', 'testing.md', 'semantics-and-conformance.md']) {
-  if (!workflow.includes(`file: '${module}'`)) errors.push(`workflow missing module: ${module}`);
+  if (!workflowModuleCategories.has(module)) errors.push(`workflow missing module: ${module}`);
 }
 
 // Category-id parity between SKILL.md's "Category map" table and the workflow's MODULES list.
@@ -109,21 +243,56 @@ function expandCategoryCell(cellText) {
   }
   return ids;
 }
-const skillMdText = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
-const categoryMapSection = skillMdText.split('# Category map — which module holds each §')[1];
-const categoryMapTable = categoryMapSection ? categoryMapSection.split('**Cross-reference note:**')[0] : '';
+const categoryMapAnchor = '# Category map \u2014 which module holds each \u00a7';
+const categoryMapMatches = skillSource.flatMap((line, i) => !tableFenceMask[i] && line === categoryMapAnchor ? [i] : []);
+if (categoryMapMatches.length !== 1) errors.push(`skill/SKILL.md: Category map anchor must occur exactly once outside supported fences (found ${categoryMapMatches.length})`);
+const categoryMapIndex = categoryMapMatches[0] ?? -1;
+const categoryMapIntro = 'The category bodies live in sibling modules of this skill. When a trigger above fires, open the module named here. Tier (🔴/🟡/🟢; A–F) is a property of each category, preserved in its body.';
+const categoryMapHeader = '| Category | Module |';
+const categoryMapDelimiter = '|---|---|';
+const crossReferenceMatches = skillSource.flatMap((line, i) => !tableFenceMask[i] && line.startsWith('**Cross-reference note:**') ? [i] : []);
+if (crossReferenceMatches.length !== 1) errors.push(`skill/SKILL.md: Cross-reference note boundary must occur exactly once outside supported fences (found ${crossReferenceMatches.length})`);
+const categoryMapEnd = crossReferenceMatches.find((index) => index > categoryMapIndex) ?? -1;
+const categoryMapBodyEnd = categoryMapEnd > categoryMapIndex + 5
+  && /^[ \t]*$/.test(skillSource[categoryMapEnd - 1] || '')
+  ? categoryMapEnd - 1
+  : categoryMapEnd;
+if (categoryMapIndex >= 0) {
+  const expected = [categoryMapIndex + 1, categoryMapIndex + 2, categoryMapIndex + 3, categoryMapIndex + 4, categoryMapIndex + 5];
+  if (!/^[ \t]*$/.test(skillSource[expected[0]] || '') || skillSource[expected[1]] !== categoryMapIntro || !/^[ \t]*$/.test(skillSource[expected[2]] || '') || skillSource[expected[3]] !== categoryMapHeader || skillSource[expected[4]] !== categoryMapDelimiter) {
+    errors.push(`skill/SKILL.md:${categoryMapIndex + 1}: Category map requires its exact heading, explanatory paragraph, blank separator, and two-row raw-pipe scaffold`);
+  }
+  if (categoryMapEnd <= categoryMapIndex + 5) {
+    errors.push(`skill/SKILL.md:${categoryMapIndex + 1}: Category map cross-reference note must follow at least one body row`);
+  } else {
+    if (!/^[ \t]*$/.test(skillSource[categoryMapEnd - 1] || '')) {
+      errors.push(`skill/SKILL.md:${categoryMapEnd + 1}: Category map requires exactly one blank separator immediately before the Cross-reference note`);
+    } else if (/^[ \t]*$/.test(skillSource[categoryMapEnd - 2] || '')) {
+      errors.push(`skill/SKILL.md:${categoryMapEnd + 1}: Category map requires exactly one blank separator immediately before the Cross-reference note`);
+    }
+  }
+}
 const specModuleCategories = new Map();
-for (const row of categoryMapTable.matchAll(/^\|\s*(§[^|]+?)\s*\|\s*`([^`]+)`\s*\|$/gm)) {
+for (const [offset, line] of skillSource.slice(categoryMapIndex + 6, categoryMapBodyEnd).entries()) {
+  const lineNumber = categoryMapIndex + 6 + offset;
+  if (tableFenceMask[lineNumber]) {
+    errors.push(`skill/SKILL.md:${lineNumber + 1}: Category map body row lies inside a supported fence`);
+    continue;
+  }
+  if (!line.startsWith('|')) {
+    errors.push(`skill/SKILL.md:${lineNumber + 1}: Category map body row missing its leading pipe`);
+    continue;
+  }
+  const row = line.match(/^\|\s*(§[^|]+?)\s*\|\s*`([^`]+)`\s*\|$/);
+  if (!row) {
+    errors.push(`skill/SKILL.md:${lineNumber + 1}: Category map body row must have exactly two raw-pipe columns`);
+    continue;
+  }
   const [, cell, file] = row;
   if (!specModuleCategories.has(file)) specModuleCategories.set(file, new Set());
   for (const id of expandCategoryCell(cell)) specModuleCategories.get(file).add(id);
 }
 if (specModuleCategories.size === 0) errors.push('category-map parity check found zero rows in SKILL.md — the table anchor text may have moved');
-const workflowModuleCategories = new Map();
-for (const entry of workflow.matchAll(/\{\s*file:\s*'([^']+)',\s*categories:\s*\[([^\]]*)\]\s*\}/g)) {
-  const [, file, list] = entry;
-  workflowModuleCategories.set(file, new Set(list.split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean)));
-}
 for (const [file, specIds] of specModuleCategories) {
   const workflowIds = workflowModuleCategories.get(file);
   if (!workflowIds) { errors.push(`workflow MODULES has no entry for ${file}, but SKILL.md's category map routes categories to it`); continue; }
@@ -143,8 +312,15 @@ for (const file of workflowModuleCategories.keys()) {
 const moduleHeaderCategories = new Map();
 for (const file of relativeFiles(canonicalSkill).filter((f) => f.endsWith('.md') && f !== 'SKILL.md' && !f.startsWith('references' + path.sep))) {
   const body = fs.readFileSync(path.join(canonicalSkill, file), 'utf8');
+  const lines = splitGfmLines(body);
+  const fenceMask = buildFenceMask(lines);
   const ids = new Set();
-  for (const m of body.matchAll(/^#{2,3} §([A-Z]\d+[a-z]*)\.\s/gm)) ids.add(m[1]);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!fenceMask[i]) {
+      const match = lines[i].match(/^#{2,3} §([A-Z]\d+[a-z]*)\.\s/);
+      if (match) ids.add(match[1]);
+    }
+  }
   if (ids.size) moduleHeaderCategories.set(file, ids);
 }
 for (const [file, headerIds] of moduleHeaderCategories) {
@@ -169,7 +345,14 @@ for (const [file, specIds] of specModuleCategories) {
 const numberedCategoryIds = new Set();
 for (const file of relativeFiles(canonicalSkill).filter((f) => f.endsWith('.md') && f !== 'SKILL.md' && !f.startsWith('references' + path.sep))) {
   const body = fs.readFileSync(path.join(canonicalSkill, file), 'utf8');
-  for (const m of body.matchAll(/^## §([A-Z]\d+)\.\s/gm)) numberedCategoryIds.add(m[1]);
+  const lines = splitGfmLines(body);
+  const fenceMask = buildFenceMask(lines);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!fenceMask[i]) {
+      const match = lines[i].match(/^## §([A-Z]\d+)\.\s/);
+      if (match) numberedCategoryIds.add(match[1]);
+    }
+  }
 }
 const numberedCategoryCount = numberedCategoryIds.size;
 const NUMBER_WORDS_ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
@@ -250,36 +433,6 @@ for (const [file, text] of categoryCountFileTexts) {
 // to be a complete GFM table parser.  A missing first pipe is still located and diagnosed.
 function trimGfmTableSpace(text) {
   return text.replace(/^[ \t\v\f]+|[ \t\v\f]+$/g, '');
-}
-function splitGfmLines(source) {
-  // Normalize both CRLF and lone CR before any line-oriented state machine runs.
-  return source.replace(/\r\n?/g, '\n').split('\n');
-}
-const skillSource = splitGfmLines(fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8'));
-function projectFenceOpener(line) {
-  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null;
-  return { marker: match[1][0], length: match[1].length };
-}
-function projectFenceCloser(line, fence) {
-  const match = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
-  return match !== null && match[1][0] === fence.marker && match[1].length >= fence.length;
-}
-// Scaffold anchors/end markers inside a supported fence are out of scope for this contract.
-const tableFenceMask = [];
-let tableFence = null;
-for (let i = 0; i < skillSource.length; i += 1) {
-  const line = skillSource[i];
-  if (tableFence) {
-    tableFenceMask[i] = true;
-    if (projectFenceCloser(line, tableFence)) tableFence = null;
-    continue;
-  }
-  const opener = projectFenceOpener(line);
-  if (opener) {
-    tableFenceMask[i] = true;
-    tableFence = opener;
-  } else tableFenceMask[i] = false;
 }
 function isAsciiPunctuation(character) {
   return character.length === 1 && /[!"#$%&'()*+,\-.\/:;<=>?@[\\\]^_`{|}~]/.test(character);
@@ -409,10 +562,6 @@ const tableContracts = [
   { name: 'prompt-trigger', anchor: ['User request contains...', 'Activates category', 'Specific risk'], width: 3, endMarker: '**Triggered by code, not phrase**' },
   { name: 'code-pattern', anchor: ['Code pattern in user input', 'Activates'], width: 2, endMarker: 'When two or more triggers fire in one request' },
 ];
-const categoryMapAnchor = '# Category map \u2014 which module holds each \u00a7';
-const categoryMapMatches = skillSource.flatMap((line, i) => !tableFenceMask[i] && line === categoryMapAnchor ? [i] : []);
-if (categoryMapMatches.length !== 1) errors.push(`skill/SKILL.md: Category map anchor must occur exactly once outside supported fences (found ${categoryMapMatches.length})`);
-const categoryMapIndex = categoryMapMatches[0] ?? -1;
 const contractRanges = [];
 let searchFrom = 0;
 for (const contract of tableContracts) {
@@ -632,31 +781,85 @@ for (const file of markdownFiles) {
   if (fence) errors.push(`${path.relative(root, file).split(path.sep).join('/')}:${fence.openedAt}: unclosed project fence at end of file`);
 }
 
+function runNodeProbe(args, timeoutMs) {
+  try {
+    const result = spawnSync(process.execPath, args, {
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      killSignal: 'SIGTERM',
+    });
+    const normalize = (value) => typeof value === 'string' ? value.replace(/\r\n?/g, '\n').trim() : '';
+    const stdout = normalize(result.stdout);
+    const stderr = normalize(result.stderr);
+    return {
+      error: result.error || null,
+      signal: result.signal || null,
+      status: Number.isInteger(result.status) ? result.status : null,
+      stdout,
+      stderr,
+      output: [stderr, stdout].filter(Boolean).join('\n'),
+    };
+  } catch (error) {
+    return { error, signal: null, status: null, stdout: '', stderr: '', output: '' };
+  }
+}
+
+function probeDiagnostic(probe) {
+  const details = [];
+  if (probe.error) details.push(`error=${probe.error.message}`);
+  if (probe.signal) details.push(`signal=${probe.signal}`);
+  if (probe.status === null) details.push('status=null');
+  else details.push(`status=${probe.status}`);
+  if (probe.output) details.push(`output=${probe.output}`);
+  return details.join('; ');
+}
+
+function assertProbeCompleted(label, probe) {
+  if (probe.error) {
+    errors.push(`${label} failed to start or timed out: ${probeDiagnostic(probe)}`);
+    return false;
+  }
+  if (probe.signal) {
+    errors.push(`${label} was terminated by a signal: ${probeDiagnostic(probe)}`);
+    return false;
+  }
+  if (probe.status === null) {
+    errors.push(`${label} returned no exit status: ${probeDiagnostic(probe)}`);
+    return false;
+  }
+  return true;
+}
+
 // RUST_INTEL_SKIP_NESTED_FIXTURES breaks a self-spawn cycle: validate-fixtures.mjs's README.md
 // negative control spawns this script against a deliberately mutated repo state to prove the
 // category-count check fails — and this script would otherwise spawn validate-fixtures.mjs right
 // back, which runs that same negative control again, spawning this script again, without end.
 if (!process.env.RUST_INTEL_SKIP_NESTED_FIXTURES) {
   const fixtureTimeoutMs = 120_000;
-  const fixtureRun = spawnSync(process.execPath, [path.join(root, 'dev/validate-fixtures.mjs')], {
-    encoding: 'utf8',
-    timeout: fixtureTimeoutMs,
-    killSignal: 'SIGTERM',
-  });
-  const fixtureOutput = (fixtureRun.stderr || fixtureRun.stdout || '').trim();
+  const fixtureRun = runNodeProbe([path.join(root, 'dev/validate-fixtures.mjs')], fixtureTimeoutMs);
+  const fixtureOutput = fixtureRun.output;
   if (fixtureRun.error) {
     errors.push(`fixture validation failed to start or timed out after ${fixtureTimeoutMs}ms: ${fixtureRun.error.message}${fixtureOutput ? ` (${fixtureOutput})` : ''}`);
-  } else if (fixtureRun.status !== 0) {
+  } else if (fixtureRun.status === null || fixtureRun.status !== 0) {
     const termination = fixtureRun.signal ? ` (terminated by ${fixtureRun.signal})` : '';
-    errors.push(`fixture validation failed${termination}: ${fixtureOutput || `exit status ${fixtureRun.status}`}`);
+    errors.push(`fixture validation failed${termination}: ${fixtureOutput || `exit status ${fixtureRun.status ?? 'unknown'}`}`);
   }
 }
-const invalidCli = spawnSync(process.execPath, [path.join(root, 'bin/install-codex.js'), '--user-dir', '--uninstall'], { encoding: 'utf8' });
-if (invalidCli.status === 0 || !invalidCli.stderr.includes('--user-dir requires a path')) errors.push('Codex installer accepted a missing --user-dir value');
-const duplicateCli = spawnSync(process.execPath, [path.join(root, 'bin/install-codex.js'), '--user-dir', 'one', '--user-dir', 'two'], { encoding: 'utf8' });
-if (duplicateCli.status === 0 || !duplicateCli.stderr.includes('--user-dir may be specified only once')) errors.push('Codex installer accepted duplicate --user-dir arguments');
-const helpCli = spawnSync(process.execPath, [path.join(root, 'bin/install-codex.js'), '--help'], { encoding: 'utf8' });
-if (helpCli.status !== 0) errors.push('Codex installer --help failed');
+const probeTimeoutMs = 120_000;
+const invalidCli = runNodeProbe([path.join(root, 'bin/install-codex.js'), '--user-dir', '--uninstall'], probeTimeoutMs);
+if (assertProbeCompleted('Codex installer missing --user-dir probe', invalidCli)
+  && (invalidCli.status === 0 || !invalidCli.stderr.includes('--user-dir requires a path'))) {
+  errors.push(`Codex installer accepted a missing --user-dir value: ${probeDiagnostic(invalidCli)}`);
+}
+const duplicateCli = runNodeProbe([path.join(root, 'bin/install-codex.js'), '--user-dir', 'one', '--user-dir', 'two'], probeTimeoutMs);
+if (assertProbeCompleted('Codex installer duplicate --user-dir probe', duplicateCli)
+  && (duplicateCli.status === 0 || !duplicateCli.stderr.includes('--user-dir may be specified only once'))) {
+  errors.push(`Codex installer accepted duplicate --user-dir arguments: ${probeDiagnostic(duplicateCli)}`);
+}
+const helpCli = runNodeProbe([path.join(root, 'bin/install-codex.js'), '--help'], probeTimeoutMs);
+if (assertProbeCompleted('Codex installer --help probe', helpCli) && helpCli.status !== 0) {
+  errors.push(`Codex installer --help failed: ${probeDiagnostic(helpCli)}`);
+}
 
 if (errors.length) {
   console.error(errors.map((e) => `ERROR: ${e}`).join('\n'));
