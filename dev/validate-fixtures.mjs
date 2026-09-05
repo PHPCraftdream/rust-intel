@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: seventy-eight hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: eighty-six hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -531,13 +531,14 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
   else if (result.status === 0 || !/blank|end marker|table/i.test(result.output)) failures.push('missing end-marker blank: expected required-blank structural diagnostic, got: ' + result.output.trim());
 }
 
-// Control 41: a parser-termination smoke probe over many unmatched, differing backtick runs. Each
-// candidate has a constant-size synthetic suffix and an escaped multi-tick opener; the run lengths
-// are deliberately distinct and increasing, so no candidate has an equal closer anywhere in the probe. The validator's
-// deterministic linear-operation budget is the primary oracle (a budget diagnostic is a failure);
-// the generous timeout is only a last-resort safety watchdog against nontermination.
+// Control 41: a parser-termination smoke probe over many unmatched, constant-size double-backtick
+// runs. Each raw run is escaped at its first tick, which exposes a synthetic one-tick opener, but
+// the input has no raw one-tick run that could close it. The validator's deterministic
+// linear-operation budget is the primary oracle (a budget diagnostic is a failure); the generous
+// timeout is only a last-resort safety watchdog against nontermination. Keeping every candidate
+// the same size makes this an O(k)-byte adversarial shape rather than a growing-run benchmark.
 {
-  const runs = Array.from({ length: 96 }, (_, index) => '\\' + fixtureTick.repeat(index + 3) + 'synthetic').join(' token ');
+  const runs = Array.from({ length: 96 }, () => '\\' + fixtureTick.repeat(2) + 'synthetic').join(' token ');
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, ['| ' + runs + ' | termination smoke |']), { timeoutMs: 30_000 });
   if (result.skipped || result.executionFailure || result.status !== 0 || /linear operation budget/i.test(result.output)) {
@@ -878,7 +879,10 @@ for (const [name, mutate] of [
 // accept a missing route. The textual module-presence loop still sees the filename in the comment,
 // so this specifically exercises the structured MODULES parser.
 {
-  const result = runValidateAgainstMutatedFiles(['skill/audit-project.workflow.js'], (source) => {
+  const result = runValidateAgainstMutatedFiles([
+    'skill/audit-project.workflow.js',
+    'skills/rust-intel/audit-project.workflow.js',
+  ], (source) => {
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
     if (at < 0) return null;
@@ -930,6 +934,110 @@ for (const [name, mutate] of [
     return lines.join('\n');
   });
   expectFixture(result, 'duplicate executable workflow MODULES entry', 1, ['async.md']);
+}
+
+// Control 79: quoted string and template-literal decoys containing a complete canonical-looking
+// MODULES assignment must not become the parser's source of truth. Commenting out the live async
+// entry must still fail parity even when both decoys appear before the real declaration.
+{
+  const result = runValidateAgainstMutatedFiles([
+    'skill/audit-project.workflow.js',
+    'skills/rust-intel/audit-project.workflow.js',
+  ], (source) => {
+    const assignment = source.match(/const MODULES\s*=\s*\[[\s\S]*?\n\]/)?.[0];
+    if (!assignment) return null;
+    const lines = splitFixtureLines(source);
+    const live = lines.findIndex((line) => line.includes('const MODULES = ['));
+    const decoyString = `const MODULES_DECOY_STRING = ${JSON.stringify(assignment)};`;
+    const decoyTemplate = `const MODULES_DECOY_TEMPLATE = \`${assignment}\`;`;
+    if (live < 0) return null;
+    lines.splice(live, 0, decoyString, decoyTemplate);
+    const asyncEntry = lines.findIndex((line, index) => index > live + 1 && line.startsWith("  { file: 'async.md', categories:"));
+    if (asyncEntry < 0) return null;
+    lines[asyncEntry] = '//' + lines[asyncEntry];
+    return lines.join('\n');
+  });
+  expectFixture(result, 'quoted MODULES decoys do not mask live corruption', 1, ['async.md']);
+}
+
+// Control 80: duplicate category ids within one executable MODULES entry are an integrity error,
+// even though Set-based parity would otherwise hide the repeated token.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/audit-project.workflow.js'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
+    if (at < 0 || !lines[at].includes("'B2'")) return null;
+    lines[at] = lines[at].replace("'B2','B3'", "'B2','B2','B3'");
+    return lines.join('\n');
+  });
+  expectFixture(result, 'duplicate category id within MODULES entry', 1, ['duplicate category', 'async.md']);
+}
+
+// Controls 81-83: every Category-map ownership collision is rejected: repeated ids in one row,
+// repeated rows, and the same id routed to two different module files.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes('| \u00a7B2,'));
+    if (at < 0) return null;
+    lines[at] = lines[at].replace('| \u00a7B2,', '| \u00a7B2, \u00a7B2,');
+    return lines.join('\n');
+  });
+  expectFixture(result, 'duplicate Category-map id in one row', 1, ['category map contains duplicate', '\u00a7B2']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes('| \u00a7B2,'));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, lines[at]);
+    return lines.join('\n');
+  });
+  expectFixture(result, 'duplicate Category-map row', 1, ['category map contains duplicate', '\u00a7B2']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.includes('| \u00a7B2,'));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, '| \u00a7B2 | `concurrency-and-state.md` |');
+    return lines.join('\n');
+  });
+  expectFixture(result, 'cross-owner Category-map duplicate', 1, ['category map contains duplicate', '\u00a7B2']);
+}
+
+// Controls 84-85: live category headings are unique both within one module and across modules.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.startsWith('## \u00a7B2.'));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, lines[at]);
+    return lines.join('\n');
+  });
+  expectFixture(result, 'duplicate live heading within module', 1, ['live module headings contain duplicate', '\u00a7B2']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(['skill/concurrency-and-state.md', 'skills/rust-intel/concurrency-and-state.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const at = lines.findIndex((line) => line.startsWith('## \u00a7A2.'));
+    if (at < 0) return null;
+    lines.splice(at + 1, 0, '## \u00a7B2. duplicate cross-module heading');
+    return lines.join('\n');
+  });
+  expectFixture(result, 'duplicate live heading across modules', 1, ['live module headings contain duplicate', '\u00a7B2']);
+}
+
+// Control 86: an escaped angle-leading raw tag in a code-pattern first cell is still raw-markup
+// style outside code and must not evade the first-cell contract merely because the first byte is
+// a backslash.
+{
+  const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
+  const hit = anchoredTableLine(original, 'code', 'delimiter');
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    insertCodeRows(source, ['| prose \\<custom> | body |']));
+  const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber + 1}:`;
+  expectExactUnsupported(result, 'escaped raw HTML in code-pattern cell unsupported-style control', [lineNeedle, 'unsupported raw inline HTML/angle-leading construct']);
 }
 
 

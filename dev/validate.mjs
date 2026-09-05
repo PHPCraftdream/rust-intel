@@ -191,9 +191,62 @@ function findMatchingBracket(source, openingIndex) {
   return -1;
 }
 
+// Find the real workflow declaration in JavaScript code.  A regex over a comment-masked
+// source is not enough: quoted strings and template literals retain their bytes so that
+// offsets stay stable, and a decoy `const MODULES = [` in either one would otherwise win.
+// Depth is tracked for all JavaScript grouping constructs so nested declarations are ignored.
+function findTopLevelModulesStart(source) {
+  let state = 'code';
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    const character = source[i];
+    const next = source[i + 1];
+    if (state === 'line-comment') {
+      if (character === '\n' || character === '\r') state = 'code';
+      continue;
+    }
+    if (state === 'block-comment') {
+      if (character === '*' && next === '/') { i += 1; state = 'code'; }
+      continue;
+    }
+    if (state === 'single' || state === 'double') {
+      if (character === '\\') i += 1;
+      else if ((state === 'single' && character === "'") || (state === 'double' && character === '"')) state = 'code';
+      continue;
+    }
+    if (state === 'template') {
+      if (character === '\\') i += 1;
+      else if (character === '`') state = 'code';
+      continue;
+    }
+    if (character === '/' && next === '/') { i += 1; state = 'line-comment'; continue; }
+    if (character === '/' && next === '*') { i += 1; state = 'block-comment'; continue; }
+    if (character === "'") { state = 'single'; continue; }
+    if (character === '"') { state = 'double'; continue; }
+    if (character === '`') { state = 'template'; continue; }
+    if (braceDepth === 0 && parenDepth === 0 && bracketDepth === 0
+      && source.startsWith('const', i)
+      && (i === 0 || !/[A-Za-z0-9_$]/.test(source[i - 1] || ''))
+      && !/[A-Za-z0-9_$]/.test(source[i + 5] || '')) {
+      const assignment = source.slice(i).match(/^const\s+MODULES\s*=\s*\[/);
+      if (assignment) return i + assignment[0].lastIndexOf('[');
+    }
+    if (character === '{') braceDepth += 1;
+    else if (character === '}' && braceDepth > 0) braceDepth -= 1;
+    else if (character === '(') parenDepth += 1;
+    else if (character === ')' && parenDepth > 0) parenDepth -= 1;
+    else if (character === '[') bracketDepth += 1;
+    else if (character === ']' && bracketDepth > 0) bracketDepth -= 1;
+  }
+  return -1;
+}
+
 const workflowWithoutComments = stripJsComments(workflow);
-const modulesAssignment = workflowWithoutComments.match(/\bconst\s+MODULES\s*=\s*\[/);
-const modulesStart = modulesAssignment ? modulesAssignment.index + modulesAssignment[0].lastIndexOf('[') : -1;
+// `modulesStart` deliberately comes from the original source: stripJsComments preserves byte
+// offsets, while the lexer above ignores comments/strings/templates before accepting a match.
+const modulesStart = findTopLevelModulesStart(workflow);
 const modulesEnd = modulesStart >= 0 ? findMatchingBracket(workflowWithoutComments, modulesStart) : -1;
 const modulesLiteral = modulesStart >= 0 && modulesEnd > modulesStart
   ? workflowWithoutComments.slice(modulesStart + 1, modulesEnd)
@@ -205,7 +258,13 @@ for (const entry of modulesLiteral.matchAll(/\{\s*file:\s*'([^']+)',\s*categorie
     errors.push(`workflow MODULES contains duplicate executable entry for ${file}`);
     continue;
   }
-  workflowModuleCategories.set(file, new Set(list.split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean)));
+  const ids = list.split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+  const seenIds = new Set();
+  for (const id of ids) {
+    if (seenIds.has(id)) errors.push(`workflow MODULES entry for ${file} contains duplicate category §${id}`);
+    seenIds.add(id);
+  }
+  workflowModuleCategories.set(file, seenIds);
 }
 for (const module of ['async.md', 'concurrency-and-state.md', 'data-and-types.md', 'security.md', 'unsafe-and-ffi.md', 'drop-and-raii.md', 'deps-macros-ergonomics.md', 'lifetimes-and-api.md', 'testing.md', 'semantics-and-conformance.md']) {
   if (!workflowModuleCategories.has(module)) errors.push(`workflow missing module: ${module}`);
@@ -273,6 +332,7 @@ if (categoryMapIndex >= 0) {
   }
 }
 const specModuleCategories = new Map();
+const specCategoryOwners = new Map();
 for (const [offset, line] of skillSource.slice(categoryMapIndex + 6, categoryMapBodyEnd).entries()) {
   const lineNumber = categoryMapIndex + 6 + offset;
   if (tableFenceMask[lineNumber]) {
@@ -289,8 +349,17 @@ for (const [offset, line] of skillSource.slice(categoryMapIndex + 6, categoryMap
     continue;
   }
   const [, cell, file] = row;
+  const ids = expandCategoryCell(cell);
   if (!specModuleCategories.has(file)) specModuleCategories.set(file, new Set());
-  for (const id of expandCategoryCell(cell)) specModuleCategories.get(file).add(id);
+  for (const id of ids) {
+    const previous = specCategoryOwners.get(id);
+    if (previous) {
+      errors.push(`SKILL.md category map contains duplicate §${id}: ${previous.file} (line ${previous.line}) and ${file} (line ${lineNumber + 1})`);
+    } else {
+      specCategoryOwners.set(id, { file, line: lineNumber + 1 });
+    }
+    specModuleCategories.get(file).add(id);
+  }
 }
 if (specModuleCategories.size === 0) errors.push('category-map parity check found zero rows in SKILL.md — the table anchor text may have moved');
 for (const [file, specIds] of specModuleCategories) {
@@ -310,6 +379,7 @@ for (const file of workflowModuleCategories.keys()) {
 // a category can go live in the file system while staying invisible to both routing paths. This
 // closes headers -> table -> MODULES as one loop instead of one checked link.
 const moduleHeaderCategories = new Map();
+const moduleHeaderOwners = new Map();
 for (const file of relativeFiles(canonicalSkill).filter((f) => f.endsWith('.md') && f !== 'SKILL.md' && !f.startsWith('references' + path.sep))) {
   const body = fs.readFileSync(path.join(canonicalSkill, file), 'utf8');
   const lines = splitGfmLines(body);
@@ -318,7 +388,16 @@ for (const file of relativeFiles(canonicalSkill).filter((f) => f.endsWith('.md')
   for (let i = 0; i < lines.length; i += 1) {
     if (!fenceMask[i]) {
       const match = lines[i].match(/^#{2,3} §([A-Z]\d+[a-z]*)\.\s/);
-      if (match) ids.add(match[1]);
+      if (match) {
+        const id = match[1];
+        const previous = moduleHeaderOwners.get(id);
+        if (previous) {
+          errors.push(`live module headings contain duplicate §${id}: ${previous.file} (line ${previous.line}) and ${file} (line ${i + 1})`);
+        } else {
+          moduleHeaderOwners.set(id, { file, line: i + 1 });
+        }
+        ids.add(id);
+      }
     }
   }
   if (ids.size) moduleHeaderCategories.set(file, ids);
@@ -542,16 +621,28 @@ function codeSpanSignatures(cells) {
 function unsupportedFirstCellSyntax(text) {
   // Pattern cells intentionally accept plain text and inline code only; GFM link/autolink
   // grammar is rejected (rather than partially emulated) outside accepted code spans.
+  // First collect accepted code-span intervals.  The outside walk intentionally examines raw
+  // characters: a backslash can change CommonMark tokenization, but it must not hide a project-
+  // banned `<`, `[` or URI/email token (for example `\\<custom>` remains unsupported here).
+  const spans = [];
+  codeSpanTokens(text, undefined, (start, end) => spans.push([start, end]));
   let reason = null;
-  const outside = Array(text.length).fill('\0');
-  codeSpanTokens(text, (character, index, full) => {
-    outside[index] = character;
-    if (reason) return;
+  let spanIndex = 0;
+  let plain = '';
+  for (let i = 0; i < text.length; i += 1) {
+    if (spanIndex < spans.length && i === spans[spanIndex][0]) {
+      i = spans[spanIndex][1] - 1;
+      plain += '\0';
+      spanIndex += 1;
+      continue;
+    }
+    const character = text[i];
+    plain += character;
+    if (reason) continue;
     if (character === '<') reason = 'raw inline HTML/angle-leading construct';
-    else if (character === '[' || (character === '!' && full[index + 1] === '[')) reason = 'link/image/reference';
-  });
+    else if (character === '[' || (character === '!' && text[i + 1] === '[')) reason = 'link/image/reference';
+  }
   if (!reason) {
-    const plain = outside.join('');
     if (/(?:^|\0|[^\w])(?:https?:\/\/|mailto:|xmpp:)[^\s<>\0]+/i.test(plain)
       || /(?:^|\0|[^\w])www\.[^\s<>\0]+/i.test(plain)
       || /\b[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b/.test(plain)) reason = 'URI/email-like token';
