@@ -720,9 +720,9 @@ const auditUnits = (parsedAuditUnits || []).filter(Boolean);
 // still a contract violation (and can become observable if the freeze is weakened).  Keep this
 // deliberately bounded: reject obvious writes, deletes, Reflect.set calls, mutators, and aliases
 // of MODULES/AUDIT_UNITS, while leaving ordinary result bookkeeping such as `missing.push(...)`
-// alone.  Aliasing is rejected at the binding site instead of being propagated through a scope
-// model: the workflow is declarative and there is no legitimate reason to bind these arrays (or a
-// value reached from them) to another variable.
+// alone.  These are static direct-use and binding-site checks; this validator deliberately does
+// not attempt `at`/`find`/loop/callback scope analysis.  Runtime deepFreezeRecords is the explicit
+// backstop for indirect references, as documented by the workflow contract.
 function workflowMutationCheck(source, names, rawSource = source) {
   const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
   const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -931,35 +931,119 @@ function workflowMutationCheck(source, names, rawSource = source) {
     }
   }
 
-  const assignmentRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:>>>=|\*\*=|<<=|>>=|&&=|\|\|=|\?\?=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|=)(?!=|>)/;
-  const incrementRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:\+\+|--)(?![+\-])/;
-  const mutatorRe = /^(?:\s*\)\s*)*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/;
+  const assignmentRe = /^(?:>>>=|\*\*=|<<=|>>=|&&=|\|\|=|\?\?=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|=)(?!=|>)/;
+  const updateRe = /^(?:\+\+|--)(?![+\-])/;
+  const prefixKeywords = new Set(['case', 'delete', 'new', 'return', 'throw', 'typeof', 'void', 'await', 'yield']);
+  const skipWhitespace = (index) => {
+    let cursor = index;
+    while (cursor < source.length && /\s/u.test(source[cursor])) cursor += 1;
+    return cursor;
+  };
+  const previousSignificant = (index) => {
+    let cursor = index - 1;
+    while (cursor >= 0 && /\s/u.test(source[cursor])) cursor -= 1;
+    return cursor;
+  };
+  const prefixUpdate = (index) => {
+    const operatorEnd = previousSignificant(index) + 1;
+    if (operatorEnd < 2 || !updateRe.test(source.slice(operatorEnd - 2, operatorEnd))) return false;
+    const operatorStart = operatorEnd - 2;
+    const beforeOperator = previousSignificant(operatorStart);
+    if (beforeOperator < 0) return true;
+    if (')]}'.includes(source[beforeOperator])) return false;
+    if (/[A-Za-z0-9_$]/u.test(source[beforeOperator])) {
+      let tokenStart = beforeOperator;
+      while (tokenStart > 0 && /[A-Za-z0-9_$]/u.test(source[tokenStart - 1])) tokenStart -= 1;
+      return prefixKeywords.has(source.slice(tokenStart, beforeOperator + 1));
+    }
+    return true;
+  };
+  const quotedBracketProperty = (opening, closing) => {
+    // `source` intentionally masks string literals, so consult the offset-preserving raw source
+    // only for the tiny quoted-property form.  A comment or expression inside the brackets is
+    // not treated as a statically-known mutator name.
+    const content = rawSource.slice(opening + 1, closing);
+    const match = content.match(/^\s*(['"])([A-Za-z_$][A-Za-z0-9_$]*)\1\s*$/u);
+    return match ? match[2] : null;
+  };
+  const parseDirectReference = (index, name) => {
+    let cursor = index + name.length;
+    let outerParens = 0;
+    let beforeRoot = previousSignificant(index);
+    while (beforeRoot >= 0 && source[beforeRoot] === '(') {
+      outerParens += 1;
+      beforeRoot = previousSignificant(beforeRoot);
+    }
+    // A call argument is not a parenthesized direct reference: `factory(MODULES).push()`
+    // mutates the factory result, not MODULES.  If the outermost adjacent opening parenthesis is
+    // preceded by an ordinary identifier/closing delimiter, reserve it for that call.  Language
+    // keywords and operators still permit the normal grouping form `(MODULES).push()`.
+    if (outerParens > 0 && beforeRoot >= 0
+      && (/[A-Za-z0-9_$]/u.test(source[beforeRoot]) || ')]'.includes(source[beforeRoot]))) {
+      let tokenStart = beforeRoot;
+      while (tokenStart > 0 && /[A-Za-z0-9_$]/u.test(source[tokenStart - 1])) tokenStart -= 1;
+      const token = source.slice(tokenStart, beforeRoot + 1);
+      if (!prefixKeywords.has(token)) outerParens -= 1;
+    }
+    const properties = [];
+    while (true) {
+      cursor = skipWhitespace(cursor);
+      if (source[cursor] === '[') {
+        const closing = findMatchingDelimiter(source, cursor, '[', ']');
+        if (closing < 0) return null;
+        properties.push(quotedBracketProperty(cursor, closing));
+        cursor = closing + 1;
+        continue;
+      }
+      if (source[cursor] === '.') {
+        const property = source.slice(cursor + 1).match(/^[A-Za-z_$][A-Za-z0-9_$]*/u);
+        if (!property) return null;
+        properties.push(property[0]);
+        cursor += 1 + property[0].length;
+        continue;
+      }
+      // Parentheses enclosing the complete reference are part of the direct expression, not a
+      // scope boundary: `(MODULES[0].categories).push()` and `(... )++` must be checked.  Consume
+      // only parentheses that actually opened adjacent to this root; a surrounding call's `)` is
+      // not a continuation of the reference.
+      cursor = skipWhitespace(cursor);
+      while (outerParens > 0 && source[cursor] === ')') {
+        outerParens -= 1;
+        cursor = skipWhitespace(cursor + 1);
+      }
+      if (source[cursor] === '[' || source[cursor] === '.') continue;
+      break;
+    }
+    return { end: cursor, properties };
+  };
   const declarationRe = () => /\b(?:const|let|var)\s*$/;
   for (const name of names) {
     const identifierRe = new RegExp(`\\b${escaped(name)}\\b`, 'g');
     for (const match of source.matchAll(identifierRe)) {
       const index = match.index;
       const before = source.slice(Math.max(0, index - 40), index);
-      const after = source.slice(index + name.length);
       let previous = index - 1;
       while (previous >= 0 && /\s/u.test(source[previous])) previous -= 1;
       if (source[previous] === '.') continue;
       if (declarationRe().test(before)) continue;
-      const mutator = after.match(mutatorRe);
-      if (mutator && mutators.has(mutator[1])) {
-        errors.push(`workflow ${name}.${mutator[1]}() mutates declarative audit data`);
+      const reference = parseDirectReference(index, name);
+      if (!reference) continue;
+      const remainder = source.slice(reference.end);
+      const lastProperty = reference.properties.at(-1);
+      const methodCall = /^\s*\(/u.test(remainder) && mutators.has(lastProperty);
+      if (methodCall) {
+        errors.push(`workflow ${name}.${lastProperty}() mutates declarative audit data`);
         continue;
       }
-      if (assignmentRe.test(after)) {
+      if (assignmentRe.test(remainder.replace(/^\s*/u, ''))) {
         errors.push(`workflow ${name} has an executable post-initialization assignment`);
         continue;
       }
-      if (incrementRe.test(after)) {
+      if (updateRe.test(remainder.replace(/^\s*/u, ''))) {
         errors.push(`workflow ${name} has an executable increment/decrement mutation`);
         continue;
       }
-      const prefix = source.slice(Math.max(0, index - 8), index);
-      if (/(?:^|[^A-Za-z0-9_$])(?:\+\+|--)\s*$/u.test(prefix)) {
+      if (prefixUpdate(index)) {
         errors.push(`workflow ${name} has an executable increment/decrement mutation`);
       }
     }

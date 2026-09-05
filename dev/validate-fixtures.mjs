@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: two hundred thirty-eight hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: two hundred forty-five hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2459,6 +2459,39 @@ for (const [number, name, root, mutation] of [
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'AUDIT_UNITS', `void (MODULES === AUDIT_UNITS);\nvoid (MODULES.length >= AUDIT_UNITS['length']);\nvoid (() => MODULES[0].file)();`));
   expectFixture(result, 'Control 238: comparison and arrow reads remain accepted', 0);
+}
+
+// Controls 239-240: mutator calls remain writes when the method or an intermediate nested
+// property uses quoted bracket notation. These are deliberately static probes: the inserted
+// expressions need not execute, because workflowMutationCheck is validating the source contract.
+for (const [number, name, root, mutation] of [
+  [239, 'bracket root mutator call', 'MODULES', "MODULES['push']({ file: 'bracket-root.md', categories: [] });"],
+  [240, 'bracket nested mutator call', 'MODULES', "MODULES[0]['categories']['push']('Z99');"],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+
+// Controls 241-243: fully parenthesized root and nested chains must not hide a mutator or a
+// postfix update from the write recognizer. Keep the root, nested-chain, and update forms
+// separate so each parenthesis boundary remains independently pinned.
+for (const [number, name, root, mutation] of [
+  [241, 'fully-parenthesized root mutator call', 'MODULES', '(MODULES).pop();'],
+  [242, 'fully-parenthesized nested-chain mutator call', 'MODULES', '((MODULES[0].categories)).push(\'Z99\');'],
+  [243, 'fully-parenthesized nested postfix update', 'MODULES', '(MODULES[0].categories[0])--;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+
+// Controls 244-245: comments between a prefix update operator and its root are non-code and
+// must not create a scanner gap. The line-comment case also proves the newline-separated form.
+for (const [number, name, root, mutation] of [
+  [244, 'block-comment-separated prefix increment', 'MODULES', '/*c*/++MODULES;'],
+  [245, 'line-comment-separated prefix decrement', 'AUDIT_UNITS', '//c\n--AUDIT_UNITS;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
 }
 
 for (const fixture of cases) {
