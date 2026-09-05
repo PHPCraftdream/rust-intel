@@ -511,6 +511,13 @@ const deepFreezeCalls = executableWorkflowCode.match(/\bdeepFreezeRecords\s*\(/g
 if (deepFreezeCalls.length !== 2) {
   errors.push('workflow must call deepFreezeRecords exactly for MODULES and AUDIT_UNITS');
 }
+const moduleFreezeArrayStart = findTopLevelArrayStart(executableWorkflowCode, 'MODULES');
+const moduleFreezeCallIndex = moduleFreezeArrayStart >= 0
+  ? executableWorkflowCode.lastIndexOf('deepFreezeRecords', moduleFreezeArrayStart)
+  : -1;
+if (deepFreezeDeclarations.length !== 1 || moduleFreezeCallIndex < 0 || deepFreezeDeclarations[0] >= moduleFreezeCallIndex) {
+  errors.push('workflow deepFreezeRecords helper must be declared before the first MODULES freeze call');
+}
 const moduleMatchDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'auditResultModuleMatches');
 const moduleMatchHelper = /^const\s+auditResultModuleMatches\s*=\s*\(\s*result\s*,\s*unit\s*\)\s*=>\s*result\.module\s*===\s*unit\.module\s*;/;
 if (moduleMatchDeclarations.length !== 1 || !moduleMatchHelper.test(executableWorkflowCode.slice(moduleMatchDeclarations[0] ?? 0))) {
@@ -523,27 +530,30 @@ if (missingDeclarations.length !== 1 || missingDeclarationIndex < 0) {
   errors.push('workflow must contain exactly one top-level const missingUnitInputs = {} declaration');
 }
 const missingLoopStart = findTopLevelForLoop(executableWorkflowCode, missingDeclarationIndex, /for\s*\(\s*const\s+unit\s+of\s+AUDIT_UNITS\s*\)\s*\{/);
-const missingLoopBodyStart = missingLoopStart >= 0 ? executableWorkflowCode.indexOf('{', missingLoopStart) : -1;
-const missingLoopBodyEnd = missingLoopBodyStart >= 0 ? findMatchingDelimiter(executableWorkflowCode, missingLoopBodyStart, '{', '}') : -1;
-// This is the raw UTF-8 SHA-256 of the canonical `missingUnitInputs` declaration through the
-// closing brace of its reachable AUDIT_UNITS loop (the repository's LF-canonical bytes). Pinning the complete block
-// makes every input obligation executable: expected/reviewed artifact construction, both
-// reachable loops, docs construction, the module helper branch, and the final assignment cannot
-// be weakened, moved into dead code, or replaced with aliases without changing this digest.
-const canonicalMissingUnitInputsSha256 = '1e0683bd828b7e22a25aaf49222d1b1f838d8a5449bbd77df433acf4c38cf891';
-const missingBlock = missingDeclarationIndex >= 0 && missingLoopBodyEnd > missingDeclarationIndex
-  ? workflow.slice(missingDeclarationIndex, missingLoopBodyEnd + 1)
-  : '';
-const missingBlockSha256 = missingBlock
-  ? createHash('sha256').update(missingBlock, 'utf8').digest('hex')
-  : '';
-if (missingDeclarations.length !== 1 || !missingBlock || missingBlockSha256 !== canonicalMissingUnitInputsSha256) {
-  errors.push('workflow missingUnitInputs block must match the canonical reachable input-coverage implementation');
-}
 const orchestrationDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'orchestrationComplete');
 const orchestrationExpression = /^const\s+orchestrationComplete\s*=\s*missingScopeFields\.length\s*===\s*0\s*&&\s*missingSlices\.length\s*===\s*0\s*&&\s*Object\.keys\(\s*missingUnitInputs\s*\)\.length\s*===\s*0\s*&&\s*strayLabels\.length\s*===\s*0\s*&&\s*dropped\s*===\s*0\s*;[ \t\r]*(?:\n|$)/;
 if (orchestrationDeclarations.length !== 1 || !orchestrationExpression.test(executableWorkflowCode.slice(orchestrationDeclarations[0] ?? 0))) {
   errors.push('workflow orchestrationComplete must be one top-level const with all five coverage conjuncts');
+}
+if (moduleMatchDeclarations.length !== 1 || missingLoopStart < 0 || moduleMatchDeclarations[0] >= missingLoopStart) {
+  errors.push('workflow auditResultModuleMatches helper must be declared before the live missingUnitInputs loop');
+}
+
+// Pin the complete reachable coverage-production block, from the dropped-agent producer through
+// the semicolon terminating orchestrationComplete.  The hash is over LF-normalized source bytes;
+// unlike a check of just missingUnitInputs, this covers every producer and their final conjunction.
+const coverageStartDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'dropped');
+const coverageStart = coverageStartDeclarations.length === 1 ? coverageStartDeclarations[0] : -1;
+const orchestrationStart = orchestrationDeclarations.length === 1 ? orchestrationDeclarations[0] : -1;
+const orchestrationEnd = orchestrationStart >= 0 ? executableWorkflowCode.indexOf(';', orchestrationStart) : -1;
+const coverageBlock = coverageStart >= 0 && orchestrationEnd > coverageStart
+  ? workflow.slice(coverageStart, orchestrationEnd + 1).replace(/\r\n?/g, '\n')
+  : '';
+// SHA-256 of the canonical coverage-production block in skill/audit-project.workflow.js.
+const canonicalCoverageProductionSha256 = '9bc1aa34a14b07a6b76739e1d2cd279eb1678ee52064542a2663baf456f4e6c7';
+if (coverageStartDeclarations.length !== 1 || orchestrationDeclarations.length !== 1 || !coverageBlock
+  || createHash('sha256').update(coverageBlock, 'utf8').digest('hex') !== canonicalCoverageProductionSha256) {
+  errors.push('workflow coverage-production block must match the canonical reachable implementation from dropped through orchestrationComplete');
 }
 
 const workflowWithoutComments = stripJsComments(workflow);
@@ -711,7 +721,7 @@ const auditUnits = (parsedAuditUnits || []).filter(Boolean);
 // deliberately bounded: reject obvious writes, deletes, Reflect.set calls, mutators, and simple
 // aliases of MODULES/AUDIT_UNITS or their nested arrays, while leaving ordinary result bookkeeping
 // such as `missing.push(...)` alone.
-function workflowMutationCheck(source, names) {
+function workflowMutationCheck(source, names, rawSource = source) {
   const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
   const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const aliases = new Map(names.map((name) => [name, 'root']));
@@ -720,11 +730,33 @@ function workflowMutationCheck(source, names) {
   // `.length`, primitive fields, and `.map(...)` results are not aliases merely because their
   // spelling starts with MODULES/AUDIT_UNITS.  Include const/let/var and iterate to a fixpoint
   // so alias-of-alias chains remain protected.
-  const aliasRe = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)/g;
+  const aliasRe = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*((?:\(\s*)*[A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:\)\s*)*)/g;
+  const destructuredAliasRe = /\b(?:const|let|var)\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*=\s*((?:\(\s*)*[A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:\)\s*)*)/g;
+  const objectDestructuredAliasRe = /\b(?:const|let|var)\s*\{\s*(categories|requiredArtifactGroups)\s*\}\s*=\s*((?:\(\s*)*[A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:\)\s*)*)/g;
+  const unwrapParens = (value) => {
+    let text = value.trim();
+    while (text.startsWith('(') && text.endsWith(')')
+      && findMatchingDelimiter(text, 0, '(', ')') === text.length - 1) {
+      text = text.slice(1, -1).trim();
+    }
+    return text;
+  };
+  const normalizeReference = (value) => {
+    let text = unwrapParens(value);
+    for (;;) {
+      const grouped = text.replace(/\(\s*([A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)\s*\)/g, '$1');
+      const next = unwrapParens(grouped);
+      if (next === text) return text;
+      text = next;
+    }
+  };
   const classifyReference = (base, suffix) => {
-    const baseKind = aliases.get(base);
+    const reference = normalizeReference(`${base}${suffix}`);
+    const match = reference.match(/^([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)$/);
+    if (!match) return null;
+    const baseKind = aliases.get(match[1]);
     if (!baseKind) return null;
-    const text = suffix.trim();
+    const text = match[2].trim();
     if (!text) return baseKind;
     const parts = [];
     const partRe = /\s*(\[[^\]\r\n]*\]|\.([A-Za-z_$][A-Za-z0-9_$]*))/g;
@@ -732,11 +764,15 @@ function workflowMutationCheck(source, names) {
     for (const match of text.matchAll(partRe)) {
       if (match.index !== consumed) return null;
       consumed += match[0].length;
-      parts.push(match[1].startsWith('[') ? 'index' : match[2]);
+      if (match[1].startsWith('[')) {
+        const property = match[1].slice(1, -1).trim();
+        parts.push(/^(['"])length\1$/u.test(property) ? 'length' : 'index');
+      } else parts.push(match[2]);
     }
     if (consumed !== text.length) return null;
     let kind = baseKind;
     for (const part of parts) {
+      if (kind === 'root' && part === 'length') return null;
       if (kind === 'root' && part === 'index') kind = 'record';
       else if (kind === 'record' && (part === 'categories' || part === 'requiredArtifactGroups')) kind = 'array';
       else return null;
@@ -747,10 +783,37 @@ function workflowMutationCheck(source, names) {
   while (aliasesChanged) {
     aliasesChanged = false;
     for (const match of source.matchAll(aliasRe)) {
-      const kind = classifyReference(match[2], match[3]);
+      const rhsStart = match.index + match[0].indexOf(match[2]);
+      const rawRhs = rawSource.slice(rhsStart, rhsStart + match[2].length);
+      const reference = normalizeReference(rawRhs);
+      const referenceMatch = reference.match(/^([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)$/);
+      const kind = referenceMatch ? classifyReference(referenceMatch[1], referenceMatch[2]) : null;
       if (!kind || aliases.has(match[1])) continue;
       aliases.set(match[1], kind);
       aliasesChanged = true;
+    }
+    for (const match of source.matchAll(destructuredAliasRe)) {
+      const rhsStart = match.index + match[0].indexOf(match[2]);
+      const rawRhs = rawSource.slice(rhsStart, rhsStart + match[2].length);
+      const reference = normalizeReference(rawRhs);
+      const referenceMatch = reference.match(/^([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)$/);
+      const kind = referenceMatch ? classifyReference(referenceMatch[1], referenceMatch[2]) : null;
+      if (!kind || aliases.has(match[1])) continue;
+      if (kind === 'root' || kind === 'record') {
+        aliases.set(match[1], 'record');
+        aliasesChanged = true;
+      }
+    }
+    for (const match of source.matchAll(objectDestructuredAliasRe)) {
+      const rhsStart = match.index + match[0].indexOf(match[2]);
+      const rawRhs = rawSource.slice(rhsStart, rhsStart + match[2].length);
+      const reference = normalizeReference(rawRhs);
+      const referenceMatch = reference.match(/^([A-Za-z_$][A-Za-z0-9_$]*)((?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*)$/);
+      const kind = referenceMatch ? classifyReference(referenceMatch[1], referenceMatch[2]) : null;
+      if (kind === 'record' && !aliases.has(match[1])) {
+        aliases.set(match[1], 'array');
+        aliasesChanged = true;
+      }
     }
   }
   const mutationNames = [...aliases.keys()];
@@ -764,16 +827,20 @@ function workflowMutationCheck(source, names) {
       const index = match.index;
       const before = source.slice(Math.max(0, index - 40), index);
       const after = source.slice(index + name.length);
+      const afterRaw = rawSource.slice(index + name.length);
       if (declarationRe().test(before)) continue;
       const mutator = after.match(mutatorRe);
       if (mutator && mutators.has(mutator[1])) {
         errors.push(`workflow ${name}.${mutator[1]}() mutates declarative audit data`);
         continue;
       }
-      if (assignmentRe.test(after)) {
+      // Array `.length` is a primitive counter, not declarative audit data.  Its value may be
+      // copied or used as a mutable local; only record/nested-array references are protected.
+      const primitiveLengthAccess = /^\s*(?:\.\s*length|\[\s*(['"])length\1\s*\])\s*(?:=|\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=)(?!=|>)/u.test(afterRaw);
+      if (!primitiveLengthAccess && assignmentRe.test(after)) {
         errors.push(`workflow ${name} has an executable post-initialization assignment`);
       }
-      if (/^\s*\[/u.test(after) && /^\s*\[[^\]\r\n]*\]\s*=/.test(after)) {
+      if (!primitiveLengthAccess && /^\s*\[/u.test(after) && /^\s*\[[^\]\r\n]*\]\s*=/.test(after)) {
         errors.push(`workflow ${name} has an executable indexed assignment`);
       }
     }
@@ -783,7 +850,7 @@ function workflowMutationCheck(source, names) {
   const reflectSetRe = new RegExp(`\\bReflect\\s*\\.\\s*set\\s*\\([^)]*\\b(?:${mutationNameRe})\\b`);
   if (reflectSetRe.test(source)) errors.push('workflow cannot use Reflect.set on MODULES, AUDIT_UNITS, or their aliases');
 }
-workflowMutationCheck(executableWorkflowCode, ['MODULES', 'AUDIT_UNITS']);
+workflowMutationCheck(executableWorkflowCode, ['MODULES', 'AUDIT_UNITS'], workflow);
 
 const labels = new Set();
 for (const unit of auditUnits) {

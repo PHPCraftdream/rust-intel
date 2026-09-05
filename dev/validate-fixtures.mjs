@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: one hundred eighty-one hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: one hundred ninety-two hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2163,7 +2163,7 @@ for (const [name, mutation] of [
   } else {
     const decoy = lines[live];
     lines[live] = lines[live].replace('fn remember', 'fn preserve');
-    lines.splice(live + 1, 0, '## Operating mode', decoy);
+    lines.splice(section, 0, '## Operating mode', decoy, '');
     const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
     if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate Operating mode section unexpectedly satisfied the live rule');
   }
@@ -2195,9 +2195,121 @@ for (const [name, mutation] of [
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     const marker = '  dropped === 0;\n';
     if (!source.includes(marker)) return null;
-    return source.replace(marker, '  dropped === 0 || true\n');
+    return source.replace(marker, '  dropped === 0 || true;\n');
   });
   expectFixture(result, 'multiline orchestrationComplete disjunction bypass is rejected', 1, ['orchestrationComplete']);
+}
+
+// Controls 182-185: each coverage signal must be produced by its live, reachable computation.
+// Replacing a producer with an empty/zero literal leaves the five-way gate text intact, but makes
+// the run report COMPLETE for missing scope, slices, labels, or dropped agents. The validator pins
+// this whole reachable producer block separately from the final orchestration expression.
+for (const [name, mutate] of [
+  ['dropped producer erased', (source) => source.replace(
+    'const dropped = AUDIT_UNITS.length - auditResults.length',
+    'const dropped = 0',
+  )],
+  ['missingScopeFields producer erased', (source) => {
+    const start = source.indexOf('const missingScopeFields =');
+    const end = source.indexOf('const missingSlices =', start);
+    return start < 0 || end < 0 ? source : source.slice(0, start) + 'const missingScopeFields = []\n' + source.slice(end);
+  }],
+  ['missingSlices producer erased', (source) => {
+    const start = source.indexOf('const missingSlices =');
+    const end = source.indexOf('const expectedArtifacts =', start);
+    return start < 0 || end < 0 ? source : source.slice(0, start) + 'const missingSlices = []\n' + source.slice(end);
+  }],
+  ['strayLabels producer erased', (source) => {
+    const start = source.indexOf('const strayLabels =');
+    const end = source.indexOf('const resultsByLabel =', start);
+    return start < 0 || end < 0 ? source : source.slice(0, start) + 'const strayLabels = []\n' + source.slice(end);
+  }],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const mutated = mutate(source);
+    return mutated === source ? null : mutated;
+  });
+  expectFixture(result, name + ' is rejected by the coverage producer block', 1, ['workflow coverage']);
+}
+
+// Controls 186-187: declaration order is part of the reachable workflow contract. Both helpers
+// are moved below their first use while preserving valid JavaScript, so a source-text search that
+// ignores execution order cannot silently accept a temporal-dead-zone failure.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const helperStart = source.indexOf('const deepFreezeRecords =');
+    const moduleStart = source.indexOf('const MODULES = deepFreezeRecords([', helperStart);
+    const auditStart = source.indexOf('const AUDIT_UNITS = deepFreezeRecords([');
+    if (helperStart < 0 || moduleStart < 0 || auditStart < 0) return null;
+    const helper = source.slice(helperStart, moduleStart);
+    const without = source.slice(0, helperStart) + source.slice(moduleStart);
+    return without.replace('const AUDIT_UNITS = deepFreezeRecords([', helper + 'const AUDIT_UNITS = deepFreezeRecords([');
+  });
+  expectFixture(result, 'deepFreezeRecords declaration below first call is rejected', 1, ['workflow']);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const helper = 'const auditResultModuleMatches = (result, unit) => result.module === unit.module;\n';
+    if (!source.includes(helper)) return null;
+    const without = source.replace(helper, '');
+    return without.replace('const orchestrationComplete =', helper + 'const orchestrationComplete =');
+  });
+  expectFixture(result, 'auditResultModuleMatches declaration below first use is rejected', 1, ['workflow']);
+}
+
+// Control 188: a dead canonical helper placed AFTER the weakened live helper must not repair it.
+// This complements the pre-live decoy in Control 152 and pins declaration uniqueness/order in
+// both directions.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const live = 'const auditResultModuleMatches = (result, unit) => result.module === unit.module;';
+    if (!source.includes(live)) return null;
+    const weakened = source.replace(live, 'const auditResultModuleMatches = (result, unit) => result.label === unit.module;');
+    const decoy = `if (false) {\n  const auditResultModuleMatches = (result, unit) => result.module === unit.module;\n}\n`;
+    return weakened.replace('const missingUnitInputs = {}', decoy + 'const missingUnitInputs = {}');
+  });
+  expectFixture(result, 'after-live dead runtime module helper does not mask weakened helper', 1, ['workflow']);
+}
+
+// Control 189: parentheses around a root alias must not hide a later mutator.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'MODULES');
+      if (end < 0) return false;
+      lines.splice(end + 1, 0, 'const modulesAlias = (MODULES);', 'modulesAlias.pop();');
+      return true;
+    }));
+  expectFixture(result, 'parenthesized MODULES alias pop is rejected', 1, ['workflow']);
+}
+
+// Control 190: destructuring a nested array from the first frozen record is still a mutation
+// path into the declarative MODULES graph.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'MODULES');
+      if (end < 0) return false;
+      lines.splice(end + 1, 0, 'const { categories } = MODULES[0];', "categories.push('Z99');");
+      return true;
+    }));
+  expectFixture(result, 'destructured first-record categories push is rejected', 1, ['workflow']);
+}
+
+// Controls 191-192: bracket notation for the non-mutating `length` property is bookkeeping,
+// not an alias to the frozen array. Both quote spellings must remain accepted.
+for (const [name, mutation] of [
+  ['MODULES single-quoted length read and counter mutation', "let count = MODULES['length']; count += 1;"],
+  ['MODULES double-quoted length read and counter mutation', 'let count = MODULES["length"]; count += 1;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const end = workflowArrayEnd(lines, 'MODULES');
+      if (end < 0) return false;
+      lines.splice(end + 1, 0, mutation);
+      return true;
+    }));
+  expectFixture(result, name + ' remains accepted', 0);
 }
 
 for (const fixture of cases) {
