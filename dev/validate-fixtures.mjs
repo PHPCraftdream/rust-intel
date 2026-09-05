@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: forty-one hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: sixty-eight hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -159,10 +159,19 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
     }
     const run = spawnSync(process.execPath, [path.join(tmpRoot, 'dev', 'validate.mjs')], {
       encoding: 'utf8',
-      timeout: spawnOptions.timeoutMs,
+      timeout: spawnOptions.timeoutMs ?? 30_000,
       env: { ...process.env, RUST_INTEL_SKIP_NESTED_FIXTURES: '1' },
     });
-    return { skipped: false, status: run.status, signal: run.signal, timedOut: run.error?.code === 'ETIMEDOUT', output: `${run.stdout || ''}${run.stderr || ''}` };
+    const error = run.error || null;
+    return {
+      skipped: false,
+      status: run.status,
+      signal: run.signal,
+      timedOut: error?.code === 'ETIMEDOUT',
+      error: error ? `${error.code || error.name || 'spawn error'}: ${error.message}` : null,
+      executionFailure: Boolean(error || run.signal || run.status === null),
+      output: `${run.stdout || ''}${run.stderr || ''}`,
+    };
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -181,6 +190,7 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
     return original.replace(m[0], `Numbered categories now **${wrongCount}**`);
   });
   if (result.skipped) failures.push('README.md negative control: could not find the "Numbered categories now **N**" banner sentence to mutate');
+  else if (result.executionFailure) failures.push(`README.md negative control: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0) failures.push("README.md negative control: dev/validate.mjs still passed after README.md's stated category count was mutated to a wrong number");
   else if (!result.output.includes('README.md')) failures.push(`README.md negative control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
 }
@@ -198,6 +208,7 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
     return original.replace(m[0], `${m[0]} Temporary probe: **${staleCount}** categories.`);
   });
   if (result.skipped) failures.push('README.md coexistence control: could not find the banner sentence to append a stale mention after');
+  else if (result.executionFailure) failures.push(`README.md coexistence control: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0) failures.push('README.md coexistence control: dev/validate.mjs still passed with a correct **N** banner alongside a coexisting stale **N-1** categories mention (Markdown-emphasis false negative)');
   else if (!result.output.includes('README.md')) failures.push(`README.md coexistence control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
 }
@@ -213,6 +224,7 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
     return original.replace(m[0], `${m[0]} Temporary probe: __${staleCount}__ categories.`);
   });
   if (result.skipped) failures.push('README.md underscore-coexistence control: could not find the banner sentence to append a stale mention after');
+  else if (result.executionFailure) failures.push(`README.md underscore-coexistence control: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0) failures.push('README.md underscore-coexistence control: dev/validate.mjs still passed with a correct **N** banner alongside a coexisting stale __N-1__ categories mention (Markdown-emphasis false negative)');
   else if (!result.output.includes('README.md')) failures.push(`README.md underscore-coexistence control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
 }
@@ -305,12 +317,14 @@ function appendProbe(source, lines) {
 }
 function expectFixture(result, name, status, needles = []) {
   if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
+  else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status !== status || needles.some((needle) => !result.output.includes(needle))) {
     failures.push(name + ': expected status ' + status + ', got: ' + result.output.trim());
   }
 }
 function expectUnsupported(result, name) {
   if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
+  else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/unsupported/i.test(result.output)) failures.push(name + ': expected explicit unsupported-style diagnostic, got: ' + result.output.trim());
 }
 
@@ -447,6 +461,7 @@ function anchoredTableEnd(source, table) {
 }
 function expectStructural(result, name, needles = []) {
   if (result.skipped) failures.push(name + ': required table boundary was not found');
+  else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || needles.some((needle) => !result.output.includes(needle))) {
     failures.push(name + ': expected structural table diagnostic, got: ' + result.output.trim());
   }
@@ -485,6 +500,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
     return hit.lines.join('\n');
   });
   if (result.skipped) failures.push('duplicate ' + label + ' anchor: required table anchor was not found');
+  else if (result.executionFailure) failures.push(`duplicate ${label} anchor: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/duplicate|unique|exactly/i.test(result.output)) failures.push('duplicate ' + label + ' anchor: expected anchor uniqueness diagnostic, got: ' + result.output.trim());
 }
 
@@ -497,6 +513,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
     return hit.lines.join('\n');
   });
   if (result.skipped) failures.push('duplicate code-pattern end marker: required end marker was not found');
+  else if (result.executionFailure) failures.push(`duplicate code-pattern end marker: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/duplicate|unique|exactly/i.test(result.output)) failures.push('duplicate code-pattern end marker: expected end-marker uniqueness diagnostic, got: ' + result.output.trim());
 }
 
@@ -510,17 +527,19 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
     return hit.lines.join('\n');
   });
   if (result.skipped) failures.push('missing end-marker blank: required blank/end marker was not found');
+  else if (result.executionFailure) failures.push(`missing end-marker blank: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/blank|end marker|table/i.test(result.output)) failures.push('missing end-marker blank: expected required-blank structural diagnostic, got: ' + result.output.trim());
 }
 
-// Control 41: bounded stress over many unmatched, differing backtick runs. Completion is the
-// oracle, and a timeout/signal/nonzero status is a failure (there is no weak unsupported escape).
+// Control 41: a parser-termination smoke probe over many unmatched, differing backtick runs. The
+// validator's deterministic linear-operation budget is the primary oracle (a budget diagnostic
+// is a failure); the generous timeout is only a last-resort safety watchdog against nontermination.
 {
   const runs = Array.from({ length: 128 }, (_, index) => fixtureTick.repeat(index + 3)).join(' token ');
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
-    insertCodeRows(source, ['| ' + runs + ' | bounded stress |']), { timeoutMs: 5000 });
-  if (result.skipped || result.timedOut || result.signal || result.status !== 0) {
-    failures.push('unmatched-backtick stress control: validator timed out, was signalled, or failed: ' + result.output.trim());
+    insertCodeRows(source, ['| ' + runs + ' | termination smoke |']), { timeoutMs: 30_000 });
+  if (result.skipped || result.executionFailure || result.status !== 0 || /linear operation budget/i.test(result.output)) {
+    failures.push('unmatched-backtick termination smoke control: validator failed its deterministic operation-budget oracle: ' + (result.error || result.output.trim()));
   }
 }
 
@@ -537,9 +556,10 @@ function anchoredEndLine(source, table) {
   if (!hit) return null;
   return hit.lines[hit.marker];
 }
-function expectAnchorScaffold(result, name, required = []) {
+function expectAnchorScaffold(result, name, required = [], forbidden = []) {
   if (result.skipped) failures.push(name + ': required table scaffold was not found');
-  else if (result.status === 0 || required.some((needle) => !result.output.includes(needle))) {
+  else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
+  else if (result.status === 0 || required.some((needle) => !result.output.includes(needle)) || forbidden.some((needle) => result.output.includes(needle))) {
     failures.push(name + ': expected scaffold diagnostic, got: ' + result.output.trim());
   }
 }
@@ -587,93 +607,135 @@ function expectAnchorScaffold(result, name, required = []) {
   const t = fixtureTick;
   const fence = t.repeat(3);
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
-    const header = anchoredTableLine(source, 'code', 'header');
-    const end = anchoredTableEnd(source, 'code');
-    if (!header || !end) return null;
-    end.lines.splice(end.marker + 1, 0, fence);
-    header.lines.splice(header.target, 0, fence + 'md');
-    return header.lines.join('\n');
+    const lines = splitFixtureLines(source);
+    const header = lines.findIndex((line) => line === '| Code pattern in user input | Activates |');
+    const delimiter = header < 0 ? -1 : header + 1;
+    const marker = lines.findIndex((line, index) => index > delimiter && line.startsWith('When two or more triggers fire in one request'));
+    if (header < 0 || marker < 0 || !/^\|[-:| ]+\|$/.test(lines[delimiter])) return null;
+    // Keep one shared line array: mutating two independently split arrays used to leave the
+    // closing fence out, accidentally turning this into an unclosed-fence probe.
+    lines.splice(marker + 1, 0, fence);
+    lines.splice(header, 0, fence + 'md');
+    return lines.join('\n');
   });
-  expectAnchorScaffold(result, 'fenced required code-pattern table', ['missing', 'code-pattern']);
+  expectAnchorScaffold(result, 'fenced required code-pattern table', ['missing', 'code-pattern'], ['unclosed project fence']);
 }
 
-// Control 46: moving the code end marker immediately after its delimiter cannot hide the body.
+// Control 46: a zero-body table with its required blank separator is still malformed.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
-    const end = anchoredTableEnd(source, 'code');
-    if (!end) return null;
-    const markerLine = end.lines[end.marker];
-    end.lines.splice(end.marker, 1);
-    const blank = end.lines.findIndex((line, index) => index > 0 && /^[ \t]*$/.test(line) && end.lines[index + 1] !== undefined);
-    if (blank >= 0) end.lines.splice(blank, 1);
-    const delimiter = anchoredTableLine(end.lines.join('\n'), 'code', 'delimiter');
-    if (!delimiter) return null;
-    end.lines.splice(delimiter.target + 1, 0, markerLine);
-    return end.lines.join('\n');
+    const lines = splitFixtureLines(source);
+    const header = lines.findIndex((line) => line === '| Code pattern in user input | Activates |');
+    const delimiter = header < 0 ? -1 : header + 1;
+    const marker = lines.findIndex((line, index) => index > delimiter && line.startsWith('When two or more triggers fire in one request'));
+    if (header < 0 || marker < 0 || !/^\|[-:| ]+\|$/.test(lines[delimiter])) return null;
+    lines.splice(delimiter + 1, marker - delimiter - 1, '');
+    return lines.join('\n');
   });
-  expectAnchorScaffold(result, 'early code-pattern end marker', ['end marker', 'blank']);
+  expectStructural(result, 'zero-body code-pattern table', ['body', 'row']);
 }
 
-// Control 47: a duplicate code anchor before the prompt table is still globally invalid.
+// Control 47: an end marker after one valid row cannot hide the remaining rows. The marker is
+// moved before the untouched remainder, so the surrounding post-marker scaffold is otherwise the
+// canonical one and the failure is attributable to the early boundary itself.
 {
-  const t = fixtureTick;
-  const fence = t.repeat(3);
-  const duplicate = [
-    '| Code pattern in user input | Activates |',
-    '|---|---|',
-    '| ' + t + 'pre-anchor' + t + ' | body |',
-    'When two or more triggers fire in one request',
-    '',
-  ];
-  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
-    insertBeforeText(source, '| User request contains... | Activates category | Specific risk |', duplicate));
-  expectAnchorScaffold(result, 'code anchor before prompt anchor', ['code-pattern', 'exactly', 'once']);
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
+    const lines = splitFixtureLines(source);
+    const header = lines.findIndex((line) => line === '| Code pattern in user input | Activates |');
+    const delimiter = header < 0 ? -1 : header + 1;
+    const marker = lines.findIndex((line, index) => index > delimiter && line.startsWith('When two or more triggers fire in one request'));
+    if (header < 0 || marker < 0 || !/^\|[-:| ]+\|$/.test(lines[delimiter])) return null;
+    const firstBody = lines[delimiter + 1];
+    if (!firstBody?.startsWith('|')) return null;
+    const markerLine = lines.splice(marker, 1)[0];
+    lines.splice(delimiter + 2, 0, markerLine);
+    return lines.join('\n');
+  });
+  expectStructural(result, 'early code-pattern end marker after one body row', ['end marker', 'blank']);
 }
 
-// Controls 48-51: nested/mixed container-prefixed fences and HTML are unsupported styles.
+// Control 48: moving the sole code anchor before the prompt anchor is an order violation, not a
+// duplicate-anchor case. This mutates one shared array and preserves both table scaffolds.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    (() => {
+      const lines = splitFixtureLines(source);
+      const prompt = lines.findIndex((line) => line === '| User request contains... | Activates category | Specific risk |');
+      const code = lines.findIndex((line) => line === '| Code pattern in user input | Activates |');
+      const end = lines.findIndex((line, index) => index > code && line.startsWith('When two or more triggers fire in one request'));
+      if (prompt < 0 || code < 0 || end < 0 || code < prompt) return null;
+      const block = lines.splice(code, end - code + 1);
+      const newPrompt = lines.findIndex((line) => line === '| User request contains... | Activates category | Specific risk |');
+      if (newPrompt < 0) return null;
+      lines.splice(newPrompt, 0, ...block);
+      return lines.join('\n');
+    })());
+  expectAnchorScaffold(result, 'code anchor before prompt anchor', ['out of order']);
+}
+
+// Controls 49-53: nested/mixed container-prefixed fences and HTML are unsupported styles. Each
+// probe is a single container-prefixed line so an unprefixed closing line cannot mask the trigger.
 for (const [name, lines] of [
-  ['nested list-quote fence', ['- > ' + fixtureTick.repeat(3) + 'md', 'literal table-like content', '- > ' + fixtureTick.repeat(3)]],
-  ['nested quote-list fence', ['> - ' + fixtureTick.repeat(3) + 'md', 'literal table-like content', '> - ' + fixtureTick.repeat(3)]],
-  ['list-prefixed HTML', ['- <div>', 'literal HTML content', '</div>']],
-  ['blockquote-prefixed HTML', ['> <div>', 'literal HTML content', '</div>']],
+  ['nested list-quote fence', ['- > ' + fixtureTick.repeat(3) + 'md']],
+  ['nested quote-list fence', ['> - ' + fixtureTick.repeat(3) + 'md']],
+  ['nested mixed fence', ['>  - ' + fixtureTick.repeat(3) + 'md']],
+  ['list-prefixed HTML', ['- <div>']],
+  ['blockquote-prefixed HTML', ['>  <div>']],
 ]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => appendProbe(source, ['', ...lines, '']));
   expectUnsupported(result, name + ' unsupported-style control');
 }
 
-// Control 52: a generic closing raw tag is unsupported even when it is not a block tag.
+// Control 54: a generic closing raw tag is unsupported even when it is not a block tag.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', '</custom-tag>', '']));
   expectUnsupported(result, 'generic closing raw tag unsupported-style control');
 }
 
-// Controls 53-58: extended autolinks outside code spans are unsupported, including a benign
-// non-autolink boundary spelling.
+// Controls 55-60: extended autolinks outside code spans are unsupported. These are bare URI and
+// email-like forms: angle-bracket rejection would be the wrong diagnostic and would miss the
+// actual CommonMark extended-autolink grammar.
+const extendedAutolinkProbeLine = (() => {
+  const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
+  const hit = anchoredTableLine(original, 'code', 'delimiter');
+  return hit ? hit.lineNumber + 1 : null;
+})();
+function expectExactUnsupported(result, name, needles) {
+  expectUnsupported(result, name);
+  if (!result.skipped && !result.executionFailure && (result.status === 0 || needles.some((needle) => !result.output.includes(needle)))) {
+    failures.push(name + ': expected exact unsupported-style diagnostic and location, got: ' + result.output.trim());
+  }
+}
 for (const [name, row] of [
-  ['https autolink', '| <https://example.test> | body |'],
-  ['www autolink', '| <www.example.test> | body |'],
-  ['email autolink', '| <user@example.test> | body |'],
-  ['mailto autolink', '| <mailto:user@example.test> | body |'],
-  ['xmpp autolink', '| <xmpp:user@example.test> | body |'],
-  ['benign angle boundary', '| <not-an-autolink> | body |'],
+  ['https autolink', '| https://example.test | body |'],
+  ['http autolink', '| http://example.test | body |'],
+  ['www autolink', '| www.example.test | body |'],
+  ['email-like autolink', '| user@example.test | body |'],
+  ['mailto autolink', '| mailto:user@example.test | body |'],
+  ['xmpp autolink', '| xmpp:user@example.test | body |'],
 ]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row]));
-  expectUnsupported(result, name + ' unsupported-style control');
+  const lineNeedle = extendedAutolinkProbeLine === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${extendedAutolinkProbeLine}:`;
+  expectExactUnsupported(result, name + ' unsupported-style control', [lineNeedle, 'unsupported URI/email-like token syntax']);
 }
 
-// Controls 59-60: opening-only and closing-only raw HTML are independently rejected.
-for (const [name, line] of [
-  ['raw HTML opening-only', '<div>'],
-  ['raw HTML closing-only', '</div>'],
-]) {
+// Control 61: opening-only raw HTML is rejected at its own line.
+{
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
-    appendProbe(source, ['', line, '']));
-  expectUnsupported(result, name + ' unsupported-style control');
+    appendProbe(source, ['', '<div>', '']));
+  expectExactUnsupported(result, 'raw HTML opening-only unsupported-style control', ['skill/SKILL.md:', 'unsupported angle-bracket-leading/raw-HTML-style line']);
 }
 
-// Control 61: a valid tilde fence suppresses its internal escape, then the post-closer escape
+// Control 62: closing-only raw HTML is independently rejected at its own line.
+{
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    appendProbe(source, ['', '</div>', '']));
+  expectExactUnsupported(result, 'raw HTML closing-only unsupported-style control', ['skill/SKILL.md:', 'unsupported angle-bracket-leading/raw-HTML-style line']);
+}
+
+// Control 63: a valid tilde fence suppresses its internal escape, then the post-closer escape
 // is independently diagnosed.
 {
   const t = fixtureTick;
@@ -681,6 +743,50 @@ for (const [name, line] of [
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', fence + 'md', 'let inside = "x \\" y";', fence, 'let outside = "x \\" y";', '']));
   expectFixture(result, 'tilde fence and post-closer escape', 1, ['literal \\" escape outside a fenced code block']);
+}
+
+// Control 64: a fully valid tilde fence is a positive case and must not be reported as unclosed.
+{
+  const t = fixtureTick;
+  const fence = '~'.repeat(3);
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    appendProbe(source, ['', fence + 'md', 'let inside = "x \\" y";', fence, '']));
+  expectFixture(result, 'positive tilde fence', 0);
+}
+
+// Control 65: when a multi-backtick run has an escaped first tick, its remaining suffix is still
+// a real one-tick opener. Two equal rows must therefore expose the suffix-derived signature.
+{
+  const t = fixtureTick;
+  const slash = '\\';
+  const row = '| ' + slash + t + t + 'suffix-opener' + t + ' | body |';
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    insertCodeRows(source, [row, row]));
+  expectFixture(result, 'escaped multi-backtick suffix opener', 1, ['[suffix-opener]']);
+}
+
+// Controls 66-67: delimiter escaping uses slash parity. One slash escapes the opener; two
+// slashes escape the slash and leave an active opener.
+{
+  const t = fixtureTick;
+  const oddRow = '| \\' + t + 'odd-slash' + t + ' | body |';
+  const evenRow = '| \\\\' + t + 'even-slash' + t + ' | body |';
+  const odd = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    insertCodeRows(source, [oddRow, oddRow]));
+  expectFixture(odd, 'odd backslash code-span opener', 0);
+  const even = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    insertCodeRows(source, [evenRow, evenRow]));
+  expectFixture(even, 'even backslash code-span opener', 1, ['[even-slash]']);
+}
+
+// Control 68: an escaped/false opener must not swallow a raw-markup diagnostic later in the
+// same cell; the angle-leading construct remains outside any accepted code span.
+{
+  const t = fixtureTick;
+  const row = '| \\' + t + ' false-span <custom-tag | body |';
+  const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
+    insertCodeRows(source, [row]));
+  expectUnsupported(result, 'escaped false-span outside angle markup control');
 }
 
 

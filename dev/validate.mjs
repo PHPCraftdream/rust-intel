@@ -316,33 +316,48 @@ function codeSpanTokens(text, onOutside, onSpan) {
   // Pair raw maximal runs once. Backslash escaping only suppresses an opener outside a span;
   // an escaped first tick also exposes the remaining suffix as an opener candidate. A closer
   // inside an accepted span is always the full raw run, even when preceded by a backslash.
+  // Every loop charges a bounded budget: if this scanner is accidentally changed to rescan
+  // already-consumed input, validation fails loudly instead of becoming a quadratic hang.
+  const operationLimit = 128 + text.length * 64;
+  let operations = 0;
+  const charge = () => {
+    operations += 1;
+    if (operations > operationLimit) throw new Error('codeSpanTokens exceeded its linear operation budget');
+  };
   const runs = [];
   for (let i = 0; i < text.length;) {
+    charge();
     if (text[i] !== '`') { i += 1; continue; }
     const start = i;
-    while (text[i] === '`') i += 1;
+    while (text[i] === '`') { charge(); i += 1; }
     const length = i - start;
     const escapedFirst = isEscapedChar(text, start);
     runs.push({ start, length, openerAllowed: !escapedFirst, closerAllowed: true });
-    if (escapedFirst && length > 1) runs.push({ start: start + 1, length: length - 1, openerAllowed: true, closerAllowed: false });
+    if (escapedFirst && length > 1) {
+      runs.push({ start: start + 1, length: length - 1, openerAllowed: true, closerAllowed: false });
+    }
   }
-  const nextSame = Array(runs.length).fill(-1);
+  // Find the next equal *raw* run for every opener candidate, including a synthetic suffix
+  // after an escaped first tick. A candidate's closer lookup is independent of whether the
+  // candidate itself may register as a future closer; only closerAllowed controls registration.
   const nextByLength = new Map();
   for (let i = runs.length - 1; i >= 0; i -= 1) {
-    nextSame[i] = runs[i].closerAllowed ? (nextByLength.get(runs[i].length) ?? -1) : -1;
+    charge();
+    runs[i].nextCloser = nextByLength.get(runs[i].length) ?? -1;
     if (runs[i].closerAllowed) nextByLength.set(runs[i].length, i);
   }
   const tokens = [];
   let runIndex = 0;
   for (let i = 0; i < text.length;) {
+    charge();
     if (text[i] === '\\' && i + 1 < text.length && isAsciiPunctuation(text[i + 1])) {
       i += 2;
       continue;
     }
-    while (runIndex < runs.length && runs[runIndex].start < i) runIndex += 1;
+    while (runIndex < runs.length && runs[runIndex].start < i) { charge(); runIndex += 1; }
     if (runIndex < runs.length && runs[runIndex].start === i) {
       const opener = runs[runIndex];
-      const closerIndex = nextSame[runIndex];
+      const closerIndex = opener.nextCloser;
       if (opener.openerAllowed && closerIndex >= 0) {
         const closer = runs[closerIndex];
         let content = text.slice(i + opener.length, closer.start).replace(/\r\n?|\n/g, ' ');
@@ -350,13 +365,14 @@ function codeSpanTokens(text, onOutside, onSpan) {
         tokens.push(content);
         if (onSpan) onSpan(i, closer.start + closer.length);
         i = closer.start + closer.length;
-        while (runIndex < runs.length && runs[runIndex].start < i) runIndex += 1;
+        while (runIndex < runs.length && runs[runIndex].start < i) { charge(); runIndex += 1; }
         continue;
       }
       i += opener.length;
       continue;
     }
     if (text[i] !== '`') {
+      charge();
       if (onOutside) onOutside(text[i], i, text);
       i += 1;
       continue;
@@ -378,14 +394,14 @@ function unsupportedFirstCellSyntax(text) {
   codeSpanTokens(text, (character, index, full) => {
     outside[index] = character;
     if (reason) return;
-    if (character === '<') reason = 'raw inline HTML/autolink';
+    if (character === '<') reason = 'raw inline HTML/angle-leading construct';
     else if (character === '[' || (character === '!' && full[index + 1] === '[')) reason = 'link/image/reference';
   });
   if (!reason) {
     const plain = outside.join('');
-    if (/(?:^|\0|[^\w])(?:https?|mailto|xmpp):[^\s<>\0]+/i.test(plain)
+    if (/(?:^|\0|[^\w])(?:https?:\/\/|mailto:|xmpp:)[^\s<>\0]+/i.test(plain)
       || /(?:^|\0|[^\w])www\.[^\s<>\0]+/i.test(plain)
-      || /\b[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b/.test(plain)) reason = 'GFM autolink';
+      || /\b[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b/.test(plain)) reason = 'URI/email-like token';
   }
   return reason;
 }
@@ -393,6 +409,10 @@ const tableContracts = [
   { name: 'prompt-trigger', anchor: ['User request contains...', 'Activates category', 'Specific risk'], width: 3, endMarker: '**Triggered by code, not phrase**' },
   { name: 'code-pattern', anchor: ['Code pattern in user input', 'Activates'], width: 2, endMarker: 'When two or more triggers fire in one request' },
 ];
+const categoryMapAnchor = '# Category map \u2014 which module holds each \u00a7';
+const categoryMapMatches = skillSource.flatMap((line, i) => !tableFenceMask[i] && line === categoryMapAnchor ? [i] : []);
+if (categoryMapMatches.length !== 1) errors.push(`skill/SKILL.md: Category map anchor must occur exactly once outside supported fences (found ${categoryMapMatches.length})`);
+const categoryMapIndex = categoryMapMatches[0] ?? -1;
 const contractRanges = [];
 let searchFrom = 0;
 for (const contract of tableContracts) {
@@ -404,7 +424,7 @@ for (const contract of tableContracts) {
       headerMatches.push(i);
     }
   }
-  const headerIndex = headerMatches.find((index) => index >= searchFrom) ?? -1;
+  const headerIndex = headerMatches[0] ?? -1;
   if (headerMatches.length !== 1) errors.push(`skill/SKILL.md: ${contract.name} table header anchor must occur exactly once outside supported fences (found ${headerMatches.length})`);
   if (headerIndex >= 0 && headerIndex < searchFrom) errors.push(`skill/SKILL.md:${headerIndex + 1}: ${contract.name} table header is out of order`);
   if (headerIndex < 0) {
@@ -431,6 +451,7 @@ for (const contract of tableContracts) {
   }
   // Exclude the one required separator from the body span; earlier blanks remain body errors.
   const bodyEnd = end < skillSource.length && /^[ \t]*$/.test(skillSource[end - 1]) ? end - 1 : end;
+  if (bodyEnd <= delimiterIndex + 1) errors.push(`skill/SKILL.md:${end + 1}: ${contract.name} table must contain at least one body row after its delimiter`);
   contractRanges.push({ contract, headerIndex, delimiterIndex, end, bodyEnd });
   searchFrom = end < skillSource.length ? end + 1 : skillSource.length;
 }
@@ -444,8 +465,11 @@ if (promptRange && codeRange) {
 }
 if (codeRange) {
   const codeAfter = codeRange.end + 1;
-  if (!/^[ \t]*$/.test(skillSource[codeAfter] || '') || skillSource[codeAfter + 1] !== '---') {
-    errors.push(`skill/SKILL.md:${codeRange.end + 1}: code-pattern end marker must be followed by exactly one blank line and ---`);
+  if (!/^[ \t]*$/.test(skillSource[codeAfter] || '')
+    || skillSource[codeAfter + 1] !== '---'
+    || !/^[ \t]*$/.test(skillSource[codeAfter + 2] || '')
+    || categoryMapIndex !== codeAfter + 3) {
+    errors.push(`skill/SKILL.md:${codeRange.end + 1}: code-pattern end marker must be followed by exactly one blank line, ---, one blank line, and the unique Category map anchor`);
   }
 }
 for (const range of contractRanges) {
@@ -561,7 +585,7 @@ function stripSimpleContainerChain(line) {
   let text = line;
   let hadContainer = false;
   while (true) {
-    const quote = text.match(/^ {0,3}>[ \t]?/);
+    const quote = text.match(/^ {0,3}>[ \t]{0,3}/);
     if (quote) {
       text = text.slice(quote[0].length);
       hadContainer = true;
@@ -580,7 +604,8 @@ function unsupportedContainerFence(line) {
   return remainder.hadContainer && projectFenceOpener(remainder.text) !== null;
 }
 function angleLeadingStyle(line) {
-  return /^ {0,3}</.test(line) || (stripSimpleContainerChain(line).hadContainer && /^</.test(stripSimpleContainerChain(line).text));
+  const remainder = stripSimpleContainerChain(line);
+  return /^ {0,3}</.test(line) || (remainder.hadContainer && /^</.test(remainder.text));
 }
 for (const file of markdownFiles) {
   const source = fs.readFileSync(file, 'utf8');
@@ -612,8 +637,19 @@ for (const file of markdownFiles) {
 // category-count check fails — and this script would otherwise spawn validate-fixtures.mjs right
 // back, which runs that same negative control again, spawning this script again, without end.
 if (!process.env.RUST_INTEL_SKIP_NESTED_FIXTURES) {
-  const fixtureRun = spawnSync(process.execPath, [path.join(root, 'dev/validate-fixtures.mjs')], { encoding: 'utf8' });
-  if (fixtureRun.status !== 0) errors.push(`fixture validation failed: ${(fixtureRun.stderr || fixtureRun.stdout).trim()}`);
+  const fixtureTimeoutMs = 120_000;
+  const fixtureRun = spawnSync(process.execPath, [path.join(root, 'dev/validate-fixtures.mjs')], {
+    encoding: 'utf8',
+    timeout: fixtureTimeoutMs,
+    killSignal: 'SIGTERM',
+  });
+  const fixtureOutput = (fixtureRun.stderr || fixtureRun.stdout || '').trim();
+  if (fixtureRun.error) {
+    errors.push(`fixture validation failed to start or timed out after ${fixtureTimeoutMs}ms: ${fixtureRun.error.message}${fixtureOutput ? ` (${fixtureOutput})` : ''}`);
+  } else if (fixtureRun.status !== 0) {
+    const termination = fixtureRun.signal ? ` (terminated by ${fixtureRun.signal})` : '';
+    errors.push(`fixture validation failed${termination}: ${fixtureOutput || `exit status ${fixtureRun.status}`}`);
+  }
 }
 const invalidCli = spawnSync(process.execPath, [path.join(root, 'bin/install-codex.js'), '--user-dir', '--uninstall'], { encoding: 'utf8' });
 if (invalidCli.status === 0 || !invalidCli.stderr.includes('--user-dir requires a path')) errors.push('Codex installer accepted a missing --user-dir value');

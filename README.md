@@ -30,8 +30,8 @@ The exact category count is given in the spec itself; the count is allowed to ev
 Its supported Markdown surface is explicit:
 
 - It recognizes exactly two global, top-level trigger-table anchors: `User request contains... | Activates category | Specific risk` and `Code pattern in user input | Activates`.
-- Each anchor has a canonical end/scaffold boundary (`**Triggered by code, not phrase**` or `When two or more triggers fire in one request`); raw column-1 leading pipes, declared widths, and body rows are required.
-- Duplicate detection uses only the allowed plain-text + inline-code subset. Complex inline markup and extended-autolink syntax in code-pattern cells are rejected explicitly.
+- Each anchor has a canonical end/scaffold boundary (`**Triggered by code, not phrase**` or `When two or more triggers fire in one request`); raw column-1 leading pipes, declared widths, and a nonempty body are required. The scaffold continues through the `Category map`, whose module/category parity is checked.
+- Duplicate keys are the sorted set of inline-code tokens in a code-pattern row; ordinary emphasis, strong emphasis, and strikethrough remain allowed text, while prose-only rows (with no inline code) are not deduplicated. Bracketed link/image/reference-like syntax, angle-leading raw-HTML/autolink-like syntax, and a broad repository-style URI/email-like token ban outside inline code are rejected explicitly. This is a documented repository subset, not an exact GFM claim.
 - Project fences are standalone and allow 0–3 leading spaces. Container-prefixed fences and angle-leading raw-HTML-style lines are rejected explicitly.
 
 ## Status
