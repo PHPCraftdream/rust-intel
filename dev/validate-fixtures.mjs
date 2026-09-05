@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: one hundred forty-four hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: one hundred fifty-five hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -1198,7 +1198,9 @@ for (const spaces of [' ', '  ', '   ']) {
 }
 
 // Control 102: NBSP is not table whitespace. This exact two-column delimiter-looking line must
-// not be accepted as the code-pattern delimiter scaffold.
+// not be accepted as the code-pattern delimiter scaffold. The mutation starts from the intact
+// canonical scaffold, so a rollback to Unicode-wide trim() turns this control into a baseline
+// false pass rather than silently changing what the control exercises.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
     const lines = splitFixtureLines(source);
@@ -1321,11 +1323,14 @@ function moduleTableRowOf(text, anchor, section = '## \u00a7C12.') {
   const mask = fixtureFenceMask(lines);
   const bounds = sectionBounds(lines, mask, section);
   if (!bounds) return '';
-  // A module catalog row only counts when it is in the pipe-table body following
-  // a header and delimiter in the named section. This excludes an unfenced prose
-  // or table-looking decoy inserted before the live catalog.
+  // A module catalog row only counts when it is in the canonical four-column
+  // catalog (not merely any pipe table) following its exact header and delimiter
+  // in the named section. This excludes an unfenced table-shaped decoy inserted
+  // before the live catalog.
+  const headerText = '| Task | Hand-rolled shape | Input where it is silently wrong | Crate (downloads) |';
+  const delimiterText = '|---|---|---|---|';
   for (let header = bounds.start; header + 1 < bounds.end; header += 1) {
-    if (mask[header] || !/^\|/.test(lines[header]) || mask[header + 1] || !/^\|[-:| \t]+\|$/.test(lines[header + 1])) continue;
+    if (mask[header] || lines[header] !== headerText || mask[header + 1] || lines[header + 1] !== delimiterText) continue;
     for (let row = header + 2; row < bounds.end && !mask[row] && /^\|/.test(lines[row]); row += 1) {
       if (lines[row].includes(anchor)) return lines[row];
     }
@@ -1511,13 +1516,14 @@ function workflowArrayEnd(lines, name) {
   expectFixture(result, 'regexp decoys before MODULES are ignored', 0);
 }
 
-// Control 120: a trailing comma in a Category-map category cell is not a valid category list.
+// Control 120: a trailing comma in an otherwise intact Category-map category cell is not a
+// valid category list. Keep every live id in the cell; the comma is the sole mutation.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
     const lines = splitFixtureLines(source);
-    const at = lines.findIndex((line) => line.includes('| \u00a7B2, \u00a7B3, \u00a7B3a,'));
+    const at = lines.findIndex((line) => line === '| \u00a7B2, \u00a7B3, \u00a7B3a, \u00a7B8, \u00a7B11, \u00a7B15 (a\u2013e), \u00a7B21, \u00a7B22, \u00a7B23 | `async.md` |');
     if (at < 0) return null;
-    lines[at] = '| \u00a7B2, \u00a7B3, | `async.md` |';
+    lines[at] = lines[at].replace('\u00a7B23 |', '\u00a7B23, |');
     return lines.join('\n');
   });
   expectFixture(result, 'trailing Category-map category comma is rejected', 1, ['Category map']);
@@ -1696,13 +1702,31 @@ function workflowArrayEnd(lines, name) {
   expectFixture(result, 'JavaScript MODULES array elision is rejected', 1, ['workflow MODULES']);
 }
 
-// Controls 136-139: MODULES/AUDIT_UNITS are declarative data, so the deep-freeze scaffold is a
+// Control 136: a trailing comma in a real JavaScript categories array is valid syntax. This is
+// deliberately positive: it prevents the executable-array parser from confusing a legal final
+// comma with an interior elision (Control 135).
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
+    mutateWorkflowLines(source, (lines) => {
+      const at = lines.findIndex((line) => line.includes("categories: ['B2','B3'"));
+      if (at < 0) return false;
+      const original = lines[at];
+      const mutated = original.replace(/(categories:\s*\[[^\]]+)\](\s*}\s*,?\s*)$/, '$1,]$2');
+      if (mutated === original) return false;
+      lines[at] = mutated;
+      return true;
+    }));
+  expectFixture(result, 'JavaScript MODULES categories trailing comma is accepted', 0);
+}
+
+// Controls 137-140: MODULES/AUDIT_UNITS are declarative data, so each deep-freeze layer is a
 // contract, not a best-effort runtime convention. Each mutant removes exactly one freeze layer
 // or adds a multiline chain after the initializer and must be rejected by the validator.
 for (const [name, mutate] of [
-  ['outer deep-freeze wrapper', (source) => source.replace('const MODULES = deepFreezeRecords([', 'const MODULES = [')],
-  ['nested-array deep-freeze call', (source) => source.replace('if (Array.isArray(value)) Object.freeze(value)', 'if (Array.isArray(value)) { /* nested freeze removed */ }')],
-  ['record deep-freeze call', (source) => source.replace('Object.freeze(record)', 'void record /* record freeze removed */')],
+  ['MODULES deepFreezeRecords invocation', (source) => source.replace('const MODULES = deepFreezeRecords([', 'const MODULES = [')],
+  ['nested-array Object.freeze(value) call', (source) => source.replace('if (Array.isArray(value)) Object.freeze(value)', 'if (Array.isArray(value)) { /* nested freeze removed */ }')],
+  ['record Object.freeze(record) call', (source) => source.replace('Object.freeze(record)', 'void record /* record freeze removed */')],
+  ['outer-array Object.freeze(records) call', (source) => source.replace('return Object.freeze(records)', 'return records')],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     const mutated = mutate(source);
@@ -1722,7 +1746,7 @@ for (const [name, mutate] of [
   expectFixture(result, 'multiline AUDIT_UNITS filter chain is rejected', 1);
 }
 
-// Control 140: a source that removes all freeze calls and then mutates an alias must still fail
+// Control 141: a source that removes the outer freeze and then mutates an alias must still fail
 // the declarative-data contract. The alias is intentionally not a separate static-mutation rule:
 // the pinned deep-freeze scaffold is the safety boundary for nested references.
 {
@@ -1736,21 +1760,69 @@ for (const [name, mutate] of [
   expectFixture(result, 'unfrozen nested alias mutation is rejected', 1);
 }
 
-// Control 141: an if(false) decoy must not satisfy the runtime module-identity helper contract
-// when the real helper is changed to compare a different field.
-{
+// Controls 143-145: mutation through a direct reference, a nested reference, or a simple alias
+// must be rejected after the immutable workflow declarations. These are separate controls so a
+// validator change that spots only one syntactic mutation shape cannot silently reopen the others.
+for (const [name, mutation] of [
+  ['direct MODULES mutation', 'MODULES.push({ file: \'decoy.md\', categories: [] });'],
+  ['nested categories mutation', "MODULES[0].categories.push('Z99');"],
+  ['simple MODULES alias mutation', "const modulesAlias = MODULES;\nmodulesAlias.push({ file: 'decoy.md', categories: [] });"],
+]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
-    const live = 'return result.module === unit.module';
-    if (!source.includes(live)) return null;
-    const altered = source.replace(live, 'return result.label === unit.module');
-    return altered.replace('const resultsByLabel =', 'if (false) { void (result.module === unit.module); }\nconst resultsByLabel =');
+    const lines = splitFixtureLines(source);
+    const end = workflowArrayEnd(lines, 'MODULES');
+    if (end < 0) return null;
+    lines.splice(end + 1, 0, mutation);
+    return lines.join('\n');
   });
-  expectFixture(result, 'dead runtime module comparison does not mask altered helper', 1);
+  expectFixture(result, name + ' is rejected', 1, ['workflow']);
 }
 
-// Control 142: an unfenced table-shaped row before the named C12 catalog is not the live row.
-// Reverting the live row while cloning it as an earlier decoy must fail the scoped rule-text
-// oracle; a first-arbitrary-row lookup would incorrectly pass.
+// Control 146: a top-level loop decoy must not satisfy the runtime module-identity helper
+// contract when the live helper is changed to compare a different field.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const live = 'const auditResultModuleMatches = (result, unit) => result.module === unit.module;';
+    if (!source.includes(live)) return source;
+    const altered = source.replace(live, 'const auditResultModuleMatches = (result, unit) => result.label === unit.module;');
+    return altered.replace('const resultsByLabel =', 'for (;;) { const auditResultModuleMatches = (result, unit) => result.module === unit.module; break; }\nconst resultsByLabel =');
+  });
+  expectFixture(result, 'top-level loop runtime helper decoy does not mask altered helper', 1, ['workflow']);
+}
+
+// Controls 147-151: every independent input to orchestrationComplete is part of the gate.
+// Replace exactly one comparison with a literal while preserving the expression syntax; the
+// validator must reject each weakened gate with its structural workflow diagnostic.
+for (const [name, expression] of [
+  ['missing scope gate', 'missingScopeFields.length === 0'],
+  ['missing slices gate', 'missingSlices.length === 0'],
+  ['missing unit inputs gate', 'Object.keys(missingUnitInputs).length === 0'],
+  ['stray labels gate', 'strayLabels.length === 0'],
+  ['dropped agents gate', 'dropped === 0'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    if (!source.includes(expression)) return null;
+    return source.replace(expression, 'true');
+  });
+  expectFixture(result, 'orchestrationComplete ' + name + ' is required', 1, ['orchestrationComplete']);
+}
+
+// Control 152: an incorrect live runtime helper plus a dead canonical helper decoy must fail;
+// the decoy is deliberately a complete function so a broad text search cannot satisfy the
+// contract by finding the right expression in unreachable code.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
+    const live = 'const auditResultModuleMatches = (result, unit) => result.module === unit.module;';
+    if (!source.includes(live)) return source;
+    const altered = source.replace(live, 'const auditResultModuleMatches = (result, unit) => result.label === unit.module;');
+    return altered.replace('const resultsByLabel =', 'if (false) { const auditResultModuleMatches = (result, unit) => result.module === unit.module; }\nconst resultsByLabel =');
+  });
+  expectFixture(result, 'dead runtime module comparison does not mask altered helper', 1, ['workflow']);
+}
+
+// Control 153: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
+// the live row while cloning it under a wrong-header/wrong-width table must fail the scoped
+// rule-text oracle; a first-arbitrary-table lookup would incorrectly pass.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
@@ -1763,13 +1835,13 @@ for (const [name, mutate] of [
   } else {
     const decoy = lines[live];
     lines[live] = lines[live].replace('either drop', 'drop one');
-    lines.splice(header, 0, decoy);
+    lines.splice(header, 0, '| Task | Decoy |', '|---|---|', decoy);
     const scoped = moduleTableRowOf(lines.join('\n'), control.moduleRowAnchor, control.section);
     if (control.require.every((token) => scoped.includes(token))) failures.push('earlier unfenced module-table decoy unexpectedly satisfied the live rule');
   }
 }
 
-// Control 143: an earlier unfenced numbered item is outside the named Operating mode list.
+// Control 154: an earlier unfenced numbered item is outside the named Operating mode list.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
@@ -1787,7 +1859,7 @@ for (const [name, mutate] of [
   }
 }
 
-// Control 144: a numbered item after an indented level-2 heading belongs to the following
+// Control 155: a numbered item after an indented level-2 heading belongs to the following
 // section, not to Operating mode. This protects the section boundary from first-match drift.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));

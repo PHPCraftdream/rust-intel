@@ -375,28 +375,98 @@ function findTopLevelArrayStart(source, name) {
   return -1;
 }
 
+// Return only top-level `const name = ...` declarations.  The executable mask has already removed
+// strings, comments, templates, and regexp bodies, while retaining grouping bytes; depth therefore
+// excludes decoys hidden in dead blocks and quoted examples.
+function findTopLevelConstDeclarations(source, name) {
+  const declarations = [];
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  const declaration = new RegExp(`^const\\s+${name}\\s*=`);
+  for (let i = 0; i < source.length; i += 1) {
+    if (braceDepth === 0 && parenDepth === 0 && bracketDepth === 0
+      && (i === 0 || !/[A-Za-z0-9_$]/.test(source[i - 1] || ''))
+      && !/[A-Za-z0-9_$]/.test(source[i + 5] || '')) {
+      const match = source.slice(i).match(declaration);
+      if (match) {
+        declarations.push(i);
+        i += match[0].length - 1;
+        continue;
+      }
+    }
+    const character = source[i];
+    if (character === '{') braceDepth += 1;
+    else if (character === '}' && braceDepth > 0) braceDepth -= 1;
+    else if (character === '(') parenDepth += 1;
+    else if (character === ')' && parenDepth > 0) parenDepth -= 1;
+    else if (character === '[') bracketDepth += 1;
+    else if (character === ']' && bracketDepth > 0) bracketDepth -= 1;
+  }
+  return declarations;
+}
+
+function findTopLevelForLoop(source, start, pattern) {
+  const anchoredPattern = new RegExp(`^(?:${pattern.source})`, pattern.flags.replace('g', ''));
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    if (i >= start && braceDepth === 0 && parenDepth === 0 && bracketDepth === 0 && source.slice(i).match(anchoredPattern)) return i;
+    const character = source[i];
+    if (character === '{') braceDepth += 1;
+    else if (character === '}' && braceDepth > 0) braceDepth -= 1;
+    else if (character === '(') parenDepth += 1;
+    else if (character === ')' && parenDepth > 0) parenDepth -= 1;
+    else if (character === '[') bracketDepth += 1;
+    else if (character === ']' && bracketDepth > 0) bracketDepth -= 1;
+  }
+  return -1;
+}
+
+function findMatchingDelimiter(source, openingIndex, opener, closer) {
+  let depth = 0;
+  for (let i = openingIndex; i < source.length; i += 1) {
+    if (source[i] === opener) depth += 1;
+    else if (source[i] === closer && --depth === 0) return i;
+  }
+  return -1;
+}
+
 const executableWorkflowCode = maskJsNonCode(workflow);
-const deepFreezeHelper = /function\s+deepFreezeRecords\s*\(\s*records\s*\)\s*\{\s*for\s*\(\s*const\s+record\s+of\s+records\s*\)\s*\{\s*for\s*\(\s*const\s+value\s+of\s+Object\.values\s*\(\s*record\s*\)\s*\)\s*\{\s*if\s*\(\s*Array\.isArray\s*\(\s*value\s*\)\s*\)\s*Object\.freeze\s*\(\s*value\s*\)\s*\}\s*Object\.freeze\s*\(\s*record\s*\)\s*\}\s*return\s+Object\.freeze\s*\(\s*records\s*\)\s*\}/g;
-if ((executableWorkflowCode.match(deepFreezeHelper) || []).length !== 1) {
+const deepFreezeDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'deepFreezeRecords');
+const deepFreezeHelper = /const\s+deepFreezeRecords\s*=\s*\(\s*records\s*\)\s*=>\s*\{\s*for\s*\(\s*const\s+record\s+of\s+records\s*\)\s*\{\s*for\s*\(\s*const\s+value\s+of\s+Object\.values\(\s*record\s*\)\s*\)\s*\{\s*if\s*\(\s*Array\.isArray\(\s*value\s*\)\s*\)\s*Object\.freeze\(\s*value\s*\)\s*\}\s*Object\.freeze\(\s*record\s*\)\s*\}\s*return\s+Object\.freeze\(\s*records\s*\)\s*\};/;
+if (deepFreezeDeclarations.length !== 1 || !deepFreezeHelper.test(executableWorkflowCode.slice(deepFreezeDeclarations[0] ?? 0))) {
   errors.push('workflow must contain exactly one canonical deepFreezeRecords helper that freezes nested arrays, records, and the outer array');
 }
 const deepFreezeCalls = executableWorkflowCode.match(/\bdeepFreezeRecords\s*\(/g) || [];
-if (deepFreezeCalls.length !== 3) {
+if (deepFreezeCalls.length !== 2) {
   errors.push('workflow must call deepFreezeRecords exactly for MODULES and AUDIT_UNITS');
 }
-const moduleMatchHelper = /function\s+auditResultModuleMatches\s*\(\s*result\s*,\s*unit\s*\)\s*\{\s*return\s+result\.module\s*===\s*unit\.module\s*\}/g;
-if ((executableWorkflowCode.match(moduleMatchHelper) || []).length !== 1) {
+const moduleMatchDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'auditResultModuleMatches');
+const moduleMatchHelper = /const\s+auditResultModuleMatches\s*=\s*\(\s*result\s*,\s*unit\s*\)\s*=>\s*result\.module\s*===\s*unit\.module\s*;/;
+if (moduleMatchDeclarations.length !== 1 || !moduleMatchHelper.test(executableWorkflowCode.slice(moduleMatchDeclarations[0] ?? 0))) {
   errors.push('workflow must contain exactly one canonical auditResultModuleMatches helper');
 }
-const missingLoopStart = executableWorkflowCode.indexOf('const missingUnitInputs = {}');
-const missingLoopEnd = missingLoopStart >= 0
-  ? executableWorkflowCode.indexOf('if (missing.length) missingUnitInputs', missingLoopStart)
-  : -1;
-const missingLoopCode = missingLoopStart >= 0 && missingLoopEnd > missingLoopStart
-  ? executableWorkflowCode.slice(missingLoopStart, missingLoopEnd)
+const missingDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'missingUnitInputs');
+const missingDeclaration = /const\s+missingUnitInputs\s*=\s*\{\s*\}/;
+const missingDeclarationIndex = missingDeclarations.find((index) => missingDeclaration.test(executableWorkflowCode.slice(index))) ?? -1;
+if (missingDeclarations.length !== 1 || missingDeclarationIndex < 0) {
+  errors.push('workflow must contain exactly one top-level const missingUnitInputs = {} declaration');
+}
+const missingLoopStart = findTopLevelForLoop(executableWorkflowCode, missingDeclarationIndex, /for\s*\(\s*const\s+unit\s+of\s+AUDIT_UNITS\s*\)\s*\{/);
+const missingLoopBodyStart = missingLoopStart >= 0 ? executableWorkflowCode.indexOf('{', missingLoopStart) : -1;
+const missingLoopBodyEnd = missingLoopBodyStart >= 0 ? findMatchingDelimiter(executableWorkflowCode, missingLoopBodyStart, '{', '}') : -1;
+const missingLoopCode = missingLoopBodyStart >= 0 && missingLoopBodyEnd > missingLoopBodyStart
+  ? executableWorkflowCode.slice(missingLoopStart, missingLoopBodyEnd + 1)
   : '';
 if (!/for\s*\(\s*const\s+unit\s+of\s+AUDIT_UNITS\s*\)\s*\{\s*const\s+result\s*=\s*resultsByLabel\.get\(\s*unit\.label\s*\)\s*const\s+missing\s*=\s*\[\s*\]\s*if\s*\(\s*!result\s*\)\s*missing\.push\(\s*\)\s*else\s+if\s*\(\s*!auditResultModuleMatches\(\s*result\s*,\s*unit\s*\)\s*\)\s*missing\.push\(/.test(missingLoopCode)) {
   errors.push('workflow missingUnitInputs loop must call auditResultModuleMatches in its module-mismatch branch');
+}
+const orchestrationDeclarations = findTopLevelConstDeclarations(executableWorkflowCode, 'orchestrationComplete');
+const orchestrationExpression = /const\s+orchestrationComplete\s*=\s*missingScopeFields\.length\s*===\s*0\s*&&\s*missingSlices\.length\s*===\s*0\s*&&\s*Object\.keys\(\s*missingUnitInputs\s*\)\.length\s*===\s*0\s*&&\s*strayLabels\.length\s*===\s*0\s*&&\s*dropped\s*===\s*0\s*;?[ \t\r]*(?:\n|$)/;
+if (orchestrationDeclarations.length !== 1 || !orchestrationExpression.test(executableWorkflowCode.slice(orchestrationDeclarations[0] ?? 0))) {
+  errors.push('workflow orchestrationComplete must be one top-level const with all five coverage conjuncts');
 }
 
 const workflowWithoutComments = stripJsComments(workflow);
@@ -470,7 +540,9 @@ function parseStringArray(value) {
   const text = value.trim();
   if (!text.startsWith('[') || !text.endsWith(']')) return null;
   const inner = text.slice(1, -1);
-  if (/,[ \t\r\n]*$/.test(inner)) return null;
+  // JavaScript permits one trailing comma in an array literal; topLevelArrayElements removes
+  // that harmless elision. The category-map parser below intentionally keeps its own dangling
+  // comma rejection because that is a Markdown grammar error, not JavaScript syntax.
   if (!inner.trim()) return [];
   const parts = topLevelArrayElements(inner);
   if (parts.some((part) => part === null)) return null;
@@ -558,6 +630,50 @@ if (!parsedAuditUnits || parsedAuditUnits.some((unit) => unit === null)) {
   errors.push('workflow AUDIT_UNITS contains a null, unparsed, or unsupported top-level element');
 }
 const auditUnits = (parsedAuditUnits || []).filter(Boolean);
+
+// Deep-freezing is the primary runtime boundary, but an executable post-initialisation write is
+// still a contract violation (and can become observable if the freeze is weakened).  Keep this
+// deliberately bounded: reject obvious writes, deletes, Reflect.set calls, mutators, and simple
+// aliases of MODULES/AUDIT_UNITS or their nested arrays, while leaving ordinary result bookkeeping
+// such as `missing.push(...)` alone.
+function workflowMutationCheck(source, names) {
+  const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
+  const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const aliases = new Set();
+  const aliasRe = /\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*((?:MODULES|AUDIT_UNITS)(?:(?:\s*\[[^\]\r\n]*\])|(?:\s*\.\s*(?:categories|requiredArtifactGroups)))*)/g;
+  for (const match of source.matchAll(aliasRe)) aliases.add(match[1]);
+  const mutationNames = [...new Set([...names, ...aliases])];
+  const mutationNameRe = mutationNames.map(escaped).join('|');
+  const assignmentRe = /^(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*(?:=|\+=|-=|\*=|\/=|%=|&&=|\|\|=|\?\?=)(?!=|>)/;
+  const mutatorRe = /^(?:\s*(?:\[[^\]\r\n]*\]|\.[A-Za-z_$][A-Za-z0-9_$]*))*\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/;
+  const declarationRe = () => /\bconst\s*$/;
+  for (const name of mutationNames) {
+    const identifierRe = new RegExp(`\\b${escaped(name)}\\b`, 'g');
+    for (const match of source.matchAll(identifierRe)) {
+      const index = match.index;
+      const before = source.slice(Math.max(0, index - 40), index);
+      const after = source.slice(index + name.length);
+      if (declarationRe().test(before)) continue;
+      const mutator = after.match(mutatorRe);
+      if (mutator && mutators.has(mutator[1])) {
+        errors.push(`workflow ${name}.${mutator[1]}() mutates declarative audit data`);
+        continue;
+      }
+      if (assignmentRe.test(after)) {
+        errors.push(`workflow ${name} has an executable post-initialization assignment`);
+      }
+      if (/^\s*\[/u.test(after) && /^\s*\[[^\]\r\n]*\]\s*=/.test(after)) {
+        errors.push(`workflow ${name} has an executable indexed assignment`);
+      }
+    }
+  }
+  const deleteRe = new RegExp(`\\bdelete\\s+(?:${mutationNameRe})\\b`);
+  if (deleteRe.test(source)) errors.push('workflow cannot delete from MODULES, AUDIT_UNITS, or their aliases');
+  const reflectSetRe = new RegExp(`\\bReflect\\s*\\.\\s*set\\s*\\([^)]*\\b(?:${mutationNameRe})\\b`);
+  if (reflectSetRe.test(source)) errors.push('workflow cannot use Reflect.set on MODULES, AUDIT_UNITS, or their aliases');
+}
+workflowMutationCheck(executableWorkflowCode, ['MODULES', 'AUDIT_UNITS']);
+
 const labels = new Set();
 for (const unit of auditUnits) {
   if (labels.has(unit.label)) errors.push(`workflow AUDIT_UNITS contains duplicate label ${unit.label}`);

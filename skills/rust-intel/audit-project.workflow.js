@@ -24,7 +24,7 @@ if (!args.skillDir) {
   throw new Error('audit-rust-project: missing required arg "skillDir" (path to the rust-intel skill dir holding SKILL.md + modules)')
 }
 
-function deepFreezeRecords(records) {
+const deepFreezeRecords = (records) => {
   for (const record of records) {
     for (const value of Object.values(record)) {
       if (Array.isArray(value)) Object.freeze(value)
@@ -32,7 +32,7 @@ function deepFreezeRecords(records) {
     Object.freeze(record)
   }
   return Object.freeze(records)
-}
+};
 
 // Module -> category-ids it owns. Mirrors the category->module map in SKILL.md.
 const MODULES = deepFreezeRecords([
@@ -350,9 +350,7 @@ const knownLabels = new Set(AUDIT_UNITS.map((unit) => unit.label))
 const strayLabels = [...new Set(auditResults.map((result) => result.label).filter((label) => !knownLabels.has(label)))]
 if (strayLabels.length) log(`WARNING: audit unit(s) returned unrecognized label(s): ${strayLabels.join(', ')}`)
 const resultsByLabel = new Map(auditResults.filter((result) => knownLabels.has(result.label)).map((result) => [result.label, result]))
-function auditResultModuleMatches(result, unit) {
-  return result.module === unit.module
-}
+const auditResultModuleMatches = (result, unit) => result.module === unit.module;
 const missingUnitInputs = {}
 for (const unit of AUDIT_UNITS) {
   const result = resultsByLabel.get(unit.label)
