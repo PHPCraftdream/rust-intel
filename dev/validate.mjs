@@ -1160,7 +1160,9 @@ function workflowMutationCheck(source, names, rawSource = source) {
           const beforeKeyword = previousSignificant(cursor);
           const isMemberProperty = beforeKeyword >= 0
             && (source[beforeKeyword] === '.' || source[beforeKeyword] === '#');
-          if (!isMemberProperty && (keywordAt(cursor, 'case') || keywordAt(cursor, 'default'))) {
+          if (ternaryDepth === 0
+            && !isMemberProperty
+            && (keywordAt(cursor, 'case') || keywordAt(cursor, 'default'))) {
             labelStart = cursor;
             continue;
           }

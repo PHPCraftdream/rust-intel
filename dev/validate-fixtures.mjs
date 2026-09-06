@@ -2921,9 +2921,11 @@ for (const [number, root] of [
   expectFixture(result, `Control ${number}: decimal/consequent ternary switch case (${root}) is rejected`, 1, ['workflow']);
 }
 
-// Controls 342-343: genuine optional chaining in a switch-case expression is not a ternary and
-// must not over-report a harmless root read.  The member property is deliberately followed by
-// the case label colon, pinning the distinction from the decimal spelling above for both roots.
+// Controls 342-343: genuine optional chaining in a switch-case expression is not a ternary.  Keep
+// the class declaration and direct root update on the reached case path: if `?.` is misclassified
+// as a ternary, the scanner suppresses the case label and loses the mutation, incorrectly
+// accepting both immutable roots.  The member property is deliberately followed by the case
+// label colon, pinning the distinction from the decimal spelling above for both roots.
 for (const [number, root] of [
   [342, 'MODULES'],
   [343, 'AUDIT_UNITS'],
@@ -2931,9 +2933,9 @@ for (const [number, root] of [
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
     source,
     root,
-    `switch (value) { case optionalTarget?.property: void ${root}.length; }`,
+    `switch (value) { case optionalTarget?.property: class OptionalChainCaseClass${number} {} ++${root}.length; }`,
   ));
-  expectFixture(result, `Control ${number}: genuine optional-chaining switch case read (${root}) remains accepted`, 0);
+  expectFixture(result, `Control ${number}: genuine optional-chaining switch case (${root}) is rejected`, 1, ['workflow']);
 }
 
 for (const fixture of cases) {
