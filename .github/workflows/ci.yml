@@ -125,6 +125,41 @@ jobs:
           node dev/snapshot-install.mjs "$target" > "$root/after.json"; cmp "$root/known-good.json" "$root/after.json"
           node bin/install-codex.js --user-dir "$target" --uninstall
           test ! -e "$target/rust-intel"; test "$(cat "$target/other/sibling.md")" = keep
+      - name: Smoke-test abrupt installer restart recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"; trap 'rm -rf "$root"' EXIT
+          target="$root/claude"
+          mkdir -p "$target/skills/rust-intel" "$target/commands"
+          printf 'old\n' > "$target/skills/rust-intel/SKILL.md"
+          printf 'keep\n' > "$target/commands/keep.md"
+          if RUST_INTEL_INSTALL_ABORT_AT=after-backup-journal-5 CLAUDE_CONFIG_DIR="$target" node bin/install.js --user; then
+            echo 'abrupt Node install exit was accepted' >&2; exit 1
+          else
+            test "$?" -eq 86
+          fi
+          CLAUDE_CONFIG_DIR="$target" node bin/install.js --user
+          test -f "$target/skills/rust-intel/SKILL.md"
+          CLAUDE_CONFIG_DIR="$target" node bin/install.js --user --uninstall
+          mkdir -p "$target/skills/rust-intel"
+          printf 'old\n' > "$target/skills/rust-intel/SKILL.md"
+          if RUST_INTEL_INSTALL_ABORT_AT=after-backup-journal-0 CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh; then
+            echo 'abrupt Bash install exit was accepted' >&2; exit 1
+          else
+            test "$?" -eq 86
+          fi
+          CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh
+          test -f "$target/skills/rust-intel/SKILL.md"
+          CLAUDE_CONFIG_DIR="$target" ./rust-cc-uninstall.sh
+          codex="$root/codex"; mkdir -p "$codex/rust-intel"; printf 'old\n' > "$codex/rust-intel/SKILL.md"
+          if RUST_INTEL_INSTALL_ABORT_AT=after-backup-journal-0 node bin/install-codex.js --user-dir "$codex"; then
+            echo 'abrupt Codex install exit was accepted' >&2; exit 1
+          else
+            test "$?" -eq 86
+          fi
+          node bin/install-codex.js --user-dir "$codex"
+          node bin/install-codex.js --user-dir "$codex" --uninstall
       - name: Installer overlap-guard execution tests
         shell: bash
         run: |
@@ -268,6 +303,13 @@ jobs:
           Remove-Item Env:RUST_INTEL_INSTALL_FAIL_AFTER
           & $script
           $knownGood = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
+          $env:RUST_INTEL_INSTALL_ABORT_AT = 'after-backup-journal-0'
+          $abrupt = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $script) -Wait -PassThru -NoNewWindow
+          if ($abrupt.ExitCode -ne 86) { throw "abrupt PowerShell install exit code was $($abrupt.ExitCode)" }
+          Remove-Item Env:RUST_INTEL_INSTALL_ABORT_AT
+          & $script
+          $after = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
+          if ($knownGood -ne $after) { throw 'PowerShell abrupt install restart changed the complete inventory' }
           $lock = [IO.File]::Open((Join-Path $target 'commands\rust-cc-audit.md'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
           try {
             $failed = $false
@@ -283,6 +325,10 @@ jobs:
           $after = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
           if ($knownGood -ne $after) { throw 'PowerShell uninstall rollback changed the complete inventory' }
           Remove-Item Env:RUST_INTEL_INSTALL_FAIL_AFTER
+          $env:RUST_INTEL_INSTALL_ABORT_AT = 'after-backup-journal-0'
+          $abrupt = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $uninstall) -Wait -PassThru -NoNewWindow
+          if ($abrupt.ExitCode -ne 86) { throw "abrupt PowerShell uninstall exit code was $($abrupt.ExitCode)" }
+          Remove-Item Env:RUST_INTEL_INSTALL_ABORT_AT
           & $uninstall
           if (Test-Path -LiteralPath (Join-Path $target 'skills\rust-intel')) { throw 'PowerShell uninstall left skill files' }
           if (-not (Test-Path -LiteralPath (Join-Path $target 'commands\keep.md'))) { throw 'PowerShell uninstall removed unrelated sibling' }
@@ -299,11 +345,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash --version | head -n 1
+          case "${BASH_VERSION:-}" in 3.2.*) ;; *) echo "expected Bash 3.2, got ${BASH_VERSION:-unknown}" >&2; exit 1 ;; esac
           bash -n rust-cc-install.sh rust-cc-uninstall.sh
           root="$(mktemp -d)"; trap 'rm -rf "$root"' EXIT
-          target="$root/target with spaces"
+          target="$root/-target with spaces"
+          mkdir -p "$target/skills/rust-intel" "$target/commands"
+          printf 'old-skill\n' > "$target/skills/rust-intel/SKILL.md"
+          printf 'unrelated\n' > "$target/commands/keep.md"
+          node dev/snapshot-install.mjs "$target" > "$root/before.json"
+          if RUST_INTEL_INSTALL_FAIL_AFTER=1 CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh; then
+            echo 'injected Bash 3.2 rollback failure was accepted' >&2; exit 1
+          fi
+          node dev/snapshot-install.mjs "$target" > "$root/after.json"
+          cmp "$root/before.json" "$root/after.json"
           CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh
           node dev/snapshot-install.mjs "$target" > "$root/installed.json"
           CLAUDE_CONFIG_DIR="$target" ./rust-cc-uninstall.sh
           test ! -e "$target/skills/rust-intel"
+          test "$(cat "$target/commands/keep.md")" = unrelated

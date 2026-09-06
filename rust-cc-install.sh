@@ -203,23 +203,45 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
     exit 1
 fi
 
+abrupt_abort() {
+    [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]] && exit 86
+}
+
 # Build and validate the complete replacement beside the destination first. The old install is
 # moved to a backup only after every source file is known and copied successfully.
 TX_PARENT="$(dirname "$CLAUDE_DIR")"
 mkdir -p "$TX_PARENT"
 recover_transaction() {
     local tx="$1" journal="$1/journal" phase kind index status original destination backup
-    [[ -f "$journal" ]] || { echo "Error: unfinished installer transaction has no journal; recover manually from $tx." >&2; return 1; }
+    # The journal is published before staging and before any live path is moved.  A transaction
+    # without one is therefore provably pre-live and its stage can be discarded safely.
+    [[ -f "$journal" ]] || { rm -rf -- "$tx"; return; }
+    local version="$(awk '$1 == "version" { print $2; exit }' "$journal")"
+    [[ "$version" == 1 ]] || { echo "Error: invalid installer transaction journal version (recover from $tx)." >&2; return 1; }
     phase="$(awk '$1 == "phase" { print $2; exit }' "$journal")"
-    if [[ "$phase" == committed || "$phase" == rolled-back ]]; then rm -rf -- "$tx"; return; fi
-    while read -r kind index status original; do
+    [[ "$phase" == prepared || "$phase" == active || "$phase" == committed || "$phase" == rolled-back || "$phase" == rollback-failed ]] || { echo "Error: invalid installer transaction phase (recover from $tx)." >&2; return 1; }
+    local record_count=0
+    local -a seen=()
+    while IFS=$'\t' read -r kind index status original destination; do
         [[ "$kind" != phase ]] || continue
         [[ "$kind" == record ]] || continue
+        [[ "$index" =~ ^[0-9]+$ && "$index" -lt "${#OWNED[@]}" && -z "${seen[$index]:-}" ]] || { echo "Error: invalid installer transaction record index (recover from $tx)." >&2; return 1; }
+        [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up || "$status" == installing || "$status" == installed ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid installer transaction record (recover from $tx)." >&2; return 1; }
+        seen[$index]=1
+        record_count=$((record_count + 1))
         destination="${OWNED[$index]}"
         backup="$tx/backup/$index"
-        if [[ -e "$backup" || -L "$backup" ]]; then
-            if [[ ( "$status" == installed || "$status" == installing ) && ( -e "$destination" || -L "$destination" ) ]]; then
+        if [[ "$phase" == committed || "$phase" == rolled-back ]]; then continue; fi
+        if [[ "$status" == backing-up && ! -e "$backup" && ! -L "$backup" && ( -e "$destination" || -L "$destination" ) ]]; then
+            # The journal is written before rename; destination-present/backup-absent proves the
+            # rename did not happen.  Never delete this unbacked live path.
+            continue
+        elif [[ -e "$backup" || -L "$backup" ]]; then
+            if [[ "$status" == installed && ( -e "$destination" || -L "$destination" ) ]]; then
                 rm -rf -- "$destination" || return 1
+            elif [[ "$status" == installing && ( -e "$destination" || -L "$destination" ) ]]; then
+                echo "Error: unfinished transaction has an unbacked destination while replacement is installing: $destination (recover from $tx)." >&2
+                return 1
             fi
             if [[ ! -e "$destination" && ! -L "$destination" ]]; then
                 mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || return 1
@@ -227,13 +249,21 @@ recover_transaction() {
                 echo "Error: unfinished transaction has both destination and backup: $destination (recover from $tx)." >&2
                 return 1
             fi
-        elif [[ ( "$status" == installed || "$status" == installing ) && "$original" == 0 && ( -e "$destination" || -L "$destination" ) ]]; then
+        elif [[ "$status" == installed && "$original" == 0 && ( -e "$destination" || -L "$destination" ) ]]; then
             rm -rf -- "$destination" || return 1
-        elif [[ "$status" == backing-up ]]; then
+        elif [[ "$status" == installing && ( -e "$destination" || -L "$destination" ) ]]; then
+            echo "Error: unfinished transaction has an unbacked destination while replacement is installing: $destination (recover from $tx)." >&2
+            return 1
+        elif [[ "$status" == backed-up || ( "$status" == backing-up && ! -e "$destination" && ! -L "$destination" ) ]]; then
             echo "Error: unfinished transaction backup is incomplete: $destination (recover from $tx)." >&2
+            return 1
+        elif [[ "$status" == installed && "$original" == 1 ]]; then
+            echo "Error: unfinished transaction backup is missing for an installed original path: $destination (recover from $tx)." >&2
             return 1
         fi
     done < "$journal"
+    [[ "$record_count" -eq "${#OWNED[@]}" ]] || { echo "Error: installer transaction record count does not match owned inventory (recover from $tx)." >&2; return 1; }
+    if [[ "$phase" == committed || "$phase" == rolled-back ]]; then rm -rf -- "$tx"; return; fi
     rm -rf -- "$tx"
 }
 
@@ -248,17 +278,18 @@ TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-bash-tx.XXXXXX")"
 STAGE_ROOT="$TX_DIR/stage"
 BACKUP_ROOT="$TX_DIR/backup"
 JOURNAL="$TX_DIR/journal"
-mkdir -p "$STAGE_ROOT" "$BACKUP_ROOT"
 write_journal() {
     local phase="$1" temporary="$JOURNAL.tmp"
+    abrupt_abort before-journal
     {
         printf 'version 1\nphase %s\n' "$phase"
         local index
         for index in ${!OWNED[@]}; do
-            printf 'record %s %s %s\n' "$index" "${RECORD_STATUS[$index]}" "${RECORD_ORIGINAL[$index]}"
+        printf 'record\t%s\t%s\t%s\t%s\n' "$index" "${RECORD_STATUS[$index]}" "${RECORD_ORIGINAL[$index]}" "${OWNED[$index]}"
         done
     } > "$temporary"
     mv -- "$temporary" "$JOURNAL"
+    abrupt_abort after-journal
 }
 
 ROLLBACK_NEEDED=1
@@ -274,22 +305,27 @@ for index in ${!OWNED[@]}; do
     if [[ -e "${OWNED[$index]}" || -L "${OWNED[$index]}" ]]; then RECORD_ORIGINAL[$index]=1; else RECORD_ORIGINAL[$index]=0; fi
 done
 write_journal prepared
+mkdir -p "$STAGE_ROOT" "$BACKUP_ROOT"
 
 rollback_transaction() {
     local status=$?
     set +e
     if [[ "$ROLLBACK_NEEDED" -eq 1 ]]; then
         local destination
-        local index destination owned_index rollback_failure=0
-        index=$((BACKUP_COUNT - 1))
+        local index destination backup owned_status rollback_failure=0
+        index=$((${#OWNED[@]} - 1))
         while [[ "$index" -ge 0 ]]; do
-            destination="${BACKUP_DESTS[$index]}"
-            owned_index="${BACKUP_INDICES[$index]}"
+            destination="${OWNED[$index]}"; backup="$BACKUP_ROOT/$index"; owned_status="${RECORD_STATUS[$index]}"
             if [[ -e "$destination" || -L "$destination" ]]; then
-                if [[ "${RECORD_STATUS[$owned_index]}" == installed ]]; then rm -rf -- "$destination" || rollback_failure=1; fi
+                if [[ "$owned_status" == installed && ( "${RECORD_ORIGINAL[$index]}" == 0 || -e "$backup" || -L "$backup" ) ]]; then
+                    abrupt_abort "before-rollback-$index"; rm -rf -- "$destination" || rollback_failure=1; abrupt_abort "after-rollback-$index"
+                elif [[ -e "$backup" || -L "$backup" ]]; then rollback_failure=1
+                elif [[ "$owned_status" == installing ]]; then rollback_failure=1
+                fi
             fi
-            if [[ ! -e "$destination" && ! -L "$destination" ]]; then
-                mkdir -p -- "$(dirname "$destination")" && mv -- "${BACKUP_PATHS[$index]}" "$destination" || rollback_failure=1
+            if [[ ! -e "$destination" && ! -L "$destination" && ( -e "$backup" || -L "$backup" ) ]]; then
+                mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || rollback_failure=1
+            elif [[ "$owned_status" == backed-up && ! -e "$backup" && ! -e "$destination" && ! -L "$destination" ]]; then rollback_failure=1
             fi
             index=$((index - 1))
         done
@@ -352,10 +388,13 @@ backup_owned() {
             [[ "${OWNED[$owned_index]}" == "$destination" ]] && break
         done
         BACKUP_INDICES[$index]="$owned_index"
-        RECORD_STATUS[$index]=backing-up
+        RECORD_STATUS[$owned_index]=backing-up
+        abrupt_abort "before-backup-$owned_index"
         write_journal active
+        abrupt_abort "after-backup-journal-$owned_index"
         mv -- "$destination" "${BACKUP_PATHS[$BACKUP_COUNT]}"
-        RECORD_STATUS[$index]=backed-up
+        abrupt_abort "after-backup-rename-$owned_index"
+        RECORD_STATUS[$owned_index]=backed-up
         write_journal active
         BACKUP_COUNT=$((BACKUP_COUNT + 1))
     fi
@@ -365,8 +404,9 @@ for index in ${!OWNED[@]}; do
 done
 
 mkdir -p "$CLAUDE_DIR/skills" "$COMMANDS_DIR"
-RECORD_STATUS[0]=installing; write_journal active
+RECORD_STATUS[0]=installing; abrupt_abort before-replacement-0; write_journal active; abrupt_abort after-replacement-journal-0
 mv -- "$STAGE_ROOT/skill" "$SKILL_DIR"
+abrupt_abort after-replacement-rename-0
 RECORD_STATUS[0]=installed; write_journal active
 REPLACE_COUNT=$((REPLACE_COUNT + 1))
 if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$REPLACE_COUNT" -eq "$RUST_INTEL_INSTALL_FAIL_AFTER" ]]; then
@@ -375,8 +415,9 @@ if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$REPLACE_COUNT" 
 fi
 for command_name in audit fix plan; do
     command_index=$REPLACE_COUNT
-    RECORD_STATUS[$command_index]=installing; write_journal active
+    RECORD_STATUS[$command_index]=installing; abrupt_abort "before-replacement-$command_index"; write_journal active; abrupt_abort "after-replacement-journal-$command_index"
     mv -- "$STAGE_ROOT/commands/rust-cc-$command_name.md" "$COMMANDS_DIR/rust-cc-$command_name.md"
+    abrupt_abort "after-replacement-rename-$command_index"
     RECORD_STATUS[$command_index]=installed; write_journal active
     REPLACE_COUNT=$((REPLACE_COUNT + 1))
     if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$REPLACE_COUNT" -eq "$RUST_INTEL_INSTALL_FAIL_AFTER" ]]; then
@@ -385,8 +426,10 @@ for command_name in audit fix plan; do
     fi
 done
 
-write_journal committed
+abrupt_abort before-commit; write_journal committed; abrupt_abort after-commit
+abrupt_abort before-cleanup
 rm -rf -- "$TX_DIR"
+abrupt_abort after-cleanup
 ROLLBACK_NEEDED=0
 trap - EXIT
 

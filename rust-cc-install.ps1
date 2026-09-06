@@ -55,6 +55,11 @@ if ($env:RUST_INTEL_INSTALL_FAIL_AFTER -and $env:RUST_INTEL_INSTALL_FAIL_AFTER -
     throw 'RUST_INTEL_INSTALL_FAIL_AFTER must be a positive integer.'
 }
 
+function Abrupt-Abort {
+    param([string]$Boundary)
+    if ($env:RUST_INTEL_INSTALL_ABORT_AT -eq $Boundary) { exit 86 }
+}
+
 $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 if ($env:CLAUDE_CONFIG_DIR) {
@@ -136,6 +141,7 @@ $owned = @($SkillDir,
 
 function Write-TransactionJournal {
     param([string]$Path, [string]$Phase, [object[]]$Records, [string[]]$Failures = @())
+    Abrupt-Abort 'before-journal'
     $payload = [ordered]@{ version = 1; phase = $Phase; records = @($Records) }
     if ($Failures.Count -gt 0) { $payload.rollbackFailures = @($Failures) }
     $temporary = "$Path.tmp-$PID"
@@ -147,27 +153,50 @@ function Write-TransactionJournal {
         $stream.Flush($true)
     } finally { $stream.Dispose() }
     Move-Item -LiteralPath $temporary -Destination $Path -Force
+    Abrupt-Abort 'after-journal'
 }
 
 function Recover-Transaction {
-    param([string]$Transaction)
+    param([string]$Transaction, [string[]]$Owned)
     $journalPath = Join-Path $Transaction 'journal.json'
     if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) {
-        throw "Unfinished installer transaction has no journal; recover manually from $Transaction"
+        # The journal is published before staging and before any live path is moved.
+        Remove-Item -LiteralPath $Transaction -Recurse -Force
+        return
     }
-    $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json
+    try { $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json } catch { throw "Invalid installer transaction journal; recover manually from $Transaction" }
+    $phases = @('prepared', 'active', 'committed', 'rolled-back', 'rollback-failed')
+    if ($journal.version -ne 1 -or $phases -notcontains [string]$journal.phase) { throw "Invalid installer transaction journal; recover manually from $Transaction" }
+    $records = @($journal.records)
+    if ($records.Count -ne $Owned.Count) { throw "Installer transaction journal record count does not match owned inventory: $Transaction" }
+    $statuses = @('pending', 'backing-up', 'backed-up', 'installing', 'installed')
+    $backupRoot = [IO.Path]::GetFullPath((Join-Path $Transaction 'backup'))
+    for ($recordIndex = 0; $recordIndex -lt $records.Count; $recordIndex++) {
+        $record = $records[$recordIndex]
+        if ($null -eq $record -or $statuses -notcontains [string]$record.status -or
+            $record.destination -ne $Owned[$recordIndex] -or $null -eq $record.backup -or
+            ($record.originalPresent -isnot [bool])) {
+            throw "Invalid installer transaction record $recordIndex; recover manually from $Transaction"
+        }
+        $expectedBackup = [IO.Path]::GetFullPath((Join-Path $backupRoot ([string]$recordIndex)))
+        if ([IO.Path]::GetFullPath([string]$record.backup) -ne $expectedBackup) { throw "Installer transaction backup is outside its backup root: $Transaction" }
+    }
     if ($journal.phase -eq 'committed' -or $journal.phase -eq 'rolled-back') {
         Remove-Item -LiteralPath $Transaction -Recurse -Force
         return
     }
     $failures = @()
-    foreach ($record in @($journal.records)) {
+    foreach ($record in $records) {
         $destination = [string]$record.destination
         $backup = [string]$record.backup
         $backupPresent = Test-Path -LiteralPath $backup
+        $destinationPresent = Test-Path -LiteralPath $destination
+        if ($record.status -eq 'backing-up' -and -not $backupPresent -and $destinationPresent) { continue }
         if ($backupPresent) {
-            if (($record.status -eq 'installed' -or $record.status -eq 'installing') -and (Test-Path -LiteralPath $destination)) {
+            if ($record.status -eq 'installed' -and $destinationPresent) {
                 try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
+            } elseif ($record.status -eq 'installing' -and $destinationPresent) {
+                $failures += "$destination`: unbacked destination exists while replacement is installing"
             }
             if (-not (Test-Path -LiteralPath $destination) -and (Test-Path -LiteralPath $backup)) {
                 try {
@@ -177,9 +206,11 @@ function Recover-Transaction {
             } elseif ((Test-Path -LiteralPath $backup) -and (Test-Path -LiteralPath $destination)) {
                 $failures += "$destination`: destination and backup both exist"
             }
-        } elseif (($record.status -eq 'installed' -or $record.status -eq 'installing') -and -not [bool]$record.originalPresent -and (Test-Path -LiteralPath $destination)) {
+        } elseif ($record.status -eq 'installed' -and -not [bool]$record.originalPresent -and $destinationPresent) {
             try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
-        } elseif ($record.status -eq 'backing-up') {
+        } elseif ($record.status -eq 'installing' -and $destinationPresent) {
+            $failures += "$destination`: unbacked destination exists while replacement is installing"
+        } elseif ($record.status -eq 'backed-up' -or ($record.status -eq 'backing-up' -and -not $destinationPresent)) {
             $failures += "$destination`: backup state is incomplete"
         }
     }
@@ -190,13 +221,13 @@ function Recover-Transaction {
 $txParent = Split-Path -Parent $ClaudeDir
 New-Item -ItemType Directory -Force -Path $txParent | Out-Null
 foreach ($pending in @(Get-ChildItem -LiteralPath $txParent -Directory -Filter '.rust-intel-ps-tx-*' -ErrorAction SilentlyContinue)) {
-    Recover-Transaction $pending.FullName
+    Recover-Transaction $pending.FullName $owned
 }
 
 $txDir = Join-Path $txParent ('.rust-intel-ps-tx-' + [IO.Path]::GetRandomFileName())
 $stageRoot = Join-Path $txDir 'stage'
 $backupRoot = Join-Path $txDir 'backup'
-New-Item -ItemType Directory -Force -Path $stageRoot, $backupRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $txDir | Out-Null
 $stageSkill = Join-Path $stageRoot 'rust-intel'
 
 # Copy and validate the complete replacement before moving any existing path.
@@ -234,13 +265,17 @@ foreach ($destination in $owned | Select-Object -Unique) {
     }
 }
 Write-TransactionJournal $journalPath 'prepared' $records
+New-Item -ItemType Directory -Force -Path $stageRoot, $backupRoot | Out-Null
 $replaceCount = 0
 try {
     foreach ($record in $records) {
         if (-not $record.originalPresent) { continue }
         $record.status = 'backing-up'
+        Abrupt-Abort ("before-backup-" + [Array]::IndexOf($records, $record))
         Write-TransactionJournal $journalPath 'active' $records
+        Abrupt-Abort ("after-backup-journal-" + [Array]::IndexOf($records, $record))
         Move-Item -LiteralPath $record.destination -Destination $record.backup
+        Abrupt-Abort ("after-backup-rename-" + [Array]::IndexOf($records, $record))
         $record.status = 'backed-up'
         Write-TransactionJournal $journalPath 'active' $records
     }
@@ -248,27 +283,44 @@ try {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $replacement.Destination) | Out-Null
         $record = $records | Where-Object { $_.destination -eq $replacement.Destination }
         $record.status = 'installing'
+        Abrupt-Abort ("before-replacement-" + [Array]::IndexOf($records, $record))
         Write-TransactionJournal $journalPath 'active' $records
+        Abrupt-Abort ("after-replacement-journal-" + [Array]::IndexOf($records, $record))
         Move-Item -LiteralPath $replacement.Staged -Destination $replacement.Destination
+        Abrupt-Abort ("after-replacement-rename-" + [Array]::IndexOf($records, $record))
         $record.status = 'installed'
         Write-TransactionJournal $journalPath 'active' $records
         $replaceCount++
         if ($env:RUST_INTEL_INSTALL_FAIL_AFTER -and $replaceCount -eq [int]$env:RUST_INTEL_INSTALL_FAIL_AFTER) { throw "Injected installer failure after replacement $replaceCount." }
     }
-    Write-TransactionJournal $journalPath 'committed' $records
+    Abrupt-Abort 'before-commit'; Write-TransactionJournal $journalPath 'committed' $records; Abrupt-Abort 'after-commit'
+    Abrupt-Abort 'before-cleanup'
     Remove-Item -LiteralPath $txDir -Recurse -Force
+    Abrupt-Abort 'after-cleanup'
 } catch {
     $rollbackFailures = @()
     for ($recordIndex = $records.Count - 1; $recordIndex -ge 0; $recordIndex--) {
         $record = $records[$recordIndex]
-        if ($record.status -eq 'installed' -and (Test-Path -LiteralPath $record.destination)) {
+        $destinationPresent = Test-Path -LiteralPath $record.destination
+        $backupPresent = Test-Path -LiteralPath $record.backup
+        if ($record.status -eq 'installed' -and $destinationPresent -and ($backupPresent -or -not [bool]$record.originalPresent)) {
+            Abrupt-Abort ("before-rollback-" + $recordIndex)
             try { Remove-Item -LiteralPath $record.destination -Recurse -Force } catch { $rollbackFailures += "$($record.destination): $($_.Exception.Message)" }
+            Abrupt-Abort ("after-rollback-" + $recordIndex)
         }
         if ((Test-Path -LiteralPath $record.backup) -and -not (Test-Path -LiteralPath $record.destination)) {
             try {
                 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $record.destination) | Out-Null
                 Move-Item -LiteralPath $record.backup -Destination $record.destination
             } catch { $rollbackFailures += "$($record.destination): $($_.Exception.Message)" }
+        } elseif ($backupPresent -and $destinationPresent -and $record.status -ne 'installed') {
+            $rollbackFailures += "$($record.destination): destination and backup both exist"
+        } elseif ($record.status -eq 'backing-up' -and -not $backupPresent -and -not $destinationPresent) {
+            $rollbackFailures += "$($record.destination): destination and backup are both absent"
+        } elseif ($record.status -eq 'backed-up' -and -not $backupPresent -and -not $destinationPresent) {
+            $rollbackFailures += "$($record.destination): destination and backup are both absent"
+        } elseif ($record.status -eq 'installing' -and $destinationPresent -and -not $backupPresent) {
+            $rollbackFailures += "$($record.destination): unbacked destination exists while replacement is installing"
         }
     }
     if ($rollbackFailures.Count -gt 0) {
