@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 379 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 384 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 366 spawn a validator child and 13 are in-process (the junction alias and direct oracles); there
+// 366 spawn a validator child and 18 are in-process (the junction alias and direct oracles); there
 // are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
 // probes (B5/B26). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -3187,6 +3187,44 @@ for (const [number, name, root, declaration] of [
 // diagnostic is also accepted when it uses the exact marker below. Any other non-zero exit, child
 // execution failure, or workflow diagnostic remains a regression.
 const invalidUnicodeEscapeDiagnostic = 'invalid Unicode escape in identifier';
+const quietValidationOutput = /^rust-intel validation passed \(\d+ skill markdown files checked\)$/u;
+const intentionalInvalidUnicodeOutput = new RegExp(`^ERROR: workflow ${invalidUnicodeEscapeDiagnostic}$`, 'u');
+const falseWorkflowMutationOutput = /^ERROR: workflow (?:MODULES|AUDIT_UNITS) has an executable increment\/decrement mutation$/u;
+
+// Keep the result oracle separate from the child-process probes. This classifier is deliberately
+// strict: only the current success line or the one exact, workflow-prefixed Unicode diagnostic is
+// accepted. In particular, classify the intentional diagnostic before the mutation diagnostic
+// check. Both messages contain "workflow", so reversing that order would silently turn the
+// documented intentional allowance into a false failure.
+function classifyInvalidUnicodeResult(result) {
+  if (result?.executionFailure || result?.error || result?.signal || !Number.isInteger(result?.status)) {
+    return 'execution-failure';
+  }
+  const output = String(result.output || '').replace(/\r\n?/gu, '\n').trim();
+  if (result.status === 0 && quietValidationOutput.test(output)) return 'quiet';
+  if (result.status === 1 && intentionalInvalidUnicodeOutput.test(output)) return 'intentional-diagnostic';
+  if (result.status === 1 && falseWorkflowMutationOutput.test(output)) return 'false-workflow-mutation';
+  return 'unexpected';
+}
+
+// Controls 380-384: in-process calibration for every classifier branch. The exact intentional
+// diagnostic includes the normal `workflow` prefix, so this catches a mutation that moves the
+// broad false-mutation check ahead of the intentional branch. The remaining cases ensure that a
+// generic status-1 error, the specific mutation diagnostic, or a failed child cannot be accepted.
+for (const [number, name, result, accepted, expectedClass] of [
+  [380, 'current quiet status 0', { status: 0, output: 'rust-intel validation passed (12 skill markdown files checked)' }, true, 'quiet'],
+  [381, 'exact intentional workflow-prefixed status 1 diagnostic', { status: 1, output: 'ERROR: workflow invalid Unicode escape in identifier' }, true, 'intentional-diagnostic'],
+  [382, 'specific false workflow-mutation status 1 diagnostic', { status: 1, output: 'ERROR: workflow MODULES has an executable increment/decrement mutation' }, false, 'false-workflow-mutation'],
+  [383, 'unrelated status 1 diagnostic', { status: 1, output: 'ERROR: unrelated validator failure' }, false, 'unexpected'],
+  [384, 'execution failure', { executionFailure: true, status: 1, output: 'ERROR: workflow invalid Unicode escape in identifier' }, false, 'execution-failure'],
+]) {
+  const actualClass = classifyInvalidUnicodeResult(result);
+  const actualAccepted = actualClass === 'quiet' || actualClass === 'intentional-diagnostic';
+  if (actualClass !== expectedClass || actualAccepted !== accepted) {
+    failures.push(`Control ${number}: ${name} classifier calibration expected ${expectedClass}/${accepted}, got ${actualClass}/${actualAccepted}`);
+  }
+}
+
 for (const [number, name, root, declaration] of [
   [378, 'out-of-range braced Unicode escape', 'MODULES', 'class \\u{0000000000110000}Invalid378 {}'],
   [379, 'surrogate braced Unicode escape', 'AUDIT_UNITS', 'export default class \\u{00000000000D800}Invalid379 {}'],
@@ -3198,13 +3236,11 @@ for (const [number, name, root, declaration] of [
   ));
   const label = `Control ${number}: ${name} (${root})`;
   if (result.skipped) failures.push(`${label}: mutation was not applied`);
-  else if (result.executionFailure) failures.push(`${label}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
-  else if (result.output.includes('workflow')) failures.push(`${label}: invalid escape produced the workflow diagnostic: ${result.output.trim()}`);
-  else if (result.status === 0) {
-    // Current behavior is a source-only scan that ignores the syntactically invalid identifier.
-  }
-  else if (result.status !== 1 || !result.output.includes(invalidUnicodeEscapeDiagnostic)) {
-    failures.push(`${label}: unexpected validator result (status ${result.status}, output: ${result.output.trim()})`);
+  else {
+    const classification = classifyInvalidUnicodeResult(result);
+    if (classification !== 'quiet' && classification !== 'intentional-diagnostic') {
+      failures.push(`${label}: expected quiet success or exact intentional Unicode diagnostic, got ${classification} (status ${result.status}, output: ${result.output.trim()})`);
+    }
   }
 }
 
