@@ -154,6 +154,10 @@ function completeCurrentControlScope(controlId, outcome) {
   controlRegistry.complete(controlId, outcome);
 }
 
+function isJsLineTerminator(character) {
+  return character === '\n' || character === '\r' || character === '\u2028' || character === '\u2029';
+}
+
 // Structural contract: a fixture may not cite a category that has been renamed away or that no
 // longer appears in SKILL.md's routing tables. This catches the real drift (a category id going
 // stale under the fixtures) without touching rule text.
@@ -3571,6 +3575,177 @@ function classifyInvalidUnicodeResult(result) {
   return 'unexpected';
 }
 
+// Keep only executable JavaScript while preserving offsets/newlines. This is the same small
+// lexical view used by the repository validator: comments, quoted text, template text, and
+// regular-expression bodies cannot impersonate a live completion call.
+function isRegexLiteralStart(source, index) {
+  let i = index - 1;
+  while (i >= 0 && /\s/u.test(source[i])) i -= 1;
+  if (i < 0) return true;
+  const previous = source[i];
+  if ('=([{,:;!&|?+-*%^~<>'.includes(previous)) return true;
+  if (previous === ')') {
+    let lineStart = index - 1;
+    while (lineStart >= 0 && !isJsLineTerminator(source[lineStart])) lineStart -= 1;
+    const prefix = source.slice(lineStart + 1, index);
+    if (/\b(?:if|while|for|with|switch|catch)\s*\([^\r\u2028\u2029]*\)\s*$/u.test(prefix)) return true;
+  }
+  const word = source.slice(Math.max(0, i - 12), i + 1).match(/[A-Za-z_$][A-Za-z0-9_$]*$/u)?.[0];
+  return ['return', 'case', 'throw', 'typeof', 'void', 'delete', 'new', 'in', 'instanceof', 'yield', 'await'].includes(word);
+}
+
+function maskJsNonCode(source) {
+  const output = source.split('');
+  const blank = (index) => {
+    if (!isJsLineTerminator(source[index])) output[index] = ' ';
+  };
+  const blankRange = (start, end) => {
+    for (let index = start; index < end; index += 1) blank(index);
+  };
+  const maskQuoted = (start, quote) => {
+    let index = start;
+    while (index < source.length) {
+      const character = source[index];
+      blank(index);
+      if (character === '\\' && index + 1 < source.length) {
+        blank(index + 1);
+        index += 2;
+      } else if (character === quote) return index + 1;
+      else index += 1;
+    }
+    return index;
+  };
+  const maskRegex = (start) => {
+    let index = start;
+    let inClass = false;
+    while (index < source.length) {
+      const character = source[index];
+      blank(index);
+      if (character === '\\' && index + 1 < source.length) {
+        blank(index + 1);
+        index += 2;
+      } else if (character === '[') {
+        inClass = true;
+        index += 1;
+      } else if (character === ']' && inClass) {
+        inClass = false;
+        index += 1;
+      } else if (character === '/' && !inClass) return index + 1;
+      else index += 1;
+    }
+    return index;
+  };
+  let maskCode;
+  const maskTemplate = (start) => {
+    let index = start;
+    while (index < source.length) {
+      const character = source[index];
+      if (character === '\\' && index + 1 < source.length) {
+        blankRange(index, index + 2);
+        index += 2;
+      } else if (character === '`') {
+        blank(index);
+        return index + 1;
+      } else if (character === '$' && source[index + 1] === '{') {
+        blankRange(index, index + 2);
+        index = maskCode(index + 2, true);
+      } else {
+        blank(index);
+        index += 1;
+      }
+    }
+    return index;
+  };
+  maskCode = (start, interpolation) => {
+    let index = start;
+    let braceDepth = 0;
+    while (index < source.length) {
+      const character = source[index];
+      const next = source[index + 1];
+      if (character === '/' && next === '/') {
+        blankRange(index, index + 2);
+        index += 2;
+        while (index < source.length && !isJsLineTerminator(source[index])) {
+          blank(index);
+          index += 1;
+        }
+        continue;
+      }
+      if (character === '/' && next === '*') {
+        blankRange(index, index + 2);
+        index += 2;
+        while (index < source.length) {
+          if (source[index] === '*' && source[index + 1] === '/') {
+            blankRange(index, index + 2);
+            index += 2;
+            break;
+          }
+          blank(index);
+          index += 1;
+        }
+        continue;
+      }
+      if (character === "'") { blank(index); index = maskQuoted(index + 1, "'"); continue; }
+      if (character === '"') { blank(index); index = maskQuoted(index + 1, '"'); continue; }
+      if (character === '`') { blank(index); index = maskTemplate(index + 1); continue; }
+      if (character === '/' && isRegexLiteralStart(source, index)) { blank(index); index = maskRegex(index + 1); continue; }
+      if (character === '{') { braceDepth += 1; index += 1; continue; }
+      if (character === '}' && interpolation) {
+        if (braceDepth === 0) {
+          blank(index);
+          return index + 1;
+        }
+        braceDepth -= 1;
+        index += 1;
+        continue;
+      }
+      index += 1;
+    }
+    return index;
+  };
+  maskCode(0, false);
+  return output.join('');
+}
+
+function literalTrueCompletionViolations(source) {
+  const executable = maskJsNonCode(source);
+  return [...executable.matchAll(/completeCurrentControlScope\s*\(\s*(\d+)\s*,\s*true\s*\)/gu)]
+    .map((match) => Number.parseInt(match[1], 10));
+}
+
+function mutateRealControlBody(source, { label, registration, completion, retain }) {
+  const labelIndex = source.indexOf(label);
+  const registrationIndex = source.indexOf(registration, labelIndex);
+  const registrationEnd = source.indexOf('\n', registrationIndex);
+  const openIndex = source.indexOf('{', registrationEnd < 0 ? registrationIndex : registrationEnd);
+  const completionIndex = source.indexOf(completion, openIndex);
+  const closeIndex = source.indexOf('\n}', completionIndex);
+  if (labelIndex < 0 || registrationIndex < 0 || openIndex < 0 || completionIndex < 0 || closeIndex < 0) return null;
+  const retainedPrefix = retain ? '\n  let passed = false;' : '';
+  return source.slice(labelIndex, openIndex + 1) + retainedPrefix + '\n  '
+    + source.slice(completionIndex, closeIndex) + source.slice(closeIndex, closeIndex + 2);
+}
+
+function runFocusedMutation(source, controlId, total) {
+  const registry = createControlRegistry(total);
+  for (let id = 1; id < controlId; id += 1) {
+    registry.register(id);
+    registry.complete(id, true);
+  }
+  let thrown = null;
+  try {
+    const execute = new Function('observeControls', 'completeCurrentControlScope', source);
+    execute(registry.register, registry.complete);
+  } catch (error) {
+    thrown = error;
+  }
+  if (thrown) return { thrown, diagnostics: registry.finalize() };
+  if (controlId + 1 <= total) {
+    registry.complete(controlId + 1, true);
+  }
+  return { thrown, diagnostics: registry.finalize() };
+}
+
 for (const [number, name, root, declaration] of [
   [378, 'out-of-range braced Unicode escape', 'MODULES', 'class \\u{0000000000110000}Invalid378 {}'],
   [379, 'surrogate braced Unicode escape', 'AUDIT_UNITS', 'export default class \\u{00000000000D800}Invalid379 {}'],
@@ -3628,19 +3803,33 @@ function expectRegistryCase(name, run, expectedDiagnostics) {
     failures.push(`Control 389: ${name} diagnostics mismatch: expected ${JSON.stringify(expectedDiagnostics)}, got ${JSON.stringify(diagnostics)}`);
   }
 }
-expectRegistryCase('retained child completion', () => {
-  const registry = createControlRegistry(1);
-  registry.register(1);
-  const childResult = { status: 0 };
-  registry.complete(1, childResult.status === 0);
-  return registry.finalize();
+expectRegistryCase('real child body removal retains label/registration/completion', () => {
+  const mutated = mutateRealControlBody(fixtureSource, {
+    label: '// Control 1: mutate the banner',
+    registration: 'observeControls(1);',
+    completion: 'completeCurrentControlScope(1,',
+    retain: false,
+  });
+  if (!mutated) return ['real child control 1 mutation could not locate its label, registration, or completion'];
+  const result = runFocusedMutation(mutated.slice(mutated.indexOf('// Control 1:')), 1, 1);
+  const diagnostics = result.diagnostics;
+  const expectedMissing = ['executable controls missing assertion/outcome invocation: 1', 'missing executable controls: 1'];
+  if (!(result.thrown instanceof ReferenceError) || !/result is not defined/u.test(result.thrown.message)) {
+    return [`real child control 1 mutation expected ReferenceError for removed result producer, got ${result.thrown?.name || 'no error'}: ${result.thrown?.message || 'none'}`];
+  }
+  return JSON.stringify(diagnostics) === JSON.stringify(expectedMissing) ? [] : diagnostics;
 }, []);
-expectRegistryCase('retained in-process completion', () => {
-  const registry = createControlRegistry(1);
-  registry.register(1);
-  const semanticObservation = ['expected'];
-  registry.complete(1, semanticObservation.length === 1);
-  return registry.finalize();
+expectRegistryCase('real in-process body removal retains label/registration/completion', () => {
+  const mutated = mutateRealControlBody(fixtureSource, {
+    label: '// Controls 115-116: rule-text extraction',
+    registration: 'observeControls({ start: 115, end: 116 });',
+    completion: 'completeCurrentControlScope(115,',
+    retain: true,
+  });
+  if (!mutated) return ['real in-process control 115 mutation could not locate its label, registration, or completion'];
+  const result = runFocusedMutation(mutated.slice(mutated.indexOf('// Controls 115-116:')), 115, 116);
+  const expected = ['control 115 completed with a false outcome predicate'];
+  return JSON.stringify(result.diagnostics) === JSON.stringify(expected) ? [] : result.diagnostics;
 }, []);
 expectRegistryCase('missing semantic outcome', () => {
   const registry = createControlRegistry(3);
@@ -3718,6 +3907,18 @@ expectRegistryCase('declaration decoys do not replace live declaration', () => {
   const source = '// const CONTROL_REGISTRY_TOTAL = 777;\nconst text = `const CONTROL_REGISTRY_TOTAL = 888;`;\nconst CONTROL_REGISTRY_TOTAL = 389;';
   return declaredRegistryTotal(source) === 389 ? [] : ['live executable registry declaration'];
 }, []);
+expectRegistryCase('literal true completion guard masks non-code decoys', () => {
+  const decoys = [
+    '// completeCurrentControlScope(1, true)',
+    'const quoted = "completeCurrentControlScope(2, true)";',
+    'const templated = `completeCurrentControlScope(3, true)`;',
+    'completeCurrentControlScope(4,\n  true);',
+  ].join('\n');
+  const liveViolations = literalTrueCompletionViolations(fixtureSource);
+  const decoyViolations = literalTrueCompletionViolations(decoys);
+  if (liveViolations.length) return [`live fixture contains literal-true completion(s): ${liveViolations.join(', ')}`];
+  return JSON.stringify(decoyViolations) === JSON.stringify([4]) ? [] : [`masked literal-true guard returned ${JSON.stringify(decoyViolations)} for comment/string/template decoys`];
+}, []);
 expectRegistryCase('registry source has no accounting-only marker patterns', () => {
   const forbiddenScopeHelper = ['control', 'ScopePassed'].join('');
   const forbiddenTrueAssertion = ['assertControlOutcome', '(true'].join('');
@@ -3730,7 +3931,7 @@ expectRegistryCase('registry source has no accounting-only marker patterns', () 
   if (fixtureSource.includes(forbiddenDefaultOutcome)) violations.push('default-true completion outcome');
   return violations;
 }, []);
-const control389Passed = control389CaseCount === 11 && control389CaseFailures === 0;
+const control389Passed = control389CaseCount === 12 && control389CaseFailures === 0;
 completeCurrentControlScope(389, control389Passed);
 
 for (const fixture of cases) {
