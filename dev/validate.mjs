@@ -985,7 +985,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
       braced = true;
       digitsStart = index + 3;
       let cursor = index + 3;
-      while (cursor < source.length && isHexDigit(source[cursor]) && cursor - (index + 3) < 6) cursor += 1;
+      while (cursor < source.length && isHexDigit(source[cursor])) cursor += 1;
       if (cursor <= index + 3 || source[cursor] !== '}') return null;
       digitsEnd = cursor;
       length = cursor - index + 1;
@@ -997,7 +997,12 @@ function workflowMutationCheck(source, names, rawSource = source) {
     }
     // Do not infer the spelling from its byte length: `\\u{41}` is six code units too,
     // but its braces are part of the syntax and must not enter parseInt().
-    const value = Number.parseInt(source.slice(digitsStart, digitsEnd), 16);
+    let value = 0;
+    for (const digit of source.slice(digitsStart, digitsEnd)) {
+      const nibble = Number.parseInt(digit, 16);
+      value = value * 16 + nibble;
+      if (value > 0x10FFFF) return null;
+    }
     if (!braced && length !== 6) return null;
     if (value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) return null;
     return { length, character: String.fromCodePoint(value) };
@@ -1205,7 +1210,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
       if (!hasLineTerminator(previous + 1, index)) return false;
       if ((source[previous] === '+' || source[previous] === '-')
         && isCompletedPostfixUpdate(previous - 1)) return true;
-      return !'=,+-*/%&|^!?<>.:([['.includes(source[previous]);
+      return !'=,+-*/%&|^!?<>.:([{'.includes(source[previous]);
     };
     const beforeClass = previousSignificant(classStart);
     if (beforeClass >= 0 && (source[beforeClass] === '.' || source[beforeClass] === '#')) return false;
@@ -1811,7 +1816,7 @@ function leadingPipeDiagnostic(role, row) {
 function isDelimiterCells(cells, width) {
   return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
-function codeSpanTokens(text, onOutside, onSpan) {
+function codeSpanTokens(text, onSpan) {
   // Pair raw maximal runs once. Backslash escaping only suppresses an opener outside a span;
   // an escaped first tick also exposes the remaining suffix as an opener candidate. A closer
   // inside an accepted span is always the full raw run, even when preceded by a backslash.
@@ -1870,12 +1875,7 @@ function codeSpanTokens(text, onOutside, onSpan) {
       i += opener.length;
       continue;
     }
-    if (text[i] !== '`') {
-      charge();
-      if (onOutside) onOutside(text[i], i, text);
-      i += 1;
-      continue;
-    }
+    if (text[i] !== '`') { i += 1; continue; }
     i += 1;
   }
   return tokens;
@@ -1892,7 +1892,7 @@ function unsupportedFirstCellSyntax(text) {
   // characters: a backslash can change CommonMark tokenization, but it must not hide a project-
   // banned `<`, `[` or URI/email token (for example `\\<custom>` remains unsupported here).
   const spans = [];
-  codeSpanTokens(text, undefined, (start, end) => spans.push([start, end]));
+  codeSpanTokens(text, (start, end) => spans.push([start, end]));
   let reason = null;
   let spanIndex = 0;
   let plain = '';

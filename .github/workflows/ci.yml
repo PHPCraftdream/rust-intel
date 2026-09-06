@@ -28,7 +28,8 @@ jobs:
         run: |
           rustc --version --verbose
           cargo --version --verbose
-          rustc -vV | grep -q '^release: 1.97.0$'
+          rustc_release="$(rustc -vV)"
+          grep '^release: 1.97.0$' >/dev/null <<<"$rustc_release"
       - name: Check for trailing whitespace across the tracked tree
         # Diffs the empty tree against the working tree so every tracked line is treated as an
         # addition and checked — a whole-repo invariant, not just the current PR's diff.

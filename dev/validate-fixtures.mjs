@@ -2,15 +2,18 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: three hundred seventy-five hand-written controls (README count wrong-value + two coexistence
-// variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
-// bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
-// fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
-// crude source probes (B5/B26). They verify that the seed still discriminates
-// positive from negative and that the categories it cites still exist and are still routed —
-// nothing more. They are NOT a recall measurement of the audit, and the rule-text controls pin
-// greppable API/type signatures, not whole paragraphs: pinning prose in CI turns every legitimate
-// rewrite into a red build and freezes whichever phrasing shipped first.
+// Scope, stated honestly: 379 hand-written controls: README category-count and physical-temp-path
+// containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
+// integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
+// MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
+// JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
+// 366 spawn a validator child and 13 are in-process (the junction alias and direct oracles); there
+// are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
+// probes (B5/B26). They verify that the seed still discriminates positive from negative and that
+// the categories it cites still exist and are still routed — nothing more. They are NOT a recall
+// measurement of the audit, and the rule-text controls pin greppable API/type signatures, not whole
+// paragraphs: pinning prose in CI turns every legitimate rewrite into a red build and freezes
+// whichever phrasing shipped first.
 
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -133,7 +136,6 @@ const validateInputs = [
   '.codex-plugin',
   'bin',
   '.github/workflows',
-  'bin/node-version.js',
   'commands',
   'dev/validate.mjs',
   'dev/semver.mjs',
@@ -3160,6 +3162,39 @@ for (const [number, file, job] of [
     return source.slice(0, steps + '    steps:\n'.length) + insertion + source.slice(steps + '    steps:\n'.length);
   });
   expectFixture(result, `Control ${number}: ${job} rejects a second unversioned setup-node step`, 1, [`job ${job} must use exactly one actions/setup-node`]);
+}
+
+// Controls 376-377: ECMAScript braced Unicode escapes permit arbitrarily many leading zeroes.
+// These class declarations must still be recognized as statement boundaries, so the following
+// protected-root updates remain visible. Keeping one bare and one export-default spelling covers
+// both class-header paths without imposing an artificial six-digit spelling limit.
+for (const [number, name, root, declaration] of [
+  [376, 'long-leading-zero braced escape in bare class declaration', 'MODULES', 'class \\u{000000000000041}Name376 {}'],
+  [377, 'long-leading-zero braced escape in export-default class declaration', 'AUDIT_UNITS', 'export default class \\u{000000000000394}Name377 {}'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `${declaration} ++${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 378-379: braced Unicode escapes whose numeric value is outside the Unicode scalar
+// range (above 0x10FFFF or inside the surrogate range) are not identifier spellings. They must not
+// turn the following class body into a statement boundary and therefore remain quiet in this
+// source-only scan. The controls are deliberately child-process mutations so a future parser that
+// throws, truncates, or otherwise accepts either invalid code point becomes observable.
+for (const [number, name, root, declaration] of [
+  [378, 'out-of-range braced Unicode escape', 'MODULES', 'class \\u{0000000000110000}Invalid378 {}'],
+  [379, 'surrogate braced Unicode escape', 'AUDIT_UNITS', 'export default class \\u{00000000000D800}Invalid379 {}'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `${declaration} ++${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains quiet`, 0);
 }
 
 for (const fixture of cases) {

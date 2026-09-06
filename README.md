@@ -84,14 +84,30 @@ rust-intel/
 ├── .codex-plugin/plugin.json           # Codex plugin manifest (points at skills/rust-intel/)
 ├── bin/install.js                      # npx installer (npm package: rust-intel-cc)
 ├── bin/install-codex.js                # Codex user-skill installer (rust-intel-codex)
+├── bin/node-version.js                 # Shared Node.js floor guard
 ├── package.json                        # npm package manifest (published on release tags by CI)
+├── dev/                                 # Validation, mirror, release, and review utilities
+│   ├── validate.mjs                    # Repository validator (also runs fixture controls)
+│   ├── validate-fixtures.mjs           # Fixture-control runner
+│   ├── sync-mirror.mjs                 # Canonical skill -> Codex mirror sync/check
+│   ├── set-release-version.mjs         # Update package and plugin manifest versions
+│   ├── check-release-version.mjs       # Verify a release tag matches all manifests
+│   ├── semver.mjs                      # Shared version parsing/comparison helpers
+│   └── review-modules.workflow.js      # Fan-out review workflow helper
 ├── .github/workflows/npm-publish.yml   # Publishes rust-intel-cc to npm on every v* tag
+├── .github/workflows/ci.yml             # Repository validation and Node floor checks
 ├── README.md                           # This file
 ├── CHANGELOG.md                        # Version history
 ├── .gitattributes                      # Line-ending rules (LF for source, CRLF for .ps1/.bat)
 ├── .gitignore                          # Ignores /.claude/ (project-local install target) and target/
 ├── rust-cc-install.sh / rust-cc-install.ps1 / rust-cc-install.bat       # One-command install (project-local by default; --user for global)
 ├── rust-cc-uninstall.sh / rust-cc-uninstall.ps1 / rust-cc-uninstall.bat # Inverse of install
+├── examples/
+│   ├── README.md                       # Fixture calibration notes
+│   └── fixtures/
+│       ├── cases.json                  # Positive/negative fixture inputs
+│       ├── positive.rs                 # Rust examples expected to pass
+│       └── negative.rs                 # Rust examples expected to be flagged
 ├── commands/
 │   ├── README.md
 │   └── rust-intel-cc/                  # Repo umbrella dir (installer flattens to /rust-cc-* commands)
@@ -100,7 +116,9 @@ rust-intel/
 │       └── plan.md                     # /rust-cc-plan   — pre-flight a new task
 └── docs/
     ├── roadmap.md                      # Roadmap: open directions and structural notes
-    └── sources.md                      # Empirical sources and citations
+    ├── sources.md                      # Empirical sources and citations
+    └── reviews/                         # Review reports and the correction ledger
+        └── README.md
 ```
 
 ## How to use it
@@ -204,6 +222,28 @@ Start a new Codex thread after installation. Use `/skills` to confirm that `rust
 ### As a checklist for humans
 
 The document reads top-to-bottom. The minimum bar before committing any non-trivial Rust: walk the **Pre-flight checklist** (9 questions at the end of the spec) and the **Post-flight checklist** (the list of things to surface in a summary).
+
+### Maintainer release checklist
+
+The Node.js floor raise from 16.7.0 to 24.0.0 removes a previously supported runtime in the 0.x
+series, so the next release is a **MINOR `0.7.0`**, not a patch. Record that decision before starting
+the release; routine reviews must not change the version or release notes implicitly.
+
+1. Decide and record the bump level; for the Node-floor release, use `0.7.0`.
+2. Run `node dev/set-release-version.mjs <version>` and review the three manifest changes.
+3. Update the README version banner and the matching entry in **Status**.
+4. Replace `## [Unreleased]` in `CHANGELOG.md` with the versioned heading and release date.
+5. Run the repository checks: `npm run validate`, `npm pack --dry-run`, the mirror check, and the
+   release-version check (`node dev/check-release-version.mjs <version>`); confirm CI is green.
+6. Commit the release changes with a descriptive message.
+7. Create and push the release tag, for example:
+
+   ```bash
+   git tag -a v<version> -m "Release v<version>"
+   git push origin main v<version>
+   ```
+
+8. Confirm the tag-triggered validation and npm publish workflows completed successfully.
 
 ### Commands
 
