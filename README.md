@@ -51,7 +51,7 @@ Its supported Markdown surface is explicit:
 
 **v0.5.2 (2026-08-14).** Added evidence labels and unreachable-match reporting to audit outputs, with schema and report-contract validation. No category change; **58** categories.
 
-**v0.5.1 (2026-08-09).** Corrected performance-gate guidance to use deterministic counters for failures and wall-clock measurements as trends. No category change; **58** categories.
+**v0.5.1 (2026-08-14).** Corrected performance-gate guidance to use deterministic counters for failures and wall-clock measurements as trends. No category change; **58** categories.
 
 **v0.5.0 (2026-08-08).** Added the Codex distribution channel and installer, moved the evidence base inside the skill, corrected the B5/B12/B20/C1 rules, and improved fan-out artifact tracking. Numbered categories remained **58**. See [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -59,7 +59,7 @@ Its supported Markdown surface is explicit:
 
 **v0.4.6 (2026-07-07).** Added the B5 padding-byte information-leak rule for raw serialization. No category change; **58** categories.
 
-**v0.4.5 (2026-06-17).** Added the Tier E substitution catalog and Claude Code plugin/marketplace plus npm distribution. Numbered categories remained **58**.
+**v0.4.5 (2026-07-05).** Added the Tier E substitution catalog and Claude Code plugin/marketplace plus npm distribution. Numbered categories remained **58**.
 
 **v0.4.4 (2026-06-15).** Added the D1a "facade fitted to the test" semantic-conformance pattern. No category change; **58** categories.
 
@@ -257,8 +257,8 @@ the release; routine reviews must not change the version or release notes implic
 
 1. Decide and record the bump level; for the Node-floor release, use `0.7.0`.
 2. Run `node dev/set-release-version.mjs <version>` and review the three manifest changes.
-3. Update the README version banner, keeping the exact validator-pinned sentence `Numbered categories now **N**`, and add the release's entry to **Status**. Back-fill the missing `v0.6.0` entry before adding a later release, keep entries in reverse chronological order, and put a blank line between every entry.
-4. Replace `## [Unreleased]` in `CHANGELOG.md` with the versioned heading and release date. Re-check the fixture-control count against the header in `dev/validate-fixtures.mjs` (currently **379**) and update the changelog's count if it changed; rewrite the planned-bump sentence in past tense (for example, `This release is \`0.7.0\` (MINOR) because ...`) rather than shipping an imperative instruction.
+3. Update the README version banner, keeping the exact validator-pinned sentence `Numbered categories now **N**`, and add the release's entry to **Status**. When cutting the release, remove or replace the point-in-time `Unreleased (prepared, not tagged)` paragraph so it cannot remain beside the released entry. Back-fill the missing `v0.6.0` entry before adding a later release, keep entries in reverse chronological order, and put a blank line between every entry.
+4. In `CHANGELOG.md`, insert a fresh empty `## [Unreleased]` section above the release, then move the current Unreleased body under `## [0.7.0] — <release-date>` (or the selected version/date). Re-check the fixture-control count against the header in `dev/validate-fixtures.mjs` (currently **379**) and update the changelog's count if it changed; rewrite the planned-bump sentence in past tense (for example, `This release is \`0.7.0\` (MINOR) because ...`) rather than shipping an imperative instruction.
 5. Run the repository checks: `npm run validate`, `npm pack --dry-run`, the mirror check, and the
    release-version check (`node dev/check-release-version.mjs <version>`).
 6. Commit the release changes with a descriptive message.

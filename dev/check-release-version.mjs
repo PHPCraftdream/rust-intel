@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Verify (never rewrite) that a release tag's version matches every committed manifest.
 //
-// A git tag is immutable and points at a specific tree; a CI step that edits manifests in the
-// runner's checkout AFTER the tag exists changes only the npm tarball, not the tagged tree — the
-// tag itself still shows whatever version was last committed. This script instead FAILS the
+// A release tag names a specific tree when it is created, but the tag ref can be moved later. A
+// CI step that edits manifests in the runner's checkout after resolving the tag changes only the
+// npm tarball, not the committed tree selected for that release. This script instead FAILS the
 // release when the tag and the committed manifests disagree, so the fix is always "bump the
-// manifests, commit, then tag" — never a divergence between the tag and what got published.
+// manifests, commit, then tag" — never a divergence between the tag's tree and what gets published.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

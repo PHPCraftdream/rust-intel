@@ -2,8 +2,9 @@
 // Manual release-bump utility. Run this locally, review the diff, commit it, THEN create the
 // tag — the tag must always be created on a commit that already carries the target version.
 // CI does not run this: dev/check-release-version.mjs verifies the tag against what got
-// committed here; it never rewrites manifests after the fact (a tag is immutable — see
-// dev/check-release-version.mjs's header for why post-tag rewriting is the wrong model).
+// committed here; it never rewrites manifests after the tag has been resolved. Release tooling
+// must publish the tree selected by the tag, rather than synthesizing a different version after
+// checkout.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

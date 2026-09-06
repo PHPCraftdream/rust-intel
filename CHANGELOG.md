@@ -118,7 +118,7 @@ What was missing here was not a rule but an *output* axis. The spec's central pr
 - **`commands/rust-intel-cc/audit.md`** — the same axis, vocabulary and limits on the serial (non-workflow) path, so this is not a fan-out-only feature. Plus a new behavioural principle ("report what you established, not what you suspect"), and a Limits section that now says plainly that a pure reading pass yields all-`pattern` findings by construction, and that some hazards (a race with no synchronization point) are decidable by neither reading nor a single run — name what would settle it rather than upgrading a guess.
 - **`dev/validate.mjs`** — the coverage contract pins the whole `required: [...]` literals, not just property names: the realistic regression is a field quietly leaving `required` (making it optional for the structured-output agent, so the axis vanishes from real reports) while every property definition stays in place. Verified by removing `evidence` from `required` and watching the check go red. A second check pins the evidence vocabulary in `commands/rust-intel-cc/audit.md`, which has neither a mirror check nor schema validation of its own, so the two audit paths cannot drift apart on wording.
 
-## [0.5.1] — 2026-08-09
+## [0.5.1] — 2026-08-14
 
 **Performance gates measure the wrong thing — §E6 + §D1.** **PATCH-shaped:** bullets, sub-clauses, two trigger rows and one source entry; numbered category count unchanged (still **58**).
 
@@ -269,7 +269,7 @@ Thesis: both concurrency modules are dense on unbounded *data* growth (§B14) an
 - **`skill/SKILL.md`** — one code-pattern trigger row (`&t as *const _ as *const u8` + `from_raw_parts`, or `bytes_of`/`transmute` on a struct, written to a socket/file/log → §B5 padding leak).
 - **`docs/sources.md`** — one grounding entry: `bytemuck::NoUninit` / `zerocopy::IntoBytes` reject-padding-at-compile-time contracts, CWE-212 (sensitive-info exposure) + CWE-908 (uninitialized resource), and the miri-assisted-audit field observation. Documented-mechanism grounding; no numeric claims.
 
-## [0.4.5] — 2026-06-17
+## [0.4.5] — 2026-07-05
 
 **Distribution: Claude Code plugin marketplace + npm.** Two install paths that need no clone, alongside the existing shell installers.
 
