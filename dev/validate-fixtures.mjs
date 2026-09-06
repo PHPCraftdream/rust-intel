@@ -2924,8 +2924,8 @@ for (const [number, root] of [
 // Controls 342-343: genuine optional chaining in a switch-case expression is not a ternary.  Keep
 // the class declaration and direct root update on the reached case path: if `?.` is misclassified
 // as a ternary, the scanner suppresses the case label and loses the mutation, incorrectly
-// accepting both immutable roots.  The member property is deliberately followed by the case
-// label colon, pinning the distinction from the decimal spelling above for both roots.
+// accepting both immutable roots.  The member property is deliberately followed by the final
+// case-label colon, pinning the distinction from the decimal spelling above for both roots.
 for (const [number, root] of [
   [342, 'MODULES'],
   [343, 'AUDIT_UNITS'],
@@ -2936,6 +2936,24 @@ for (const [number, root] of [
     `switch (value) { case optionalTarget?.property: class OptionalChainCaseClass${number} {} ++${root}.length; }`,
   ));
   expectFixture(result, `Control ${number}: genuine optional-chaining switch case (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 344-347: a switch clause may end at the next case label by ASI after either a
+// nullish-coalescing expression or a nullish assignment.  The following clause contains a class
+// declaration and a direct protected-root update, so losing the zero-depth final-colon boundary
+// would make the mutation disappear.  Cover both operators and both immutable roots.
+for (const [number, name, root, previousClause] of [
+  [344, 'nullish coalescing before next case', 'MODULES', 'left ?? right'],
+  [345, 'nullish assignment before next case', 'MODULES', 'target ??= fallback'],
+  [346, 'nullish coalescing before next case', 'AUDIT_UNITS', 'left ?? right'],
+  [347, 'nullish assignment before next case', 'AUDIT_UNITS', 'target ??= fallback'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `switch (value) { case 1: ${previousClause}\ncase 2: class SwitchNullishAsiClass${number} {} ++${root}.length; }`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
 }
 
 for (const fixture of cases) {

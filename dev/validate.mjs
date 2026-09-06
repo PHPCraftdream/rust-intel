@@ -1136,7 +1136,13 @@ function workflowMutationCheck(source, names, rawSource = source) {
           // is not a decimal digit; otherwise its `:` must close the ternary expression.
           const optionalChain = nextCharacter === '.'
             && !/[0-9]/u.test(source[cursor + 2] ?? '');
-          if (character === '?' && nextCharacter !== '?' && !optionalChain) {
+          // Consume nullish coalescing as one operator.  Otherwise the second `?` in
+          // `??`/`??=` would be mistaken for the opener of a ternary expression.
+          if (character === '?' && nextCharacter === '?') {
+            cursor += source[cursor + 2] === '=' ? 2 : 1;
+            continue;
+          }
+          if (character === '?' && !optionalChain) {
             ternaryDepth += 1;
             continue;
           }
@@ -1174,7 +1180,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
           if (groupStack.at(-1) === expected) groupStack.pop();
         }
       }
-      if (labelStart < 0) return false;
+      if (labelStart < 0 || ternaryDepth !== 0 || groupStack.length !== 0) return false;
       const segment = source.slice(labelStart, colon).trim();
       return /^default$/u.test(segment) || /^case\b[\s\S]*\S/u.test(segment);
     };
