@@ -107,36 +107,6 @@ if ((Test-PathWithin $commandsDestinationCanonical $commandsSourceCanonical) -or
 
 Write-Output "Installing rust-intel into $ClaudeDir ..."
 
-# Sweep prior installation - all known layouts (current + every prior).
-if (Test-Path -LiteralPath $SkillDir) {
-    Write-Output "  cleaning   $SkillDir (previous install)"
-    Remove-Item -LiteralPath $SkillDir -Recurse -Force
-}
-# v0.2.1+ flat-with-prefix:
-foreach ($cur in 'rust-cc-audit.md', 'rust-cc-fix.md', 'rust-cc-plan.md') {
-    $curPath = Join-Path $CommandsDir $cur
-    if (Test-Path -LiteralPath $curPath) {
-        Write-Output "  cleaning   $curPath (previous install)"
-        Remove-Item -LiteralPath $curPath -Force
-    }
-}
-# v0.2.0 colon-namespace dir:
-if (Test-Path -LiteralPath $NsDir) {
-    Write-Output "  cleaning   $NsDir (v0.2.0 namespace layout)"
-    Remove-Item -LiteralPath $NsDir -Recurse -Force
-}
-# v0.1.x legacy flat layout:
-foreach ($legacy in 'rust-audit.md', 'rust-fix.md', 'rust-plan.md', 'rust-intel.md') {
-    $legacyPath = Join-Path $CommandsDir $legacy
-    if (Test-Path -LiteralPath $legacyPath) {
-        Write-Output "  cleaning   $legacyPath (legacy v0.1.x layout)"
-        Remove-Item -LiteralPath $legacyPath -Force
-    }
-}
-
-New-Item -ItemType Directory -Force -Path $SkillDir    | Out-Null
-New-Item -ItemType Directory -Force -Path $CommandsDir | Out-Null
-
 function Install-File {
     param([string]$Source, [string]$Destination)
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
@@ -159,18 +129,18 @@ foreach ($source in $commandSources) {
 }
 
 $txParent = Split-Path -Parent $ClaudeDir
-New-Item -ItemType Directory -Force -LiteralPath $txParent | Out-Null
+New-Item -ItemType Directory -Force -Path $txParent | Out-Null
 $txDir = Join-Path $txParent ('.rust-intel-tx-' + [IO.Path]::GetRandomFileName())
 $stageRoot = Join-Path $txDir 'stage'
 $backupRoot = Join-Path $txDir 'backup'
-New-Item -ItemType Directory -Force -LiteralPath $stageRoot, $backupRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $stageRoot, $backupRoot | Out-Null
 $stageSkill = Join-Path $stageRoot 'rust-intel'
 
 # Copy and validate the complete replacement before moving any existing path.
 foreach ($file in $skillFiles) {
     $relative = $file.FullName.Substring($SkillSourceDir.Length).TrimStart('\','/')
     $destination = Join-Path $stageSkill $relative
-    New-Item -ItemType Directory -Force -LiteralPath (Split-Path -Parent $destination) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
     Install-File -Source $file.FullName -Destination $destination
 }
 $stageCommands = @()
@@ -199,14 +169,14 @@ for ($index = 0; $index -lt $stageCommands.Count; $index++) {
 $replaceCount = 0
 try {
     foreach ($destination in $owned) {
-        if (Test-Path -LiteralPath $destination -Force) {
+        if (Test-Path -LiteralPath $destination) {
             $backup = Join-Path $backupRoot ([string]$backups.Count)
             Move-Item -LiteralPath $destination -Destination $backup
             $backups += @{ Destination = $destination; Backup = $backup }
         }
     }
     foreach ($replacement in $replacements) {
-        New-Item -ItemType Directory -Force -LiteralPath (Split-Path -Parent $replacement.Destination) | Out-Null
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $replacement.Destination) | Out-Null
         Move-Item -LiteralPath $replacement.Staged -Destination $replacement.Destination
         $replaceCount++
         if ($env:RUST_INTEL_INSTALL_FAIL_AFTER -and $replaceCount -eq [int]$env:RUST_INTEL_INSTALL_FAIL_AFTER) { throw "Injected installer failure after replacement $replaceCount." }
@@ -214,13 +184,13 @@ try {
     Remove-Item -LiteralPath $txDir -Recurse -Force
 } catch {
     foreach ($replacement in $replacements) {
-        if (Test-Path -LiteralPath $replacement.Destination -Force) { Remove-Item -LiteralPath $replacement.Destination -Recurse -Force }
+        if (Test-Path -LiteralPath $replacement.Destination) { Remove-Item -LiteralPath $replacement.Destination -Recurse -Force }
     }
     foreach ($record in @($backups | Select-Object -Last $backups.Count)) {
-        New-Item -ItemType Directory -Force -LiteralPath (Split-Path -Parent $record.Destination) | Out-Null
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $record.Destination) | Out-Null
         Move-Item -LiteralPath $record.Backup -Destination $record.Destination
     }
-    if (Test-Path -LiteralPath $txDir -Force) { Remove-Item -LiteralPath $txDir -Recurse -Force }
+    if (Test-Path -LiteralPath $txDir) { Remove-Item -LiteralPath $txDir -Recurse -Force }
     throw
 }
 
