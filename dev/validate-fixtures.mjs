@@ -3682,17 +3682,16 @@ expectRegistryCase('duplicate explicit outcome', () => {
 ]);
 expectRegistryCase('foreign explicit outcome', () => {
   const registry = createControlRegistry(3);
-  registry.register(3);
+  registry.register({ start: 1, end: 3 });
+  registry.complete(1, true);
+  registry.complete(2, true);
+  registry.complete(3, true);
+  registry.register(4);
   registry.complete(4, true);
   return registry.finalize();
 }, [
-  'assertion/outcome helper claimed control 4, outside current executable scope 3',
-  'executable controls missing assertion/outcome invocation: 3',
-  'missing executable control registration: 1',
-  'missing executable controls: 1',
-  'missing executable control registration: 2',
-  'missing executable controls: 2',
-  'missing executable controls: 3',
+  'executable control 4 is not declared in the control registry',
+  'assertion/outcome helper for control 4 ran without a pending executable control scope',
 ]);
 expectRegistryCase('omitted middle plus neighboring duplicate', () => {
   const registry = createControlRegistry(3);
