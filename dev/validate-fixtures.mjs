@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: two hundred sixty-one hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: two hundred seventy-three hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2580,6 +2580,49 @@ for (const [number, name, property] of [
     `const propertyFactory${number} = { ${property}: () => () => [] };\npropertyFactory${number}.${property}(true)\n(MODULES).pop();`,
   ));
   expectFixture(result, `Control ${number}: ${name}`, 0);
+}
+
+// Controls 262-269: ECMAScript treats U+2028/U+2029 as line terminators.  They must therefore
+// terminate a line comment and close a multiline block comment before a prefix update; neither
+// Unicode separator may hide a write to either immutable root.  Keep the full 2x2x2 matrix so
+// each separator, comment form, and immutable root is independently pinned.
+for (const [number, name, root, mutation] of [
+  [262, 'U+2028 line-comment boundary before MODULES update', 'MODULES', '// boundary\u2028++MODULES.length;'],
+  [263, 'U+2028 line-comment boundary before AUDIT_UNITS update', 'AUDIT_UNITS', '// boundary\u2028++AUDIT_UNITS.length;'],
+  [264, 'U+2029 line-comment boundary before MODULES update', 'MODULES', '// boundary\u2029++MODULES.length;'],
+  [265, 'U+2029 line-comment boundary before AUDIT_UNITS update', 'AUDIT_UNITS', '// boundary\u2029++AUDIT_UNITS.length;'],
+  [266, 'U+2028 block-comment terminator before MODULES update', 'MODULES', '/* boundary\u2028*/ ++MODULES.length;'],
+  [267, 'U+2028 block-comment terminator before AUDIT_UNITS update', 'AUDIT_UNITS', '/* boundary\u2028*/ ++AUDIT_UNITS.length;'],
+  [268, 'U+2029 block-comment terminator before MODULES update', 'MODULES', '/* boundary\u2029*/ ++MODULES.length;'],
+  [269, 'U+2029 block-comment terminator before AUDIT_UNITS update', 'AUDIT_UNITS', '/* boundary\u2029*/ ++AUDIT_UNITS.length;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name}`, 1, ['workflow']);
+}
+
+// Controls 270-272: a closing brace ends a statement/block context, so a prefix update on the
+// following line is still a new write statement.  Cover control-flow, try/finally, and a bare
+// block separately; a scanner must not treat a preceding `}` as a continuation that hides the
+// update.
+for (const [number, name, root, mutation] of [
+  [270, 'prefix update after if block close', 'MODULES', 'if (false) { void 0; }\n++MODULES.length;'],
+  [271, 'prefix update after try/finally close', 'AUDIT_UNITS', 'try { void 0; } finally { void 0; }\n++AUDIT_UNITS.length;'],
+  [272, 'prefix update after bare block close', 'MODULES', '{ void 0; }\n++MODULES.length;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name}`, 1, ['workflow']);
+}
+
+// Control 273: closing an object-literal/expression is not itself a mutation.  This positive
+// case keeps brace-boundary handling from over-reporting a harmless object expression containing
+// an immutable-root read.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'MODULES',
+    'const objectExpression = ({ count: 1 });\nconst objectFactory = () => ({});\nvoid objectExpression;\nvoid objectFactory;\nvoid MODULES.length;',
+  ));
+  expectFixture(result, 'Control 273: object-literal expression close remains accepted', 0);
 }
 
 for (const fixture of cases) {

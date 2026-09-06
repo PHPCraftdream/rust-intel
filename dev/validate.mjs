@@ -25,6 +25,12 @@ const required = [
 const errors = [];
 for (const rel of required) if (!fs.existsSync(path.join(root, rel))) errors.push(`missing required file: ${rel}`);
 
+// ECMAScript recognizes four line terminators. Keep this predicate shared by every small source
+// lexer below so comments, ASI probes, and offset-preserving masks agree on where a line ends.
+function isJsLineTerminator(character) {
+  return character === '\n' || character === '\r' || character === '\u2028' || character === '\u2029';
+}
+
 // Normalize line endings and mask supported standalone fenced blocks before any line-oriented
 // extraction.  All downstream contracts use this same view so examples cannot impersonate live
 // category headings, trigger rows, or scaffold anchors.
@@ -122,12 +128,12 @@ function stripJsComments(source) {
     const character = source[i];
     const next = source[i + 1];
     if (state === 'line-comment') {
-      output += character === '\n' || character === '\r' ? character : ' ';
-      if (character === '\n' || character === '\r') state = 'code';
+      output += isJsLineTerminator(character) ? character : ' ';
+      if (isJsLineTerminator(character)) state = 'code';
       continue;
     }
     if (state === 'block-comment') {
-      output += character === '\n' || character === '\r' ? character : ' ';
+      output += isJsLineTerminator(character) ? character : ' ';
       if (character === '*' && next === '/') {
         output += ' ';
         i += 1;
@@ -223,7 +229,7 @@ function findMatchingBracket(source, openingIndex) {
     if (character === '/' && next === '/') { i += 1; state = 'line-comment'; continue; }
     if (character === '/' && next === '*') { i += 1; state = 'block-comment'; continue; }
     if (state === 'line-comment') {
-      if (character === '\n' || character === '\r') state = 'code';
+      if (isJsLineTerminator(character)) state = 'code';
       continue;
     }
     if (state === 'block-comment') {
@@ -254,9 +260,11 @@ function isRegexLiteralStart(source, index) {
   // intentionally left as division.  Keep this check line-bounded so a comment/string
   // elsewhere cannot manufacture a fake statement prefix.
   if (previous === ')') {
-    const lineStart = source.lastIndexOf('\n', index - 1) + 1;
+    let lineStart = index - 1;
+    while (lineStart >= 0 && !isJsLineTerminator(source[lineStart])) lineStart -= 1;
+    lineStart += 1;
     const prefix = source.slice(lineStart, index);
-    if (/\b(?:if|while|for|with|switch|catch)\s*\([^\n]*\)\s*$/.test(prefix)) return true;
+    if (/\b(?:if|while|for|with|switch|catch)\s*\([^\r\u2028\u2029]*\)\s*$/u.test(prefix)) return true;
   }
   const word = source.slice(Math.max(0, i - 12), i + 1).match(/[A-Za-z_$][A-Za-z0-9_$]*$/)?.[0];
   return ['return', 'case', 'throw', 'typeof', 'void', 'delete', 'new', 'in', 'instanceof', 'yield', 'await'].includes(word);
@@ -270,7 +278,7 @@ function maskJsNonCode(source) {
   // characters (the workflow prompt contains emoji) and shift every later structural index.
   const output = source.split('');
   const blank = (index) => {
-    if (source[index] !== '\n' && source[index] !== '\r') output[index] = ' ';
+    if (!isJsLineTerminator(source[index])) output[index] = ' ';
   };
   const blankRange = (start, end) => {
     for (let index = start; index < end; index += 1) blank(index);
@@ -340,7 +348,7 @@ function maskJsNonCode(source) {
       if (character === '/' && next === '/') {
         blankRange(index, index + 2);
         index += 2;
-        while (index < source.length && source[index] !== '\n' && source[index] !== '\r') { blank(index); index += 1; }
+        while (index < source.length && !isJsLineTerminator(source[index])) { blank(index); index += 1; }
         continue;
       }
       if (character === '/' && next === '*') {
@@ -392,7 +400,7 @@ function findTopLevelArrayStart(source, name) {
     const character = source[i];
     const next = source[i + 1];
     if (state === 'line-comment') {
-      if (character === '\n' || character === '\r') state = 'code';
+      if (isJsLineTerminator(character)) state = 'code';
       continue;
     }
     if (state === 'block-comment') {
@@ -566,7 +574,8 @@ const modulesLiteral = modulesStart >= 0 && modulesEnd > modulesStart
   : '';
 function requirePureArrayInitializer(name, openingIndex, closingIndex) {
   if (openingIndex < 0 || closingIndex <= openingIndex) return;
-  const lineEnd = workflow.indexOf('\n', closingIndex + 1);
+  let lineEnd = closingIndex + 1;
+  while (lineEnd < workflow.length && !isJsLineTerminator(workflow[lineEnd])) lineEnd += 1;
   const suffix = workflow.slice(closingIndex + 1, lineEnd < 0 ? workflow.length : lineEnd);
   if (!/^[ \t\r]*\);[ \t\r]*$/.test(suffix)) {
     errors.push(`workflow ${name} initializer must end with a standalone ); after its closing ]`);
@@ -589,7 +598,7 @@ function topLevelArrayElements(source) {
   };
   for (let i = 0; i < source.length; i += 1) {
     const c = source[i]; const n = source[i + 1];
-    if (state === 'line-comment') { if (c === '\n' || c === '\r') state = 'code'; continue; }
+    if (state === 'line-comment') { if (isJsLineTerminator(c)) state = 'code'; continue; }
     if (state === 'block-comment') { if (c === '*' && n === '/') { i += 1; state = 'code'; } continue; }
     if (state === 'single' || state === 'double' || state === 'template') {
       if (c === '\\') i += 1;
@@ -782,7 +791,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
       if (/\s/u.test(character)) { i += 1; continue; }
       if (character === '/' && text[i + 1] === '/') {
         i += 2;
-        while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i += 1;
+        while (i < text.length && !isJsLineTerminator(text[i])) i += 1;
         continue;
       }
       if (character === '/' && text[i + 1] === '*') {
@@ -902,9 +911,10 @@ function workflowMutationCheck(source, names, rawSource = source) {
       } else if (character === '}' && round === 0 && square === 0 && curly === 0) {
         declarationEnd = i;
         break;
-      } else if ((character === '\n' || character === '\r') && round === 0 && square === 0 && curly === 0) {
+      } else if (isJsLineTerminator(character) && round === 0 && square === 0 && curly === 0) {
         let previous = i - 1;
-        while (previous >= declaration.index && /[ \t\r\n]/u.test(source[previous])) previous -= 1;
+        while (previous >= declaration.index
+          && (source[previous] === ' ' || source[previous] === '\t' || isJsLineTerminator(source[previous]))) previous -= 1;
         let next = i + 1;
         while (next < source.length && /[ \t]/u.test(source[next])) next += 1;
         const previousCanEnd = previous >= 0 && !'=,+-*/%&|^!?<>.:'.includes(source[previous]);
@@ -948,7 +958,33 @@ function workflowMutationCheck(source, names, rawSource = source) {
   // JavaScript's postfix-update and restricted-production rules use a *LineTerminator* test,
   // not a generic whitespace test.  The executable view masks comments with spaces while
   // preserving their newlines, so this also handles a multiline comment between the operands.
-  const hasLineTerminator = (start, end) => /[\n\r\u2028\u2029]/u.test(source.slice(start, end));
+  const hasLineTerminator = (start, end) => source.slice(start, end).split('').some(isJsLineTerminator);
+  const statementBlockKeywords = new Set(['catch', 'do', 'else', 'finally', 'try']);
+  const isStatementBlockClose = (index) => {
+    if (source[index] !== '}') return false;
+    let depth = 0;
+    let opening = -1;
+    for (let cursor = index; cursor >= 0; cursor -= 1) {
+      if (source[cursor] === '}') depth += 1;
+      else if (source[cursor] === '{') {
+        depth -= 1;
+        if (depth === 0) {
+          opening = cursor;
+          break;
+        }
+      }
+    }
+    if (opening < 0) return false;
+    const beforeOpening = previousSignificant(opening);
+    if (beforeOpening < 0 || hasLineTerminator(beforeOpening + 1, opening)) return true;
+    if (source[beforeOpening] === ')') return true;
+    if (source[beforeOpening] === '}' || source[beforeOpening] === ';') return true;
+    if (beforeOpening > 0 && source[beforeOpening - 1] === '=' && source[beforeOpening] === '>') return true;
+    if (!/[A-Za-z0-9_$]/u.test(source[beforeOpening])) return false;
+    let tokenStart = beforeOpening;
+    while (tokenStart > 0 && /[A-Za-z0-9_$]/u.test(source[tokenStart - 1])) tokenStart -= 1;
+    return statementBlockKeywords.has(source.slice(tokenStart, beforeOpening + 1));
+  };
   const prefixUpdate = (index) => {
     const operatorEnd = previousSignificant(index) + 1;
     if (operatorEnd < 2 || !updateRe.test(source.slice(operatorEnd - 2, operatorEnd))) return false;
@@ -959,7 +995,10 @@ function workflowMutationCheck(source, names, rawSource = source) {
     // in a call.  This is the important `call()\n++MODULES.length` case; comments containing a
     // line terminator are covered because their bytes remain visible in `source`.
     if (hasLineTerminator(beforeOperator + 1, operatorStart)) return true;
-    if (')]}'.includes(source[beforeOperator])) return source[beforeOperator] === ')' && isControlHeaderClose(beforeOperator);
+    if (source[beforeOperator] === '}') return isStatementBlockClose(beforeOperator);
+    if (source[beforeOperator] === ')' || source[beforeOperator] === ']') {
+      return source[beforeOperator] === ')' && isControlHeaderClose(beforeOperator);
+    }
     if (/[A-Za-z0-9_$]/u.test(source[beforeOperator])) {
       let tokenStart = beforeOperator;
       while (tokenStart > 0 && /[A-Za-z0-9_$]/u.test(source[tokenStart - 1])) tokenStart -= 1;
