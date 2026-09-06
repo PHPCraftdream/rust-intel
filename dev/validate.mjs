@@ -945,12 +945,20 @@ function workflowMutationCheck(source, names, rawSource = source) {
     while (cursor >= 0 && /\s/u.test(source[cursor])) cursor -= 1;
     return cursor;
   };
+  // JavaScript's postfix-update and restricted-production rules use a *LineTerminator* test,
+  // not a generic whitespace test.  The executable view masks comments with spaces while
+  // preserving their newlines, so this also handles a multiline comment between the operands.
+  const hasLineTerminator = (start, end) => /[\n\r\u2028\u2029]/u.test(source.slice(start, end));
   const prefixUpdate = (index) => {
     const operatorEnd = previousSignificant(index) + 1;
     if (operatorEnd < 2 || !updateRe.test(source.slice(operatorEnd - 2, operatorEnd))) return false;
     const operatorStart = operatorEnd - 2;
     const beforeOperator = previousSignificant(operatorStart);
     if (beforeOperator < 0) return true;
+    // A line terminator makes this a new expression, even when the preceding expression ended
+    // in a call.  This is the important `call()\n++MODULES.length` case; comments containing a
+    // line terminator are covered because their bytes remain visible in `source`.
+    if (hasLineTerminator(beforeOperator + 1, operatorStart)) return true;
     if (')]}'.includes(source[beforeOperator])) return source[beforeOperator] === ')' && isControlHeaderClose(beforeOperator);
     if (/[A-Za-z0-9_$]/u.test(source[beforeOperator])) {
       let tokenStart = beforeOperator;
@@ -981,7 +989,14 @@ function workflowMutationCheck(source, names, rawSource = source) {
   const isControlHeaderClose = (index) => {
     const opening = matchingOpeningParen(index);
     if (opening < 0) return false;
-    return new Set(['if', 'while', 'for', 'with', 'catch']).has(wordBefore(opening));
+    const keyword = wordBefore(opening);
+    if (!new Set(['if', 'while', 'for', 'with', 'catch']).has(keyword)) return false;
+    // `obj.if(...)` and `obj?.while(...)` are method calls, not control headers.  Require the
+    // keyword token to be in standalone statement syntax rather than merely matching its text.
+    let cursor = previousSignificant(opening);
+    while (cursor >= 0 && /[A-Za-z0-9_$]/u.test(source[cursor])) cursor -= 1;
+    const beforeKeyword = previousSignificant(cursor + 1);
+    return beforeKeyword < 0 || !'.'.includes(source[beforeKeyword]);
   };
   const quotedBracketProperty = (opening, closing) => {
     // `source` intentionally masks string literals, so consult the offset-preserving raw source
@@ -993,6 +1008,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
   };
   const parseDirectReference = (index, name) => {
     let cursor = index + name.length;
+    let referenceEnd = cursor;
     let outerParens = 0;
     let beforeRoot = previousSignificant(index);
     while (beforeRoot >= 0 && source[beforeRoot] === '(') {
@@ -1019,6 +1035,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
         if (closing < 0) return null;
         properties.push(quotedBracketProperty(cursor, closing));
         cursor = closing + 1;
+        referenceEnd = cursor;
         continue;
       }
       if (source[cursor] === '.') {
@@ -1027,6 +1044,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
         if (!property) return null;
         properties.push(property[0]);
         cursor = propertyStart + property[0].length;
+        referenceEnd = cursor;
         continue;
       }
       // Parentheses enclosing the complete reference are part of the direct expression, not a
@@ -1037,11 +1055,14 @@ function workflowMutationCheck(source, names, rawSource = source) {
       while (outerParens > 0 && source[cursor] === ')') {
         outerParens -= 1;
         cursor = skipWhitespace(cursor + 1);
+        referenceEnd = cursor;
       }
       if (source[cursor] === '[' || source[cursor] === '.') continue;
       break;
     }
-    return { end: cursor, properties };
+    // Keep the end before trailing trivia.  In particular, a newline (including one inside a
+    // masked comment) must remain visible to the postfix-update LineTerminator check below.
+    return { end: referenceEnd, properties };
   };
   const declarationRe = () => /\b(?:const|let|var)\s*$/;
   for (const name of names) {
@@ -1066,7 +1087,9 @@ function workflowMutationCheck(source, names, rawSource = source) {
         errors.push(`workflow ${name} has an executable post-initialization assignment`);
         continue;
       }
-      if (updateRe.test(remainder.replace(/^\s*/u, ''))) {
+      const remainderStart = reference.end + (remainder.match(/^\s*/u)?.[0].length ?? 0);
+      if (!hasLineTerminator(reference.end, remainderStart)
+        && updateRe.test(source.slice(remainderStart))) {
         errors.push(`workflow ${name} has an executable increment/decrement mutation`);
         continue;
       }

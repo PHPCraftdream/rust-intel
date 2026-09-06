@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: two hundred fifty-five hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: two hundred sixty-one hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2522,8 +2522,8 @@ for (const [number, name, root, mutation] of [
   [249, 'grouped mutator after if header', 'MODULES', 'if (true) (MODULES).pop();'],
   [250, 'prefix increment after while header', 'MODULES', 'while (false) ++MODULES;'],
   [251, 'prefix decrement after for header', 'AUDIT_UNITS', 'for (;;) --AUDIT_UNITS;'],
-  [252, 'else-position direct mutator', 'MODULES', 'if (false) {} else MODULES.pop();'],
-  [253, 'do-position direct mutator', 'AUDIT_UNITS', 'do AUDIT_UNITS.pop(); while (false);'],
+  [252, 'else-position grouped direct mutator', 'MODULES', 'if (false) {} else (MODULES).pop();'],
+  [253, 'do-position length update', 'AUDIT_UNITS', 'do --AUDIT_UNITS.length; while(false);'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
   expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
@@ -2547,6 +2547,39 @@ for (const [number, name, root, mutation] of [
     'consume(MODULES); invoke(AUDIT_UNITS);',
   ));
   expectFixture(result, 'function call argument contexts remain accepted', 0);
+}
+
+// Controls 256-261: ASI separates a completed root property read from the next prefix update,
+// while a call followed by a line terminator still leaves the update attached to the new
+// statement.  Comments are lexical trivia here, so both comment forms preserve the same ASI
+// boundary.  The final two controls pin that `if`/`while` property names are not control-flow
+// headers: each call returns a fresh array, and the grouped MODULES argument is never mutated.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'MODULES',
+    'MODULES.length\n++unrelatedCounter;',
+  ));
+  expectFixture(result, 'ASI separates root length read from unrelated prefix update', 0);
+}
+for (const [number, name, mutation] of [
+  [257, 'ASI prefix update after a call', 'doSomething()\n++MODULES.length;'],
+  [258, 'ASI prefix update after a line comment', 'doSomething() // boundary\n++MODULES.length;'],
+  [259, 'ASI prefix update after a multiline block comment', 'doSomething() /* boundary\n*/ ++MODULES.length;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+for (const [number, name, property] of [
+  [260, 'property named if is not a control header', 'if'],
+  [261, 'property named while is not a control header', 'while'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'MODULES',
+    `const propertyFactory${number} = { ${property}: () => () => [] };\npropertyFactory${number}.${property}(true)\n(MODULES).pop();`,
+  ));
+  expectFixture(result, `Control ${number}: ${name}`, 0);
 }
 
 for (const fixture of cases) {
