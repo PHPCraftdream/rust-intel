@@ -1779,6 +1779,41 @@ if (!Number.isSafeInteger(fixtureControlCount) || fixtureControlCount <= 0) {
   errors.push(`dev/validate-fixtures.mjs: authoritative control count must be a positive safe integer (got ${fixtureControlCount ?? 'missing'})`);
 }
 
+// Control labels are the fixture suite's source-level registration grammar. A singular label
+// registers one control; a plural range registers every integer in the inclusive range. Parse
+// only labels at the beginning of a line, so prose references such as "Control 2" do not become
+// registrations. This proves the stated total against the numbered suite itself while preserving
+// the compact ranges used by loop-generated controls. It is intentionally a source invariant, not
+// a runtime count derived from the same header value: every id 1..headerTotal must be present once,
+// and no label may register an id above the header.
+const controlLabelMatches = [...fixtureSource.matchAll(/^\/\/ Controls? (\d+)(?:-(\d+))?:[ \t]/gm)];
+const registeredControlIds = new Set();
+if (fixtureControlCount !== null) {
+  for (const match of controlLabelMatches) {
+    const start = Number.parseInt(match[1], 10);
+    const end = match[2] === undefined ? start : Number.parseInt(match[2], 10);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < 1 || end < start) {
+      errors.push(`dev/validate-fixtures.mjs: invalid numbered control label range ${match[1]}${match[2] === undefined ? '' : `-${match[2]}`}`);
+      continue;
+    }
+    if (end > fixtureControlCount) {
+      errors.push(`dev/validate-fixtures.mjs: numbered control ${end} exceeds authoritative header ${fixtureControlCount}`);
+      continue;
+    }
+    for (let id = start; id <= end; id += 1) {
+      if (registeredControlIds.has(id)) errors.push(`dev/validate-fixtures.mjs: numbered control ${id} is registered more than once`);
+      registeredControlIds.add(id);
+    }
+  }
+  const missingControlIds = [];
+  for (let id = 1; id <= fixtureControlCount; id += 1) {
+    if (!registeredControlIds.has(id)) missingControlIds.push(id);
+  }
+  if (missingControlIds.length) {
+    errors.push(`dev/validate-fixtures.mjs: numbered controls must cover every id 1..${fixtureControlCount}; missing ${missingControlIds.join(', ')}`);
+  }
+}
+
 function sectionAfterHeading(source, heading) {
   const start = source.indexOf(heading);
   if (start < 0) return null;

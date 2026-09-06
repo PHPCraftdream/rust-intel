@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 388 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 389 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 370 spawn a validator child and 18 are in-process (the junction alias and direct oracles); there
+// 371 spawn a validator child and 18 are in-process (the junction alias and direct oracles); there
 // are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
 // probes (B5/B26). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -3223,9 +3223,9 @@ const falseWorkflowMutationOutput = /^ERROR: workflow (?:MODULES|AUDIT_UNITS) ha
 
 // Keep the result oracle separate from the child-process probes. This classifier is deliberately
 // strict: only the current success line or the one exact, workflow-prefixed Unicode diagnostic is
-// accepted. In particular, classify the intentional diagnostic before the mutation diagnostic
-// check. Both messages contain "workflow", so reversing that order would silently turn the
-// documented intentional allowance into a false failure.
+// accepted. Control 381 guards against regression to the former over-broad `output.includes('workflow')`
+// predicate, which would confuse the intentional diagnostic with unrelated workflow failures.
+// The current anchored patterns are disjoint, so their order is not semantically observable.
 function classifyInvalidUnicodeResult(result) {
   if (result?.executionFailure || result?.error || result?.signal || !Number.isInteger(result?.status)) {
     return 'execution-failure';
@@ -3237,10 +3237,10 @@ function classifyInvalidUnicodeResult(result) {
   return 'unexpected';
 }
 
-// Controls 380-384: in-process calibration for every classifier branch. The exact intentional
-// diagnostic includes the normal `workflow` prefix, so this catches a mutation that moves the
-// broad false-mutation check ahead of the intentional branch. The remaining cases ensure that a
-// generic status-1 error, the specific mutation diagnostic, or a failed child cannot be accepted.
+// Controls 380-384: in-process calibration for every classifier branch. Control 381 preserves the
+// exact intentional diagnostic against reintroduction of the former over-broad workflow predicate.
+// The remaining cases ensure that a generic status-1 error, the specific mutation diagnostic, or a
+// failed child cannot be accepted.
 for (const [number, name, result, accepted, expectedClass] of [
   [380, 'current quiet status 0', { status: 0, output: 'rust-intel validation passed (12 skill markdown files checked)' }, true, 'quiet'],
   [381, 'exact intentional workflow-prefixed status 1 diagnostic', { status: 1, output: 'ERROR: workflow invalid Unicode escape in identifier' }, true, 'intentional-diagnostic'],
@@ -3272,6 +3272,21 @@ for (const [number, name, root, declaration] of [
       failures.push(`${label}: expected quiet success or exact intentional Unicode diagnostic, got ${classification} (status ${result.status}, output: ${result.output.trim()})`);
     }
   }
+}
+
+// Control 389: the source-level control registration invariant must reject a newly registered
+// control when the authoritative scope header is not updated. This is a counterfactual mutation:
+// the added label is never executed as a fixture, but dev/validate.mjs must still reject the
+// structurally inconsistent suite before any release-facing count can remain green.
+{
+  const result = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
+    const marker = '// Scope, stated honestly: 389 hand-written controls:';
+    if (!source.includes(marker)) return null;
+    return source.replace(marker, `${marker}\n// Control 390: counterfactual registration without a header update.`);
+  });
+  expectFixture(result, 'Control 389: numbered control registration cannot outrun the scope header', 1, [
+    'numbered control 390 exceeds authoritative header 389',
+  ]);
 }
 
 for (const fixture of cases) {
