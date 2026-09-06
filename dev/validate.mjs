@@ -736,7 +736,12 @@ function workflowMutationCheck(source, names, rawSource = source) {
   const mutators = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift']);
   const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const rootNames = names.map(escaped).join('|');
-  const rootChainRe = `(?:\\(\\s*)*(?:${rootNames})\\b(?:\\s*\\)\\s*)*(?:\\s*(?:\\[[^\\]\\r\\n]*\\]|\\.[A-Za-z_$][A-Za-z0-9_$]*))*(?:\\s*\\)\\s*)*`;
+  // `\\b` is ASCII-word based: it treats `$MODULES` and `éMODULES` as a protected
+  // literal even though both are distinct ECMAScript identifiers.  Keep the root literal
+  // bounded by the language's identifier-continue set instead.
+  const identifierContinueClass = '$_\\u200C\\u200D\\p{ID_Continue}';
+  const rootBoundary = `(?<![${identifierContinueClass}])(?:${rootNames})(?![${identifierContinueClass}])`;
+  const rootChainRe = `(?:\\(\\s*)*${rootBoundary}(?:\\s*\\)\\s*)*(?:\\s*(?:\\[[^\\]\\r\\n]*\\]|\\.[A-Za-z_$][A-Za-z0-9_$]*))*(?:\\s*\\)\\s*)*`;
 
   // Return source spans, rather than strings, so every declarator is checked against its own
   // bounded RHS.  A declaration without a semicolon may end at ASI before the next declaration;
@@ -887,7 +892,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
     // expression (`MODULES.length && MODULES`).
     return found;
   };
-  const aliasRhsRe = new RegExp(`^\\s*(?:\\(\\s*)*(?:${rootNames})\\b`, 'u');
+  const aliasRhsRe = new RegExp(`^\\s*(?:\\(\\s*)*${rootBoundary}`, 'u');
   const declarationKeywordRe = /\b(?:const|let|var)\b/g;
   for (const declaration of source.matchAll(declarationKeywordRe)) {
     // `source` is the executable, non-string view, so a small delimiter scan can safely span
@@ -966,16 +971,27 @@ function workflowMutationCheck(source, names, rawSource = source) {
   const identifierEscape = (index) => {
     if (source[index] !== '\\' || source[index + 1] !== 'u') return null;
     let length;
+    let braced = false;
+    let digitsStart;
+    let digitsEnd;
     if (source[index + 2] === '{') {
+      braced = true;
+      digitsStart = index + 3;
       let cursor = index + 3;
       while (cursor < source.length && isHexDigit(source[cursor]) && cursor - (index + 3) < 6) cursor += 1;
       if (cursor <= index + 3 || source[cursor] !== '}') return null;
+      digitsEnd = cursor;
       length = cursor - index + 1;
     } else {
       if (!Array.from({ length: 4 }, (_, offset) => source[index + 2 + offset]).every(isHexDigit)) return null;
+      digitsStart = index + 2;
+      digitsEnd = index + 6;
       length = 6;
     }
-    const value = Number.parseInt(source.slice(index + (length === 6 ? 2 : 3), index + (length === 6 ? 6 : length - 1)), 16);
+    // Do not infer the spelling from its byte length: `\\u{41}` is six code units too,
+    // but its braces are part of the syntax and must not enter parseInt().
+    const value = Number.parseInt(source.slice(digitsStart, digitsEnd), 16);
+    if (!braced && length !== 6) return null;
     if (value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) return null;
     return { length, character: String.fromCodePoint(value) };
   };
@@ -1067,11 +1083,59 @@ function workflowMutationCheck(source, names, rawSource = source) {
       while (cursor >= 0 && /[A-Za-z0-9_$]/u.test(source[cursor])) cursor -= 1;
       return { value: source.slice(cursor + 1, end), start: cursor + 1 };
     };
+    const isSwitchBody = (opening) => {
+      let closeParen = previousSignificant(opening);
+      if (closeParen < 0 || source[closeParen] !== ')') return false;
+      let depth = 0;
+      let openParen = -1;
+      for (let cursor = closeParen; cursor >= 0; cursor -= 1) {
+        if (source[cursor] === ')') depth += 1;
+        else if (source[cursor] === '(') {
+          depth -= 1;
+          if (depth === 0) { openParen = cursor; break; }
+        }
+      }
+      if (openParen < 0) return false;
+      let keywordEnd = previousSignificant(openParen);
+      if (keywordEnd < 0 || !/[A-Za-z]/u.test(source[keywordEnd])) return false;
+      let keywordStart = keywordEnd;
+      while (keywordStart > 0 && /[A-Za-z]/u.test(source[keywordStart - 1])) keywordStart -= 1;
+      return source.slice(keywordStart, keywordEnd + 1) === 'switch'
+        && !identifierPartBefore(keywordStart)
+        && !identifierPartAt(keywordEnd + 1);
+    };
+    const isSwitchLabelColon = (colon) => {
+      const braceStack = [];
+      for (let cursor = 0; cursor < colon; cursor += 1) {
+        if (source[cursor] === '{') braceStack.push(cursor);
+        else if (source[cursor] === '}' && braceStack.length) braceStack.pop();
+      }
+      const opening = braceStack.at(-1);
+      if (opening === undefined || !isSwitchBody(opening)) return false;
+      // Only a label in the switch statement list qualifies.  In particular, `default:`
+      // in an object literal and a ternary colon must not create an ASI boundary.
+      let segmentStart = opening + 1;
+      for (let cursor = opening + 1; cursor < colon; cursor += 1) {
+        if (';{}'.includes(source[cursor])) segmentStart = cursor + 1;
+      }
+      const segment = source.slice(segmentStart, colon).trim();
+      return /^default$/u.test(segment) || /^case\b[\s\S]*\S/u.test(segment);
+    };
+    const isCompletedPostfixUpdate = (operatorStart) => {
+      const operator = source.slice(operatorStart, operatorStart + 2);
+      if (operator !== '++' && operator !== '--') return false;
+      const operand = previousSignificant(operatorStart);
+      if (operand < 0 || hasLineTerminator(operand + 1, operatorStart)) return false;
+      return identifierPartAt(operand) || ')]}'.includes(source[operand]);
+    };
     const statementBoundaryBefore = (index) => {
       const previous = previousSignificant(index);
       if (previous < 0 || ';{}'.includes(source[previous])) return true;
-      return hasLineTerminator(previous + 1, index)
-        && !'=,+-*/%&|^!?<>.:([['.includes(source[previous]);
+      if (source[previous] === ':') return isSwitchLabelColon(previous);
+      if (!hasLineTerminator(previous + 1, index)) return false;
+      if ((source[previous] === '+' || source[previous] === '-')
+        && isCompletedPostfixUpdate(previous - 1)) return true;
+      return !'=,+-*/%&|^!?<>.:([['.includes(source[previous]);
     };
     const beforeClass = previousSignificant(classStart);
     if (beforeClass >= 0 && (source[beforeClass] === '.' || source[beforeClass] === '#')) return false;
@@ -1238,9 +1302,11 @@ function workflowMutationCheck(source, names, rawSource = source) {
   };
   const declarationRe = () => /\b(?:const|let|var)\s*$/;
   for (const name of names) {
-    const identifierRe = new RegExp(`\\b${escaped(name)}\\b`, 'g');
-    for (const match of source.matchAll(identifierRe)) {
-      const index = match.index;
+    // Root/property matching is intentionally literal.  This static parser does not decode
+    // escaped root or property spellings (`\\u004dODULES`); deepFreezeRecords remains the
+    // runtime backstop for aliases or indirect references that static analysis cannot prove.
+    for (let index = source.indexOf(name); index >= 0; index = source.indexOf(name, index + name.length)) {
+      if (identifierPartBefore(index) || identifierPartAt(index + name.length)) continue;
       const before = source.slice(Math.max(0, index - 40), index);
       let previous = index - 1;
       while (previous >= 0 && /\s/u.test(source[previous])) previous -= 1;
@@ -1270,9 +1336,9 @@ function workflowMutationCheck(source, names, rawSource = source) {
       }
     }
   }
-  const deleteRe = new RegExp(`\\bdelete\\s+${rootChainRe}`);
+  const deleteRe = new RegExp(`\\bdelete\\s+${rootChainRe}`, 'u');
   if (deleteRe.test(source)) errors.push('workflow cannot delete from MODULES or AUDIT_UNITS');
-  const reflectSetRe = new RegExp(`\\bReflect\\s*\\.\\s*set\\s*\\(\\s*${rootChainRe}\\s*,`);
+  const reflectSetRe = new RegExp(`\\bReflect\\s*\\.\\s*set\\s*\\(\\s*${rootChainRe}\\s*,`, 'u');
   if (reflectSetRe.test(source)) errors.push('workflow cannot use Reflect.set on MODULES or AUDIT_UNITS');
 }
 workflowMutationCheck(executableWorkflowCode, ['MODULES', 'AUDIT_UNITS'], workflow);

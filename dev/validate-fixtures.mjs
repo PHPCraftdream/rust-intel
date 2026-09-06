@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: two hundred eighty-nine hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: three hundred thirteen hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2714,6 +2714,93 @@ for (const [number, name, root, expression] of [
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
   expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
+}
+
+// Controls 290-293: braced Unicode escapes in class names must not make the following update
+// disappear at a class-boundary.  Keep both a short invalid escape and a short valid escape, in
+// both bare and export-default class declarations, so the boundary recognizer cannot rely on a
+// four-hex-digit escape or silently treat an invalid identifier as a safe expression.
+for (const [number, name, root, declaration] of [
+  [290, 'short braced Unicode escape in bare class declaration', 'MODULES', 'class \\u{A} {}'],
+  [291, 'short braced Unicode escape in bare class declaration', 'MODULES', 'class \\u{41} {}'],
+  [292, 'short braced Unicode escape in export-default class declaration', 'AUDIT_UNITS', 'export default class \\u{A} {}'],
+  [293, 'short braced Unicode escape in export-default class declaration', 'AUDIT_UNITS', 'export default class \\u{41} {}'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `${declaration} ++${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 294-297: class declarations can occur directly in switch case/default clauses.
+// The label colon is a statement boundary for the class declaration, so an update after its
+// closing brace remains an executable mutation in either direction and for either root.
+for (const [number, name, root, label, operator] of [
+  [294, 'class declaration after switch case label', 'MODULES', 'case 1:', '++'],
+  [295, 'class declaration after switch default label', 'MODULES', 'default:', '--'],
+  [296, 'class declaration after switch case label', 'AUDIT_UNITS', 'case 2:', '++'],
+  [297, 'class declaration after switch default label', 'AUDIT_UNITS', 'default:', '--'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `switch (value) { ${label} class SwitchClass${number} {} ${operator}${root}.length; }`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 298-301: a completed postfix update before a line break does not turn the following
+// class declaration into an expression continuation.  Pin both update directions and both roots
+// because the previous statement's postfix operator is an easy context leak for boundary scans.
+for (const [number, name, root, operator] of [
+  [298, 'class after prior postfix update', 'MODULES', '++'],
+  [299, 'class after prior postfix update', 'MODULES', '--'],
+  [300, 'class after prior postfix update', 'AUDIT_UNITS', '++'],
+  [301, 'class after prior postfix update', 'AUDIT_UNITS', '--'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `const value${number} = 0; value${number}++\nclass FollowingClass${number} {} ${operator}${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 302-305: class expressions in object-property and ternary-colon positions are not
+// statement declarations.  Their closing braces must not poison the surrounding expression
+// context or cause an unrelated primitive read of an immutable root to be reported.
+for (const [number, name, root, expression] of [
+  [302, 'object-property class expression context', 'MODULES', 'const objectClass302 = { value: class {} }; void MODULES.length;'],
+  [303, 'ternary-colon class expression context', 'MODULES', 'const ternaryClass303 = flag ? class {} : class {}; void MODULES.length;'],
+  [304, 'object-property class expression context', 'AUDIT_UNITS', 'const objectClass304 = { value: class {} }; void AUDIT_UNITS.length;'],
+  [305, 'ternary-colon class expression context', 'AUDIT_UNITS', 'const ternaryClass305 = flag ? class {} : class {}; void AUDIT_UNITS.length;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
+}
+
+// Controls 306-313: identifiers that merely contain a protected root name are unrelated local
+// arrays.  Their own mutators must stay quiet; static rejection of escaped root/property spellings
+// is intentionally out of scope and is not asserted here.
+for (const [number, name, identifier] of [
+  [306, 'dollar-prefixed MODULES identifier', '$MODULES'],
+  [307, 'underscore-prefixed MODULES identifier', '_MODULES'],
+  [308, 'Unicode-prefixed MODULES identifier', '\u0394MODULES'],
+  [309, 'Unicode-suffixed MODULES identifier', 'MODULES\u0394'],
+  [310, 'dollar-prefixed AUDIT_UNITS identifier', '$AUDIT_UNITS'],
+  [311, 'underscore-prefixed AUDIT_UNITS identifier', '_AUDIT_UNITS'],
+  [312, 'Unicode-prefixed AUDIT_UNITS identifier', '\u0394AUDIT_UNITS'],
+  [313, 'Unicode-suffixed AUDIT_UNITS identifier', 'AUDIT_UNITS\u0394'],
+]) {
+  const root = identifier.includes('AUDIT_UNITS') ? 'AUDIT_UNITS' : 'MODULES';
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `const ${identifier} = []; ${identifier}.push(${number});`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
 }
 
 for (const fixture of cases) {
