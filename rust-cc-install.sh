@@ -69,6 +69,12 @@ elif [[ "$USE_USER" -eq 1 ]]; then
 else
     CLAUDE_DIR="$(pwd)/.claude"
 fi
+# Keep every derived operand absolute. This also makes a relative, dash-leading override such as
+# `CLAUDE_CONFIG_DIR=-config` an ordinary path rather than an option to a POSIX utility.
+case "$CLAUDE_DIR" in
+    /*) ;;
+    *) CLAUDE_DIR="$(pwd)/$CLAUDE_DIR" ;;
+esac
 
 SKILL_DIR="$CLAUDE_DIR/skills/rust-intel"
 COMMANDS_DIR="$CLAUDE_DIR/commands"
@@ -192,57 +198,120 @@ case "$COMMANDS_SOURCE_REAL/" in
 esac
 
 echo "Installing rust-intel into $CLAUDE_DIR ..."
-
-# Sweep prior installation - all known layouts (current + every prior).
-if [[ -e "$SKILL_DIR" || -L "$SKILL_DIR" ]]; then
-    echo "  cleaning   $SKILL_DIR (previous install)"
-    rm -rf "$SKILL_DIR"
+if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AFTER}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: RUST_INTEL_INSTALL_FAIL_AFTER must be a positive integer." >&2
+    exit 1
 fi
-# v0.2.1+ flat-with-prefix:
-for cur in rust-cc-audit.md rust-cc-fix.md rust-cc-plan.md; do
-    cur_path="$COMMANDS_DIR/$cur"
-    if [[ -e "$cur_path" || -L "$cur_path" ]]; then
-        echo "  cleaning   $cur_path (previous install)"
-        rm -f "$cur_path"
+
+# Build and validate the complete replacement beside the destination first. The old install is
+# moved to a backup only after every source file is known and copied successfully.
+TX_PARENT="$(dirname "$CLAUDE_DIR")"
+mkdir -p "$TX_PARENT"
+TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-tx.XXXXXX")"
+STAGE_ROOT="$TX_DIR/stage"
+BACKUP_ROOT="$TX_DIR/backup"
+mkdir -p "$STAGE_ROOT" "$BACKUP_ROOT"
+
+ROLLBACK_NEEDED=1
+BACKUP_COUNT=0
+REPLACE_COUNT=0
+BACKUP_DESTS=()
+BACKUP_PATHS=()
+
+rollback_transaction() {
+    local status=$?
+    set +e
+    if [[ "$ROLLBACK_NEEDED" -eq 1 ]]; then
+        local destination
+        for destination in "$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
+            "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md"; do
+            if [[ -e "$destination" || -L "$destination" ]]; then rm -rf "$destination"; fi
+        done
+        local index
+        index=$((BACKUP_COUNT - 1))
+        while [[ "$index" -ge 0 ]]; do
+            destination="${BACKUP_DESTS[$index]}"
+            if [[ -e "$destination" || -L "$destination" ]]; then rm -rf "$destination"; fi
+            mkdir -p "$(dirname "$destination")"
+            mv "${BACKUP_PATHS[$index]}" "$destination"
+            index=$((index - 1))
+        done
+    fi
+    rm -rf "$TX_DIR"
+    trap - EXIT
+    exit "$status"
+}
+trap rollback_transaction EXIT
+
+if [[ ! -f "$REPO_DIR/skill/SKILL.md" ]]; then
+    echo "Error: source skill/SKILL.md disappeared during staging." >&2
+    exit 1
+fi
+for command_name in audit fix plan; do
+    if [[ ! -f "$REPO_DIR/commands/rust-intel-cc/$command_name.md" ]]; then
+        echo "Error: source command $command_name.md is missing." >&2
+        exit 1
     fi
 done
-# v0.2.0 colon-namespace dir:
-if [[ -e "$NS_DIR" || -L "$NS_DIR" ]]; then
-    echo "  cleaning   $NS_DIR (v0.2.0 namespace layout)"
-    rm -rf "$NS_DIR"
-fi
-# v0.1.x legacy flat layout:
-for legacy in rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do
-    legacy_path="$COMMANDS_DIR/$legacy"
-    if [[ -e "$legacy_path" || -L "$legacy_path" ]]; then
-        echo "  cleaning   $legacy_path (legacy v0.1.x layout)"
-        rm -f "$legacy_path"
-    fi
-done
-
-mkdir -p "$SKILL_DIR" "$COMMANDS_DIR"
 
 install_file() {
-    local src="$1"
-    local dst="$2"
-    if [[ "$USE_SYMLINK" -eq 1 ]]; then
-        ln -sf "$src" "$dst"
-        echo "  symlinked  $dst"
-    else
-        cp -f "$src" "$dst"
-        echo "  copied     $dst"
-    fi
+    local src="$1" dst="$2"
+    mkdir -p "$(dirname "$dst")"
+    if [[ "$USE_SYMLINK" -eq 1 ]]; then ln -sf "$src" "$dst"; else cp -f "$src" "$dst"; fi
 }
 
 while IFS= read -r -d '' skill_file; do
     relative="${skill_file#"$REPO_DIR/skill/"}"
-    destination="$SKILL_DIR/$relative"
-    mkdir -p "$(dirname "$destination")"
-    install_file "$skill_file" "$destination"
+    install_file "$skill_file" "$STAGE_ROOT/skill/$relative"
 done < <(find "$REPO_DIR/skill" -type f \( -name '*.md' -o -name '*.js' \) -print0)
-install_file "$REPO_DIR/commands/rust-intel-cc/audit.md"     "$COMMANDS_DIR/rust-cc-audit.md"
-install_file "$REPO_DIR/commands/rust-intel-cc/fix.md"       "$COMMANDS_DIR/rust-cc-fix.md"
-install_file "$REPO_DIR/commands/rust-intel-cc/plan.md"      "$COMMANDS_DIR/rust-cc-plan.md"
+for command_name in audit fix plan; do
+    install_file "$REPO_DIR/commands/rust-intel-cc/$command_name.md" "$STAGE_ROOT/commands/rust-cc-$command_name.md"
+done
+
+# Validate stage completeness before touching the live installation.
+while IFS= read -r -d '' source_file; do
+    relative="${source_file#"$REPO_DIR/skill/"}"
+    staged_file="$STAGE_ROOT/skill/$relative"
+    [[ -f "$staged_file" ]] || { echo "Error: staged skill file is missing: $relative" >&2; exit 1; }
+    if [[ "$USE_SYMLINK" -eq 0 ]] && ! cmp -s "$source_file" "$staged_file"; then
+        echo "Error: staged skill file differs from source: $relative" >&2
+        exit 1
+    fi
+done < <(find "$REPO_DIR/skill" -type f \( -name '*.md' -o -name '*.js' \) -print0)
+
+backup_owned() {
+    local destination="$1"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        BACKUP_DESTS[$BACKUP_COUNT]="$destination"
+        BACKUP_PATHS[$BACKUP_COUNT]="$BACKUP_ROOT/$BACKUP_COUNT"
+        mv "$destination" "${BACKUP_PATHS[$BACKUP_COUNT]}"
+        BACKUP_COUNT=$((BACKUP_COUNT + 1))
+    fi
+}
+for owned in "$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
+    "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md"; do
+    backup_owned "$owned"
+done
+
+mkdir -p "$CLAUDE_DIR/skills" "$COMMANDS_DIR"
+mv "$STAGE_ROOT/skill" "$SKILL_DIR"
+REPLACE_COUNT=$((REPLACE_COUNT + 1))
+if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$REPLACE_COUNT" -eq "$RUST_INTEL_INSTALL_FAIL_AFTER" ]]; then
+    echo "Error: injected installer failure after replacement $REPLACE_COUNT." >&2
+    exit 1
+fi
+for command_name in audit fix plan; do
+    mv "$STAGE_ROOT/commands/rust-cc-$command_name.md" "$COMMANDS_DIR/rust-cc-$command_name.md"
+    REPLACE_COUNT=$((REPLACE_COUNT + 1))
+    if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$REPLACE_COUNT" -eq "$RUST_INTEL_INSTALL_FAIL_AFTER" ]]; then
+        echo "Error: injected installer failure after replacement $REPLACE_COUNT." >&2
+        exit 1
+    fi
+done
+
+rm -rf "$TX_DIR"
+ROLLBACK_NEEDED=0
+trap - EXIT
 
 echo ""
 echo "Done. Verify by starting 'claude' in this directory and trying:"

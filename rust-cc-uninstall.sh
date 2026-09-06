@@ -53,47 +53,76 @@ elif [[ "$USE_USER" -eq 1 ]]; then
 else
     CLAUDE_DIR="$(pwd)/.claude"
 fi
+case "$CLAUDE_DIR" in
+    /*) ;;
+    *) CLAUDE_DIR="$(pwd)/$CLAUDE_DIR" ;;
+esac
 
 SKILL_DIR="$CLAUDE_DIR/skills/rust-intel"
 COMMANDS_DIR="$CLAUDE_DIR/commands"
 NS_DIR="$COMMANDS_DIR/rust-intel-cc"
 
 echo "Uninstalling rust-intel from $CLAUDE_DIR ..."
+if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AFTER}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: RUST_INTEL_INSTALL_FAIL_AFTER must be a positive integer." >&2
+    exit 1
+fi
+
+TX_PARENT="$(dirname "$CLAUDE_DIR")"
+mkdir -p "$TX_PARENT"
+TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-uninstall.XXXXXX")"
+ROLLBACK_NEEDED=1
+BACKUP_COUNT=0
+BACKUP_DESTS=()
+BACKUP_PATHS=()
+
+rollback_uninstall() {
+    local status=$?
+    set +e
+    if [[ "$ROLLBACK_NEEDED" -eq 1 ]]; then
+        local index destination
+        index=$((BACKUP_COUNT - 1))
+        while [[ "$index" -ge 0 ]]; do
+            destination="${BACKUP_DESTS[$index]}"
+            if [[ -e "$destination" || -L "$destination" ]]; then rm -rf "$destination"; fi
+            mkdir -p "$(dirname "$destination")"
+            mv "${BACKUP_PATHS[$index]}" "$destination"
+            index=$((index - 1))
+        done
+    fi
+    rm -rf "$TX_DIR"
+    trap - EXIT
+    exit "$status"
+}
+trap rollback_uninstall EXIT
+
+BACKUP_ROOT="$TX_DIR/backup"
+mkdir -p "$BACKUP_ROOT"
+backup_owned() {
+    local destination="$1"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        BACKUP_DESTS[$BACKUP_COUNT]="$destination"
+        BACKUP_PATHS[$BACKUP_COUNT]="$BACKUP_ROOT/$BACKUP_COUNT"
+        mv "$destination" "${BACKUP_PATHS[$BACKUP_COUNT]}"
+        BACKUP_COUNT=$((BACKUP_COUNT + 1))
+    fi
+}
+
+for owned in "$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
+    "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md"; do
+    backup_owned "$owned"
+done
+
+if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$BACKUP_COUNT" -ge "$RUST_INTEL_INSTALL_FAIL_AFTER" ]]; then
+    echo "Error: injected uninstall failure after $BACKUP_COUNT owned paths." >&2
+    exit 1
+fi
 
 removed_any=0
-
-if [[ -e "$SKILL_DIR" || -L "$SKILL_DIR" ]]; then
-    rm -rf "$SKILL_DIR"
-    echo "  removed    $SKILL_DIR"
-    removed_any=1
-fi
-
-# v0.2.1+ flat-with-prefix:
-for cur in rust-cc-audit.md rust-cc-fix.md rust-cc-plan.md; do
-    cur_path="$COMMANDS_DIR/$cur"
-    if [[ -e "$cur_path" || -L "$cur_path" ]]; then
-        rm -f "$cur_path"
-        echo "  removed    $cur_path"
-        removed_any=1
-    fi
-done
-
-# v0.2.0 colon-namespace dir:
-if [[ -e "$NS_DIR" || -L "$NS_DIR" ]]; then
-    rm -rf "$NS_DIR"
-    echo "  removed    $NS_DIR (v0.2.0 namespace layout)"
-    removed_any=1
-fi
-
-# v0.1.x legacy flat layout:
-for legacy in rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do
-    legacy_path="$COMMANDS_DIR/$legacy"
-    if [[ -e "$legacy_path" || -L "$legacy_path" ]]; then
-        rm -f "$legacy_path"
-        echo "  removed    $legacy_path (legacy v0.1.x layout)"
-        removed_any=1
-    fi
-done
+if [[ "$BACKUP_COUNT" -gt 0 ]]; then removed_any=1; fi
+rm -rf "$TX_DIR"
+ROLLBACK_NEEDED=0
+trap - EXIT
 
 echo ""
 if [[ "$removed_any" -eq 0 ]]; then

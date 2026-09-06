@@ -48,6 +48,7 @@ jobs:
         run: |
           node --check bin/install.js
           node --check bin/install-codex.js
+          node --check bin/install-transaction.js
           node --check dev/set-release-version.mjs
           node --check dev/check-release-version.mjs
           node --check dev/sync-mirror.mjs

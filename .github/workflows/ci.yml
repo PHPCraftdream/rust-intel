@@ -47,6 +47,7 @@ jobs:
         run: |
           node --check bin/install.js
           node --check bin/install-codex.js
+          node --check bin/install-transaction.js
           node --check dev/set-release-version.mjs
           node --check dev/check-release-version.mjs
           node --check dev/semver.mjs
@@ -54,6 +55,46 @@ jobs:
           node --check skill/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
+      - name: Smoke-test direct POSIX installer entry points and rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          target="$root/target with spaces"
+          CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh
+          test -f "$target/skills/rust-intel/SKILL.md"
+          printf 'unrelated\n' > "$target/commands/keep.md"
+          cp -a "$target/skills/rust-intel" "$root/known-good"
+          if RUST_INTEL_INSTALL_FAIL_AFTER=2 CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh; then
+            echo 'injected POSIX install failure was accepted' >&2; exit 1
+          fi
+          diff -ru "$root/known-good" "$target/skills/rust-intel"
+          test "$(cat "$target/commands/keep.md")" = unrelated
+          CLAUDE_CONFIG_DIR="$target" ./rust-cc-uninstall.sh
+          test ! -e "$target/skills/rust-intel"
+          test -f "$target/commands/keep.md"
+      - name: Smoke-test npm migration and rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          target="$root/claude"
+          mkdir -p "$target/commands/rust-intel-cc"
+          for path in rust-cc-audit.md rust-cc-fix.md rust-cc-plan.md; do printf 'old\n' > "$target/commands/$path"; done
+          printf 'old\n' > "$target/commands/rust-intel-cc/audit.md"
+          for path in rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do printf 'old\n' > "$target/commands/$path"; done
+          printf 'keep\n' > "$target/commands/keep.md"
+          CLAUDE_CONFIG_DIR="$target" node bin/install.js --user
+          test ! -e "$target/commands/rust-intel-cc"
+          for path in rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do test ! -e "$target/commands/$path"; done
+          test "$(cat "$target/commands/keep.md")" = keep
+          cp -a "$target/skills/rust-intel" "$root/known-good"
+          if RUST_INTEL_INSTALL_FAIL_AFTER=2 CLAUDE_CONFIG_DIR="$target" node bin/install.js --user; then
+            echo 'injected npm install failure was accepted' >&2; exit 1
+          fi
+          diff -ru "$root/known-good" "$target/skills/rust-intel"
       - name: Installer overlap-guard execution tests
         shell: bash
         run: |
@@ -162,3 +203,20 @@ jobs:
           for command_name in audit fix plan; do
             test -f "$install_root/.claude/commands/rust-cc-${command_name}.md"
           done
+
+  windows-install-smoke:
+    name: Windows installer smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Smoke-test PowerShell installer with literal paths
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'rust-intel install [literal]'
+          $env:CLAUDE_CONFIG_DIR = Join-Path $root 'target with spaces'
+          & ./rust-cc-install.ps1
+          if (-not (Test-Path -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'skills\rust-intel\SKILL.md'))) { throw 'PowerShell install failed' }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'commands\rust-cc-audit.md'))) { throw 'PowerShell command install failed' }

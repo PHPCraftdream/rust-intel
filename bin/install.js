@@ -19,6 +19,11 @@ assertSupportedNodeVersion();
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const {
+  atomicInstall,
+  prepareSkillStage,
+  claudeOwnedPaths,
+} = require('./install-transaction.js');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 const SKILL_SRC = path.join(PKG_ROOT, 'skill');
@@ -55,10 +60,6 @@ function targetDir(user) {
   return path.join(process.cwd(), '.claude');
 }
 
-function rmrf(p) {
-  fs.rmSync(p, { recursive: true, force: true });
-}
-
 function canonicalCandidate(value) {
   let current = path.resolve(value);
   const tail = [];
@@ -84,20 +85,6 @@ function assertNoOverlap(source, destination) {
   }
 }
 
-function copySkillTree(src, dst) {
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const from = path.join(src, entry.name);
-    const to = path.join(dst, entry.name);
-    if (entry.isDirectory()) {
-      fs.mkdirSync(to, { recursive: true });
-      copySkillTree(from, to);
-    } else if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.js'))) {
-      fs.copyFileSync(from, to);
-      console.log(`  copied     ${to}`);
-    }
-  }
-}
-
 function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) return usage();
@@ -109,11 +96,18 @@ function main() {
   const target = targetDir(user);
   const skillDst = path.join(target, 'skills', 'rust-intel');
   const commandsDst = path.join(target, 'commands');
+  const ownedPaths = claudeOwnedPaths(skillDst, commandsDst, COMMANDS);
+  const commandSources = COMMANDS.map((c) => path.join(COMMANDS_SRC, `${c}.md`));
+  const commandStageNames = COMMANDS.map((c) => path.join('commands', `rust-cc-${c}.md`));
 
   if (uninstall) {
     console.log(`Uninstalling rust-intel from ${target} ...`);
-    rmrf(skillDst);
-    for (const c of COMMANDS) rmrf(path.join(commandsDst, `rust-cc-${c}.md`));
+    atomicInstall({
+      transactionParent: path.dirname(target),
+      replacements: [],
+      removals: ownedPaths,
+      prepare: () => {},
+    });
     console.log('Done.');
     return;
   }
@@ -130,23 +124,27 @@ function main() {
 
   console.log(`Installing rust-intel into ${target} ...`);
 
-  // Clean previous install (mirrors the shell installers).
-  if (fs.existsSync(skillDst)) {
-    console.log(`  cleaning   ${skillDst} (previous install)`);
-    rmrf(skillDst);
-  }
-  fs.mkdirSync(skillDst, { recursive: true });
-  fs.mkdirSync(commandsDst, { recursive: true });
-
-  copySkillTree(SKILL_SRC, skillDst);
-
-  for (const c of COMMANDS) {
-    const src = path.join(COMMANDS_SRC, `${c}.md`);
-    if (!fs.existsSync(src)) fail(`package is missing ${src}`);
-    const dst = path.join(commandsDst, `rust-cc-${c}.md`);
-    fs.copyFileSync(src, dst);
-    console.log(`  copied     ${dst}`);
-  }
+  const replacements = [
+    { destination: skillDst, staged: path.join(target, '.rust-intel-stage', 'skill') },
+    ...COMMANDS.map((c, index) => ({
+      destination: path.join(commandsDst, `rust-cc-${c}.md`),
+      staged: path.join(target, '.rust-intel-stage', commandStageNames[index]),
+    })),
+  ];
+  // The transaction owns the temporary stage and never deletes an unrelated sibling.  Source
+  // inventory and all command inputs are checked before any old path is moved aside.
+  atomicInstall({
+    transactionParent: path.dirname(target),
+    replacements,
+    removals: ownedPaths.filter((destination) => destination !== skillDst && !COMMANDS.some((name) => destination === path.join(commandsDst, `rust-cc-${name}.md`))),
+    prepare: (stageRoot) => {
+      prepareSkillStage(SKILL_SRC, path.join(stageRoot, 'skill'), commandSources, commandStageNames, stageRoot);
+      replacements[0].staged = path.join(stageRoot, 'skill');
+      for (let index = 0; index < commandStageNames.length; index += 1) {
+        replacements[index + 1].staged = path.join(stageRoot, commandStageNames[index]);
+      }
+    },
+  });
 
   console.log(`
 Done. Verify by starting 'claude' ${user ? 'anywhere' : 'in this directory'} and trying:

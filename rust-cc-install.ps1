@@ -51,6 +51,9 @@ Environment:
 }
 
 $ErrorActionPreference = 'Stop'
+if ($env:RUST_INTEL_INSTALL_FAIL_AFTER -and $env:RUST_INTEL_INSTALL_FAIL_AFTER -notmatch '^[1-9][0-9]*$') {
+    throw 'RUST_INTEL_INSTALL_FAIL_AFTER must be a positive integer.'
+}
 
 $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
@@ -136,22 +139,90 @@ New-Item -ItemType Directory -Force -Path $CommandsDir | Out-Null
 
 function Install-File {
     param([string]$Source, [string]$Destination)
-    Copy-Item -Path $Source -Destination $Destination -Force
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
     Write-Output "  copied     $Destination"
 }
 
-Get-ChildItem -LiteralPath $SkillSourceDir -Recurse -File | Where-Object {
+$skillFiles = @(Get-ChildItem -LiteralPath $SkillSourceDir -Recurse -File | Where-Object {
     $_.Name -like '*.md' -or $_.Name -like '*.js'
-} | ForEach-Object {
-    $relative = $_.FullName.Substring($SkillSourceDir.Length).TrimStart('\','/')
-    $destination = Join-Path $SkillDir $relative
-    $parent = Split-Path -Parent $destination
-    New-Item -ItemType Directory -Force -Path $parent | Out-Null
-    Install-File -Source $_.FullName -Destination $destination
+})
+if (-not ($skillFiles | Where-Object { $_.FullName.Substring($SkillSourceDir.Length).TrimStart('\','/') -eq 'SKILL.md' })) {
+    throw "Source inventory is missing skill\SKILL.md."
 }
-Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\audit.md')             -Destination (Join-Path $CommandsDir 'rust-cc-audit.md')
-Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\fix.md')               -Destination (Join-Path $CommandsDir 'rust-cc-fix.md')
-Install-File -Source (Join-Path $RepoDir 'commands\rust-intel-cc\plan.md')              -Destination (Join-Path $CommandsDir 'rust-cc-plan.md')
+$commandSources = @(
+    (Join-Path $RepoDir 'commands\rust-intel-cc\audit.md'),
+    (Join-Path $RepoDir 'commands\rust-intel-cc\fix.md'),
+    (Join-Path $RepoDir 'commands\rust-intel-cc\plan.md')
+)
+foreach ($source in $commandSources) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Source command is missing: $source" }
+}
+
+$txParent = Split-Path -Parent $ClaudeDir
+New-Item -ItemType Directory -Force -LiteralPath $txParent | Out-Null
+$txDir = Join-Path $txParent ('.rust-intel-tx-' + [IO.Path]::GetRandomFileName())
+$stageRoot = Join-Path $txDir 'stage'
+$backupRoot = Join-Path $txDir 'backup'
+New-Item -ItemType Directory -Force -LiteralPath $stageRoot, $backupRoot | Out-Null
+$stageSkill = Join-Path $stageRoot 'rust-intel'
+
+# Copy and validate the complete replacement before moving any existing path.
+foreach ($file in $skillFiles) {
+    $relative = $file.FullName.Substring($SkillSourceDir.Length).TrimStart('\','/')
+    $destination = Join-Path $stageSkill $relative
+    New-Item -ItemType Directory -Force -LiteralPath (Split-Path -Parent $destination) | Out-Null
+    Install-File -Source $file.FullName -Destination $destination
+}
+$stageCommands = @()
+for ($index = 0; $index -lt $commandSources.Count; $index++) {
+    $stageCommand = Join-Path $stageRoot ('rust-cc-' + @('audit','fix','plan')[$index] + '.md')
+    Install-File -Source $commandSources[$index] -Destination $stageCommand
+    $stageCommands += $stageCommand
+}
+foreach ($file in $skillFiles) {
+    $relative = $file.FullName.Substring($SkillSourceDir.Length).TrimStart('\','/')
+    $staged = Join-Path $stageSkill $relative
+    if (-not (Test-Path -LiteralPath $staged -PathType Leaf)) { throw "Staged skill file is missing: $relative" }
+    if ((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $staged).Hash) { throw "Staged skill file differs: $relative" }
+}
+
+$owned = @($SkillDir,
+    (Join-Path $CommandsDir 'rust-cc-audit.md'), (Join-Path $CommandsDir 'rust-cc-fix.md'), (Join-Path $CommandsDir 'rust-cc-plan.md'),
+    $NsDir,
+    (Join-Path $CommandsDir 'rust-audit.md'), (Join-Path $CommandsDir 'rust-fix.md'),
+    (Join-Path $CommandsDir 'rust-plan.md'), (Join-Path $CommandsDir 'rust-intel.md'))
+$backups = @()
+$replacements = @(@{ Destination = $SkillDir; Staged = $stageSkill })
+for ($index = 0; $index -lt $stageCommands.Count; $index++) {
+    $replacements += @{ Destination = (Join-Path $CommandsDir ('rust-cc-' + @('audit','fix','plan')[$index] + '.md')); Staged = $stageCommands[$index] }
+}
+$replaceCount = 0
+try {
+    foreach ($destination in $owned) {
+        if (Test-Path -LiteralPath $destination -Force) {
+            $backup = Join-Path $backupRoot ([string]$backups.Count)
+            Move-Item -LiteralPath $destination -Destination $backup
+            $backups += @{ Destination = $destination; Backup = $backup }
+        }
+    }
+    foreach ($replacement in $replacements) {
+        New-Item -ItemType Directory -Force -LiteralPath (Split-Path -Parent $replacement.Destination) | Out-Null
+        Move-Item -LiteralPath $replacement.Staged -Destination $replacement.Destination
+        $replaceCount++
+        if ($env:RUST_INTEL_INSTALL_FAIL_AFTER -and $replaceCount -eq [int]$env:RUST_INTEL_INSTALL_FAIL_AFTER) { throw "Injected installer failure after replacement $replaceCount." }
+    }
+    Remove-Item -LiteralPath $txDir -Recurse -Force
+} catch {
+    foreach ($replacement in $replacements) {
+        if (Test-Path -LiteralPath $replacement.Destination -Force) { Remove-Item -LiteralPath $replacement.Destination -Recurse -Force }
+    }
+    foreach ($record in @($backups | Select-Object -Last $backups.Count)) {
+        New-Item -ItemType Directory -Force -LiteralPath (Split-Path -Parent $record.Destination) | Out-Null
+        Move-Item -LiteralPath $record.Backup -Destination $record.Destination
+    }
+    if (Test-Path -LiteralPath $txDir -Force) { Remove-Item -LiteralPath $txDir -Recurse -Force }
+    throw
+}
 
 Write-Output ""
 Write-Output "Done. Verify by starting 'claude' in this directory and trying:"

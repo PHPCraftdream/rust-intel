@@ -257,6 +257,8 @@ the release; routine reviews must not change the version or release notes implic
 
 1. Decide and record the bump level; for the Node-floor release, use `0.7.0`.
 2. Run `node dev/set-release-version.mjs <version>` and review the three manifest changes.
+   Run `node dev/calibrate-release-version.mjs` to exercise the bounded injected-failure rollback
+   against a temporary known-good copy before relying on the utility for a release.
 3. Update the README version banner, keeping the exact validator-pinned sentence `Numbered categories now **N**`, and add the release's entry to **Status**. When cutting the release, remove or replace the point-in-time `Unreleased (prepared, not tagged)` paragraph so it cannot remain beside the released entry. Retain and verify the existing `v0.6.0 (2026-08-19)` entry, add the new `v0.7.0` entry above it, keep entries in reverse chronological order, and put a blank line between every entry.
 4. In `CHANGELOG.md`, insert a fresh empty `## [Unreleased]` section above the release, then move the current Unreleased body under `## [0.7.0] — <release-date>` (or the selected version/date). Re-check the fixture-control count against the header in `dev/validate-fixtures.mjs` (currently **389**) and update the changelog's count if it changed; rewrite the planned-bump sentence in past tense (for example, `This release is \`0.7.0\` (MINOR) because ...`) rather than shipping an imperative instruction.
 5. Run the repository checks: `npm run validate`, `npm pack --dry-run`, the mirror check, and the

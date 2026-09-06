@@ -11,6 +11,10 @@ assertSupportedNodeVersion();
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const {
+  atomicInstall,
+  prepareSkillStage,
+} = require('./install-transaction.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const skillSrc = path.join(repoRoot, 'skill');
@@ -31,16 +35,6 @@ otherwise ~/.agents/skills/rust-intel. Only *.md and *.js skill files are copied
 function fail(message) {
   console.error(`error: ${message}`);
   process.exit(1);
-}
-
-function copyTree(src, dst) {
-  fs.mkdirSync(dst, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const from = path.join(src, entry.name);
-    const to = path.join(dst, entry.name);
-    if (entry.isDirectory()) copyTree(from, to);
-    else if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.js'))) fs.copyFileSync(from, to);
-  }
 }
 
 function canonicalCandidate(value) {
@@ -91,11 +85,27 @@ function main(argv) {
   const destination = path.join(skillsRoot, 'rust-intel');
   assertNoOverlap(skillSrc, destination);
   if (uninstall) {
-    fs.rmSync(destination, { recursive: true, force: true });
+    atomicInstall({
+      transactionParent: path.dirname(destination),
+      replacements: [],
+      removals: [destination],
+      prepare: () => {},
+    });
     console.log(`Removed ${destination}`);
   } else {
-    fs.rmSync(destination, { recursive: true, force: true });
-    copyTree(skillSrc, destination);
+    const replacement = {
+      destination,
+      staged: path.join(skillsRoot, '.rust-intel-stage', 'rust-intel'),
+    };
+    atomicInstall({
+      transactionParent: path.dirname(skillsRoot),
+      replacements: [replacement],
+      removals: [],
+      prepare: (stageRoot) => {
+        prepareSkillStage(skillSrc, path.join(stageRoot, 'rust-intel'), [], []);
+        replacement.staged = path.join(stageRoot, 'rust-intel');
+      },
+    });
     console.log(`Installed rust-intel for Codex at ${destination}`);
     console.log('Start a new Codex thread to load the updated skill.');
   }
