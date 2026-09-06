@@ -93,9 +93,10 @@ function observeControls(value, target = observedControls, diagnostics = failure
   // Counting happens only when an assertion/outcome helper below is actually invoked. This
   // distinction is what makes a retained observeControls marker unable to hide a deleted body.
   if (target === observedControls) {
-    while (pendingControlScopes[0]?.completed) pendingControlScopes.shift();
+    while (pendingControlScopes[0] && pendingControlScopes[0].observed.size === pendingControlScopes[0].ids.length) pendingControlScopes.shift();
     if (pendingControlScopes.length) {
-      failures.push(`executable control scope ${pendingControlScopes[0].ids.join(', ')} had no assertion/outcome invocation`);
+      const missing = pendingControlScopes[0].ids.filter((id) => !pendingControlScopes[0].observed.has(id));
+      failures.push(`executable controls missing assertion/outcome invocation: ${missing.join(', ')}`);
       pendingControlScopes.shift();
     }
     for (const id of ids) {
@@ -109,7 +110,7 @@ function observeControls(value, target = observedControls, diagnostics = failure
       }
       registeredControls.add(id);
     }
-    pendingControlScopes.push({ ids: ids.filter((id) => CONTROL_REGISTRY.has(id)), completed: false });
+    pendingControlScopes.push({ ids: ids.filter((id) => CONTROL_REGISTRY.has(id)), observed: new Set() });
     return;
   }
   // The duplicate-registration calibration uses an isolated target intentionally. Preserve that
@@ -127,22 +128,28 @@ function observeControls(value, target = observedControls, diagnostics = failure
   }
 }
 
-function completeCurrentControlScope() {
+function completeCurrentControlScope(controlId = null) {
   const scope = pendingControlScopes[0];
   if (!scope || scope.ids.length === 0) {
     failures.push('assertion/outcome helper ran without a pending executable control scope');
     return;
   }
-  if (scope.completed) return;
-  scope.completed = true;
-  for (const id of scope.ids) {
-    if (observedControls.has(id)) failures.push(`executable control ${id} was observed more than once`);
-    else observedControls.add(id);
+  const id = controlId === null
+    ? scope.ids.find((candidate) => !scope.observed.has(candidate))
+    : controlId;
+  if (id === undefined) return;
+  if (!scope.ids.includes(id)) {
+    failures.push(`assertion/outcome helper claimed control ${id}, outside current executable scope ${scope.ids.join(', ')}`);
+    return;
   }
+  if (scope.observed.has(id)) return;
+  scope.observed.add(id);
+  if (observedControls.has(id)) failures.push(`executable control ${id} was observed more than once`);
+  else observedControls.add(id);
 }
 
-function assertControlOutcome(condition, message) {
-  completeCurrentControlScope();
+function assertControlOutcome(condition, message, controlId = null) {
+  completeCurrentControlScope(controlId);
   if (!condition) failures.push(message);
 }
 
@@ -425,6 +432,9 @@ for (const [number, file, mutate, label, expectedNeedle] of [
   else if (result.status !== 0) failures.push(`Control ${number}: ${label}: historical qualified count caused an unexpected failure: ${result.output.trim()}`);
 }
 
+assertControlOutcome(true, 'Control 387 outcome assertion failed', 387);
+assertControlOutcome(true, 'Control 388 outcome assertion failed', 388);
+
 // Cycle-5 anchored table contract controls.
 const fixtureTick = String.fromCharCode(96);
 function splitFixtureLines(source) {
@@ -458,16 +468,16 @@ function insertCodeRows(source, rows) {
 function appendProbe(source, lines) {
   return source.replace(/\r\n?/g, '\n').replace(/\n?$/, '\n') + lines.join('\n') + '\n';
 }
-function expectFixture(result, name, status, needles = []) {
-  completeCurrentControlScope();
+function expectFixture(result, name, status, needles = [], controlId = null) {
+  completeCurrentControlScope(controlId);
   if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status !== status || needles.some((needle) => !result.output.includes(needle))) {
     failures.push(name + ': expected status ' + status + ', got: ' + result.output.trim());
   }
 }
-function expectUnsupported(result, name) {
-  completeCurrentControlScope();
+function expectUnsupported(result, name, controlId = null) {
+  completeCurrentControlScope(controlId);
   if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/unsupported/i.test(result.output)) failures.push(name + ': expected explicit unsupported-style diagnostic, got: ' + result.output.trim());
@@ -475,6 +485,10 @@ function expectUnsupported(result, name) {
 
 // Controls 5-10: header, delimiter, and body rows of BOTH anchored tables retain raw column one.
 observeControls({ start: 5, end: 10 });
+const anchoredControlByKind = {
+  phrase: { header: 5, delimiter: 6, body: 7 },
+  code: { header: 8, delimiter: 9, body: 10 },
+};
 for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
   for (const kind of ['header', 'delimiter', 'body']) {
     const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
@@ -483,7 +497,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
       mutateAnchoredLine(source, table, kind, (line) => line.slice(1)));
     const needles = ['missing its leading ' + fixtureTick + '|' + fixtureTick];
     if (hit) needles.push('skill/SKILL.md:' + hit.lineNumber + ':');
-    expectFixture(result, 'anchored ' + label + ' ' + kind + ' leading-pipe', 1, needles);
+    expectFixture(result, 'anchored ' + label + ' ' + kind + ' leading-pipe', 1, needles, anchoredControlByKind[table][kind]);
   }
 }
 
@@ -616,8 +630,8 @@ function anchoredTableEnd(source, table) {
   if (marker < 0) return null;
   return { lines: hit.lines, marker, lineNumber: marker + 1 };
 }
-function expectStructural(result, name, needles = []) {
-  completeCurrentControlScope();
+function expectStructural(result, name, needles = [], controlId = null) {
+  completeCurrentControlScope(controlId);
   if (result.skipped) failures.push(name + ': required table boundary was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || needles.some((needle) => !result.output.includes(needle))) {
@@ -666,7 +680,8 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 }
 
 // Control 39: the explicit end marker is unique.
-assertControlOutcome(true, 'Controls 37-38 outcome assertion failed');
+assertControlOutcome(true, 'Control 37 outcome assertion failed', 37);
+assertControlOutcome(true, 'Control 38 outcome assertion failed', 38);
 
 observeControls(39);
 {
@@ -730,8 +745,8 @@ function anchoredEndLine(source, table) {
   if (!hit) return null;
   return hit.lines[hit.marker];
 }
-function expectAnchorScaffold(result, name, required = [], forbidden = []) {
-  completeCurrentControlScope();
+function expectAnchorScaffold(result, name, required = [], forbidden = [], controlId = null) {
+  completeCurrentControlScope(controlId);
   if (result.skipped) failures.push(name + ': required table scaffold was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || required.some((needle) => !result.output.includes(needle)) || forbidden.some((needle) => result.output.includes(needle))) {
@@ -888,9 +903,8 @@ const extendedAutolinkProbeLine = (() => {
   const hit = anchoredTableLine(original, 'code', 'delimiter');
   return hit ? hit.lineNumber + 1 : null;
 })();
-function expectExactUnsupported(result, name, needles) {
-  completeCurrentControlScope();
-  expectUnsupported(result, name);
+function expectExactUnsupported(result, name, needles, controlId = null) {
+  expectUnsupported(result, name, controlId);
   if (!result.skipped && !result.executionFailure && (result.status === 0 || needles.some((needle) => !result.output.includes(needle)))) {
     failures.push(name + ': expected exact unsupported-style diagnostic and location, got: ' + result.output.trim());
   }
@@ -1715,7 +1729,8 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 117: a tab-indented fence-looking line is not a standalone project fence opener. The
-assertControlOutcome(true, 'Controls 115-116 outcome assertion failed');
+assertControlOutcome(true, 'Control 115 outcome assertion failed', 115);
+assertControlOutcome(true, 'Control 116 outcome assertion failed', 116);
 
 observeControls(117);
 // escape on the following line is therefore outside a fence and must remain observable.
@@ -3540,7 +3555,8 @@ function classifyInvalidUnicodeResult(result) {
 }
 
 // Controls 380-384: in-process calibration for every classifier branch. Control 381 preserves the
-assertControlOutcome(true, 'Controls 378-379 outcome assertion failed');
+assertControlOutcome(true, 'Control 378 outcome assertion failed', 378);
+assertControlOutcome(true, 'Control 379 outcome assertion failed', 379);
 
 observeControls({ start: 380, end: 384 });
 // exact intentional diagnostic against reintroduction of the former over-broad workflow predicate.
@@ -3582,7 +3598,11 @@ for (const [number, name, root, declaration] of [
 // Control 389: executable accounting must fail when the assertion body is removed, even if the
 // observeControls marker remains, and when a genuinely asserted next control is added without the
 // declared header/docs update.
-assertControlOutcome(true, 'Controls 380-384 outcome assertion failed');
+assertControlOutcome(true, 'Control 380 outcome assertion failed', 380);
+assertControlOutcome(true, 'Control 381 outcome assertion failed', 381);
+assertControlOutcome(true, 'Control 382 outcome assertion failed', 382);
+assertControlOutcome(true, 'Control 383 outcome assertion failed', 383);
+assertControlOutcome(true, 'Control 384 outcome assertion failed', 384);
 
 observeControls(389);
 if (process.env.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1') {
@@ -3593,6 +3613,15 @@ if (process.env.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1') {
   }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
   expectFixture(assertionBodyRemoved, 'Control 389: removing assertion body cannot pass with marker retained', 1, [
     'missing executable controls',
+  ]);
+
+  const rangeIterationRemoved = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
+    const loop = "for (const kind of ['header', 'delimiter', 'body']) {";
+    if (!source.includes(loop)) return null;
+    return source.replace(loop, "for (const kind of ['header', 'delimiter', 'body'].filter((candidate) => !(table === 'code' && candidate === 'delimiter'))) {");
+  }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
+  expectFixture(rangeIterationRemoved, 'Control 389: removing one middle range assertion cannot pass', 1, [
+    'missing executable controls: 9, 389',
   ]);
 
   const unlistedControlAdded = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
@@ -3630,8 +3659,9 @@ const missingRegisteredControls = [...CONTROL_REGISTRY].filter((id) => !register
 if (missingRegisteredControls.length) {
   failures.push(`missing executable control registrations: ${missingRegisteredControls.join(', ')}`);
 }
-if (pendingControlScopes.some(({ completed }) => !completed)) {
-  failures.push('one or more executable control scopes had no assertion/outcome invocation');
+if (pendingControlScopes.some(({ ids, observed }) => observed.size !== ids.length)) {
+  const missing = pendingControlScopes.flatMap(({ ids, observed }) => ids.filter((id) => !observed.has(id)));
+  failures.push(`one or more executable controls had no assertion/outcome invocation: ${missing.join(', ')}`);
 }
 if (registeredControls.size !== CONTROL_REGISTRY.size) {
   failures.push(`registered control count ${registeredControls.size} does not match registry count ${CONTROL_REGISTRY.size}`);
