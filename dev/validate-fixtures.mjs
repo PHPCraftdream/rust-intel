@@ -67,9 +67,78 @@ const failures = [];
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
 const CONTROL_REGISTRY_TOTAL = 389;
-const CONTROL_REGISTRY = new Set(Array.from({ length: CONTROL_REGISTRY_TOTAL }, (_, index) => index + 1));
-const registeredControls = new Set();
-const observedControls = new Set();
+function createControlRegistry(total) {
+  const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
+  const registered = new Set();
+  const completed = new Set();
+  const scopes = [];
+  const diagnostics = [];
+  const idsFor = (value) => {
+    if (Number.isSafeInteger(value)) return [value];
+    if (!value || !Number.isSafeInteger(value.start) || !Number.isSafeInteger(value.end) || value.start > value.end) {
+      diagnostics.push(`invalid executable control registration: ${JSON.stringify(value)}`);
+      return [];
+    }
+    return Array.from({ length: value.end - value.start + 1 }, (_, offset) => value.start + offset);
+  };
+  const register = (value) => {
+    while (scopes[0] && scopes[0].completed.size === scopes[0].ids.length) scopes.shift();
+    const ids = idsFor(value);
+    for (const id of ids) {
+      if (!declared.has(id)) diagnostics.push(`executable control ${id} is not declared in the control registry`);
+      else if (registered.has(id)) diagnostics.push(`executable control ${id} was registered more than once`);
+      else registered.add(id);
+    }
+    scopes.push({ ids: ids.filter((id) => declared.has(id)), completed: new Set() });
+  };
+  const complete = (controlId, outcome) => {
+    const scope = scopes[0];
+    if (!Number.isSafeInteger(controlId)) {
+      diagnostics.push('assertion/outcome helper requires an explicit control ID');
+      return;
+    }
+    if (!scope || scope.ids.length === 0) {
+      diagnostics.push(`assertion/outcome helper for control ${controlId} ran without a pending executable control scope`);
+      return;
+    }
+    if (!scope.ids.includes(controlId)) {
+      diagnostics.push(`assertion/outcome helper claimed control ${controlId}, outside current executable scope ${scope.ids.join(', ')}`);
+      return;
+    }
+    if (scope.completed.has(controlId) || completed.has(controlId)) {
+      diagnostics.push(`executable control ${controlId} was observed more than once`);
+      return;
+    }
+    scope.completed.add(controlId);
+    completed.add(controlId);
+    if (!outcome) diagnostics.push(`control ${controlId} completed with a false outcome predicate`);
+  };
+  const finishScope = () => {
+    while (scopes[0] && scopes[0].completed.size === scopes[0].ids.length) scopes.shift();
+    if (scopes.length) {
+      const scope = scopes.shift();
+      const missing = scope.ids.filter((id) => !scope.completed.has(id));
+      diagnostics.push(`executable controls missing assertion/outcome invocation: ${missing.join(', ')}`);
+    }
+  };
+  const checkHeader = (headerTotal) => {
+    if (headerTotal !== total) diagnostics.push(`control registry/header mismatch: executable registry declares ${total}, scope header declares ${headerTotal ?? 'missing'}`);
+  };
+  const finalize = () => {
+    while (scopes.length) finishScope();
+    for (const id of declared) {
+      if (!registered.has(id)) diagnostics.push(`missing executable control registration: ${id}`);
+      if (!completed.has(id)) diagnostics.push(`missing executable controls: ${id}`);
+    }
+    return diagnostics;
+  };
+  return { declared, registered, completed, diagnostics, register, complete, finishScope, checkHeader, finalize };
+}
+
+const controlRegistry = createControlRegistry(CONTROL_REGISTRY_TOTAL);
+const CONTROL_REGISTRY = controlRegistry.declared;
+const registeredControls = controlRegistry.registered;
+const observedControls = controlRegistry.completed;
 const pendingControlScopes = [];
 const fixtureSource = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
 const scopeHeaderMatch = /^\/\/ Scope, stated honestly: (\d+) hand-written controls:/m.exec(fixtureSource);
@@ -78,17 +147,16 @@ if (scopeHeaderTotal !== CONTROL_REGISTRY_TOTAL) {
   failures.push(`control registry/header mismatch: executable registry declares ${CONTROL_REGISTRY_TOTAL}, scope header declares ${scopeHeaderTotal ?? 'missing'}`);
 }
 
-function controlIds(value) {
-  if (Number.isSafeInteger(value)) return [value];
-  if (!value || !Number.isSafeInteger(value.start) || !Number.isSafeInteger(value.end) || value.start > value.end) {
-    failures.push(`invalid executable control registration: ${JSON.stringify(value)}`);
-    return [];
-  }
-  return Array.from({ length: value.end - value.start + 1 }, (_, offset) => value.start + offset);
-}
-
 function observeControls(value, target = observedControls, diagnostics = failures) {
-  const ids = controlIds(value);
+  const ids = Number.isSafeInteger(value) ? [value] : (
+    value && Number.isSafeInteger(value.start) && Number.isSafeInteger(value.end) && value.start <= value.end
+      ? Array.from({ length: value.end - value.start + 1 }, (_, offset) => value.start + offset)
+      : []
+  );
+  if (!ids.length) {
+    diagnostics.push(`invalid executable control registration: ${JSON.stringify(value)}`);
+    return;
+  }
   // The default target registers an executable control scope, but does not count it as run.
   // Counting happens only when an assertion/outcome helper below is actually invoked. This
   // distinction is what makes a retained observeControls marker unable to hide a deleted body.
@@ -99,18 +167,9 @@ function observeControls(value, target = observedControls, diagnostics = failure
       failures.push(`executable controls missing assertion/outcome invocation: ${missing.join(', ')}`);
       pendingControlScopes.shift();
     }
-    for (const id of ids) {
-      if (!CONTROL_REGISTRY.has(id)) {
-        diagnostics.push(`executable control ${id} is not declared in the control registry`);
-        continue;
-      }
-      if (registeredControls.has(id)) {
-        diagnostics.push(`executable control ${id} was registered more than once`);
-        continue;
-      }
-      registeredControls.add(id);
-    }
-    pendingControlScopes.push({ ids: ids.filter((id) => CONTROL_REGISTRY.has(id)), observed: new Set() });
+    controlRegistry.register(value);
+    for (const id of ids.filter((candidate) => CONTROL_REGISTRY.has(candidate))) registeredControls.add(id);
+    pendingControlScopes.push({ ids: ids.filter((id) => CONTROL_REGISTRY.has(id)), observed: new Set(), failureBaseline: failures.length });
     return;
   }
   // The duplicate-registration calibration uses an isolated target intentionally. Preserve that
@@ -128,29 +187,42 @@ function observeControls(value, target = observedControls, diagnostics = failure
   }
 }
 
-function completeCurrentControlScope(controlId = null) {
+function completeCurrentControlScope(controlId, outcome = true) {
   const scope = pendingControlScopes[0];
   if (!scope || scope.ids.length === 0) {
     failures.push('assertion/outcome helper ran without a pending executable control scope');
     return;
   }
-  const id = controlId === null
-    ? scope.ids.find((candidate) => !scope.observed.has(candidate))
-    : controlId;
-  if (id === undefined) return;
+  if (!Number.isSafeInteger(controlId)) {
+    failures.push('assertion/outcome helper requires an explicit control ID');
+    return;
+  }
+  const id = controlId;
   if (!scope.ids.includes(id)) {
     failures.push(`assertion/outcome helper claimed control ${id}, outside current executable scope ${scope.ids.join(', ')}`);
     return;
   }
-  if (scope.observed.has(id)) return;
+  if (scope.observed.has(id)) {
+    failures.push(`executable control ${id} was observed more than once`);
+    return;
+  }
+  if (observedControls.has(id)) {
+    failures.push(`executable control ${id} was observed more than once`);
+    return;
+  }
+  controlRegistry.complete(id, outcome);
   scope.observed.add(id);
-  if (observedControls.has(id)) failures.push(`executable control ${id} was observed more than once`);
-  else observedControls.add(id);
+  observedControls.add(id);
 }
 
-function assertControlOutcome(condition, message, controlId = null) {
-  completeCurrentControlScope(controlId);
+function assertControlOutcome(condition, message, controlId) {
+  completeCurrentControlScope(controlId, condition);
   if (!condition) failures.push(message);
+}
+
+function controlScopePassed(controlId) {
+  const scope = pendingControlScopes[0];
+  return Boolean(scope && scope.ids.includes(controlId) && failures.length === scope.failureBaseline);
 }
 
 // Structural contract: a fixture may not cite a category that has been renamed away or that no
@@ -304,7 +376,7 @@ observeControls(1);
   else if (!result.output.includes('README.md')) failures.push(`README.md negative control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
 }
 
-assertControlOutcome(true, 'Control 1 outcome assertion failed');
+assertControlOutcome(controlScopePassed(1), 'Control 1 outcome assertion failed', 1);
 
 // Control 2: keep the correct, required `**N**` banner intact, but add a COEXISTING stale
 observeControls(2);
@@ -325,7 +397,7 @@ observeControls(2);
   else if (!result.output.includes('README.md')) failures.push(`README.md coexistence control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
 }
 
-assertControlOutcome(true, 'Control 2 outcome assertion failed');
+assertControlOutcome(controlScopePassed(2), 'Control 2 outcome assertion failed', 2);
 
 // Control 3: same coexistence shape as Control 2, but with the stale mention wrapped in
 observeControls(3);
@@ -345,7 +417,7 @@ observeControls(3);
 }
 
 // Control 4: TEMP/TMP resolves — via a symlink on POSIX, a junction on Windows — to a directory
-assertControlOutcome(true, 'Control 3 outcome assertion failed');
+assertControlOutcome(controlScopePassed(3), 'Control 3 outcome assertion failed', 3);
 
 observeControls(4);
 // whose PHYSICAL target sits inside the repo, even though the alias's own (lexical) path does not.
@@ -401,7 +473,7 @@ observeControls(4);
 }
 
 // Controls 385-388: release-facing fixture counts must track the authoritative scope header, while
-assertControlOutcome(true, 'Control 4 outcome assertion failed');
+assertControlOutcome(controlScopePassed(4), 'Control 4 outcome assertion failed', 4);
 
 observeControls({ start: 385, end: 388 });
 // revision-qualified historical counts remain valid. The first two mutations make one current
@@ -426,14 +498,15 @@ for (const [number, file, mutate, label, expectedNeedle] of [
   ), 'CHANGELOG qualified historical fixture count', null],
 ]) {
   const result = runValidateAgainstMutatedFiles([file], mutate);
-  if (number <= 386) expectFixture(result, `Control ${number}: ${label} is mechanically pinned`, 1, [expectedNeedle]);
-  else if (result.skipped) failures.push(`Control ${number}: ${label}: mutation was not applied`);
-  else if (result.executionFailure) failures.push(`Control ${number}: ${label}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
-  else if (result.status !== 0) failures.push(`Control ${number}: ${label}: historical qualified count caused an unexpected failure: ${result.output.trim()}`);
+  if (number <= 386) expectFixture(result, `Control ${number}: ${label} is mechanically pinned`, 1, [expectedNeedle], number);
+  else {
+    const passed = !result.skipped && !result.executionFailure && result.status === 0;
+    if (result.skipped) failures.push(`Control ${number}: ${label}: mutation was not applied`);
+    else if (result.executionFailure) failures.push(`Control ${number}: ${label}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
+    else if (!passed) failures.push(`Control ${number}: ${label}: historical qualified count caused an unexpected failure: ${result.output.trim()}`);
+    completeCurrentControlScope(number, passed);
+  }
 }
-
-assertControlOutcome(true, 'Control 387 outcome assertion failed', 387);
-assertControlOutcome(true, 'Control 388 outcome assertion failed', 388);
 
 // Cycle-5 anchored table contract controls.
 const fixtureTick = String.fromCharCode(96);
@@ -468,19 +541,21 @@ function insertCodeRows(source, rows) {
 function appendProbe(source, lines) {
   return source.replace(/\r\n?/g, '\n').replace(/\n?$/, '\n') + lines.join('\n') + '\n';
 }
-function expectFixture(result, name, status, needles = [], controlId = null) {
-  completeCurrentControlScope(controlId);
+function expectFixture(result, name, status, needles = [], controlId) {
+  const passed = !result.skipped && !result.executionFailure && result.status === status && !needles.some((needle) => !result.output.includes(needle));
   if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
-  else if (result.status !== status || needles.some((needle) => !result.output.includes(needle))) {
+  else if (!passed) {
     failures.push(name + ': expected status ' + status + ', got: ' + result.output.trim());
   }
+  completeCurrentControlScope(controlId, passed);
 }
-function expectUnsupported(result, name, controlId = null) {
-  completeCurrentControlScope(controlId);
+function expectUnsupported(result, name, controlId) {
+  const passed = !result.skipped && !result.executionFailure && result.status !== 0 && /unsupported/i.test(result.output);
   if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
-  else if (result.status === 0 || !/unsupported/i.test(result.output)) failures.push(name + ': expected explicit unsupported-style diagnostic, got: ' + result.output.trim());
+  else if (!passed) failures.push(name + ': expected explicit unsupported-style diagnostic, got: ' + result.output.trim());
+  completeCurrentControlScope(controlId, passed);
 }
 
 // Controls 5-10: header, delimiter, and body rows of BOTH anchored tables retain raw column one.
@@ -503,12 +578,12 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 
 // Controls 11-12: one-column and arbitrary tables outside anchors are ignored.
 observeControls({ start: 11, end: 12 });
-for (const [name, rows] of [
+for (const [index, [name, rows]] of [
   ['outside-anchor one-column', ['| outside-one-column |', '|---|', '| ' + fixtureTick + 'outside-one-column' + fixtureTick + ' |', '| ' + fixtureTick + 'outside-one-column' + fixtureTick + ' |']],
   ['outside-anchor arbitrary', ['| outside-arbitrary | other |', '|---|---|', '| ' + fixtureTick + 'outside-arbitrary' + fixtureTick + ' | body |', '| ' + fixtureTick + 'outside-arbitrary' + fixtureTick + ' | body |']],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => appendProbe(source, ['', ...rows, '']));
-  expectFixture(result, name, 0);
+  expectFixture(result, name, 0, [], 11 + index);
 }
 
 // Control 13: duplicate detection is bounded to the anchored code-pattern body; the structural
@@ -521,19 +596,19 @@ observeControls(13);
       '| ' + t + 'body-only-signature' + t + ' | first body |',
       '| ' + t + 'body-only-signature' + t + ' | second body |',
     ]));
-  expectFixture(result, 'body-vs-header duplicate exclusion', 1, ['[body-only-signature]']);
+  expectFixture(result, 'body-vs-header duplicate exclusion', 1, ['[body-only-signature]'], 13);
 }
 
 // Controls 14-15: odd/even escaped-pipe parity is applied before cell extraction. This is the
 observeControls({ start: 14, end: 15 });
 // repository's raw-pipe convention, not a claim that GFM's table parser exposes this exact API.
-for (const [name, row, token] of [
+for (const [index, [name, row, token]] of [
   ['odd escaped-pipe parity', '| ' + fixtureTick + 'odd-parity' + fixtureTick + ' \\| second cell | body |', '[odd-parity]'],
   ['even escaped-pipe parity', '| ' + fixtureTick + 'even-parity' + fixtureTick + ' \\\\| body |', '[even-parity]'],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row, row]));
-  expectFixture(result, name, 1, [token]);
+  expectFixture(result, name, 1, [token], 14 + index);
 }
 
 // Control 16: maximal delimiters and preserved interior whitespace remain in the allowed subset.
@@ -543,7 +618,7 @@ observeControls(16);
   const row = '| ' + t + t + t + t + 'multi  backtick' + t + t + t + t + ' | body |';
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row, row]));
-  expectFixture(result, 'maximal multi-backtick duplicate', 1, ['[multi  backtick]']);
+  expectFixture(result, 'maximal multi-backtick duplicate', 1, ['[multi  backtick]'], 16);
 }
 
 // Control 17: edge-space normalization makes these two spans equal.
@@ -552,7 +627,7 @@ observeControls(17);
   const t = fixtureTick;
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, ['| ' + t + ' edge ' + t + ' | body |', '| ' + t + 'edge' + t + ' | body |']));
-  expectFixture(result, 'CommonMark code-span edge normalization', 1, ['[edge]']);
+  expectFixture(result, 'CommonMark code-span edge normalization', 1, ['[edge]'], 17);
 }
 
 // Control 18: the signature map key is injective ([a,b] differs from [a + b]).
@@ -561,34 +636,34 @@ observeControls(18);
   const t = fixtureTick;
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, ['| ' + t + 'a' + t + ' ' + t + 'b' + t + ' | body |', '| ' + t + 'a + b' + t + ' | body |']));
-  expectFixture(result, 'injective signature key', 0);
+  expectFixture(result, 'injective signature key', 0, [], 18);
 }
 
 
 // Controls 19-22: unsupported complex inline constructs in a code-pattern first cell are
 observeControls({ start: 19, end: 22 });
 // rejected explicitly rather than silently hiding backticks or becoming duplicate rows.
-for (const [name, row] of [
+for (const [index, [name, row]] of [
   ['inline link', '| [link](https://example.test/' + fixtureTick + 'destination' + fixtureTick + ') | body |'],
   ['inline image', '| ![image](https://example.test/' + fixtureTick + 'destination' + fixtureTick + ') | body |'],
   ['reference link', '| [reference][id] | body |'],
   ['raw inline markup', '| <span data-code="' + fixtureTick + 'attribute' + fixtureTick + '"> | body |'],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row, row]));
-  expectUnsupported(result, name + ' unsupported-style control');
+  expectUnsupported(result, name + ' unsupported-style control', 19 + index);
 }
 
 // Controls 23-25: raw HTML blocks and list/blockquote-prefixed fences are unsupported styles
 observeControls({ start: 23, end: 25 });
 // for the explicit top-level contract and must produce a named diagnostic.
-for (const [name, rows] of [
+for (const [index, [name, rows]] of [
   ['raw HTML block', ['<div>', '| ' + fixtureTick + 'html-unsupported' + fixtureTick + ' | body |', '|---|---|', '| ' + fixtureTick + 'html-unsupported' + fixtureTick + ' | body |', '</div>']],
   ['list-prefixed fence', ['- ' + fixtureTick + fixtureTick + fixtureTick + 'md', '| ' + fixtureTick + 'list-fence-unsupported' + fixtureTick + ' | body |', fixtureTick + fixtureTick + fixtureTick]],
   ['blockquote-prefixed fence', ['> ' + fixtureTick + fixtureTick + fixtureTick + 'md', '| ' + fixtureTick + 'quote-fence-unsupported' + fixtureTick + ' | body |', fixtureTick + fixtureTick + fixtureTick]],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => appendProbe(source, ['', ...rows, '']));
-  expectUnsupported(result, name + ' unsupported-style control');
+  expectUnsupported(result, name + ' unsupported-style control', 23 + index);
 }
 
 // Controls 26-29: actual project fences with each legal root indentation (0-3 spaces) keep
@@ -604,19 +679,19 @@ for (const spaces of ['', ' ', '  ', '   ']) {
     lines.splice(opener + 1, 0, 'let escaped = "x \\" y";');
     return lines.join('\n');
   });
-  expectFixture(result, 'real ' + spaces.length + '-space project fence escape guard', 0);
+  expectFixture(result, 'real ' + spaces.length + '-space project fence escape guard', 0, [], 26 + spaces.length);
 }
 
 // Controls 30-32: false closers/info strings remain observable. Valid closers keep the first
 observeControls({ start: 30, end: 32 });
 // two quiet; an invalid info string exposes the escape diagnostic.
-for (const [name, rows, status, needle] of [
+for (const [index, [name, rows, status, needle]] of [
   ['trailing-text false closer', [fixtureTick + fixtureTick + fixtureTick + 'md', fixtureTick + fixtureTick + fixtureTick + ' trailing', 'let escaped = "x \\" y";', fixtureTick + fixtureTick + fixtureTick], 0, null],
   ['wrong-marker false closer', [fixtureTick + fixtureTick + fixtureTick + 'md', '~~~', 'let escaped = "x \\" y";', fixtureTick + fixtureTick + fixtureTick], 0, null],
   ['backtick-info-string false opener', [fixtureTick + fixtureTick + fixtureTick + 'bad' + fixtureTick + 'info', 'let escaped = "x \\" y";', ''], 1, 'literal \\" escape outside a fenced code block'],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => appendProbe(source, ['', ...rows, '']));
-  expectFixture(result, name, status, needle ? [needle] : []);
+  expectFixture(result, name, status, needle ? [needle] : [], 30 + index);
 }
 
 
@@ -630,13 +705,14 @@ function anchoredTableEnd(source, table) {
   if (marker < 0) return null;
   return { lines: hit.lines, marker, lineNumber: marker + 1 };
 }
-function expectStructural(result, name, needles = [], controlId = null) {
-  completeCurrentControlScope(controlId);
+function expectStructural(result, name, needles = [], controlId) {
+  const passed = !result.skipped && !result.executionFailure && result.status !== 0 && !needles.some((needle) => !result.output.includes(needle));
   if (result.skipped) failures.push(name + ': required table boundary was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
-  else if (result.status === 0 || needles.some((needle) => !result.output.includes(needle))) {
+  else if (!passed) {
     failures.push(name + ': expected structural table diagnostic, got: ' + result.output.trim());
   }
+  completeCurrentControlScope(controlId, passed);
 }
 
 // Controls 33-34: a blank in the middle of either anchored table is not a valid early
@@ -649,7 +725,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
     hit.lines.splice(hit.target + 1, 0, '');
     return hit.lines.join('\n');
   });
-  expectStructural(result, 'mid-table blank ' + label, ['unexpected blank', 'table']);
+  expectStructural(result, 'mid-table blank ' + label, ['unexpected blank', 'table'], table === 'phrase' ? 33 : 34);
 }
 
 // Controls 35-36: removing every pipe from a known body row must produce the exact
@@ -661,7 +737,7 @@ for (const [table, label, width] of [['phrase', 'phrase', 3], ['code', 'code-pat
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     mutateAnchoredLine(source, table, 'body', (line) => line.replace(/\|/g, '')));
   const needles = ['skill/SKILL.md:' + (hit ? hit.lineNumber : -1) + ':', 'table body row has', 'expected ' + width];
-  expectStructural(result, 'all-pipes-removed body ' + label, needles);
+  expectStructural(result, 'all-pipes-removed body ' + label, needles, table === 'phrase' ? 35 : 36);
 }
 
 // Controls 37-38: each canonical header anchor is unique. A duplicate must be diagnosed as
@@ -680,8 +756,8 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 }
 
 // Control 39: the explicit end marker is unique.
-assertControlOutcome(true, 'Control 37 outcome assertion failed', 37);
-assertControlOutcome(true, 'Control 38 outcome assertion failed', 38);
+assertControlOutcome(controlScopePassed(37), 'Control 37 outcome assertion failed', 37);
+assertControlOutcome(controlScopePassed(38), 'Control 38 outcome assertion failed', 38);
 
 observeControls(39);
 {
@@ -697,7 +773,7 @@ observeControls(39);
 }
 
 // Control 40: removing the required blank immediately before the code-table end marker must
-assertControlOutcome(true, 'Control 39 outcome assertion failed');
+assertControlOutcome(controlScopePassed(39), 'Control 39 outcome assertion failed', 39);
 
 observeControls(40);
 // be diagnosed as malformed table structure.
@@ -714,7 +790,7 @@ observeControls(40);
 }
 
 // Control 41: a parser-termination smoke probe over many unmatched, constant-size double-backtick
-assertControlOutcome(true, 'Control 40 outcome assertion failed');
+assertControlOutcome(controlScopePassed(40), 'Control 40 outcome assertion failed', 40);
 
 observeControls(41);
 // runs. Each raw run is escaped at its first tick, which exposes a synthetic one-tick opener, but
@@ -745,17 +821,18 @@ function anchoredEndLine(source, table) {
   if (!hit) return null;
   return hit.lines[hit.marker];
 }
-function expectAnchorScaffold(result, name, required = [], forbidden = [], controlId = null) {
-  completeCurrentControlScope(controlId);
+function expectAnchorScaffold(result, name, required = [], forbidden = [], controlId) {
+  const passed = !result.skipped && !result.executionFailure && result.status !== 0 && !required.some((needle) => !result.output.includes(needle)) && !forbidden.some((needle) => result.output.includes(needle));
   if (result.skipped) failures.push(name + ': required table scaffold was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
-  else if (result.status === 0 || required.some((needle) => !result.output.includes(needle)) || forbidden.some((needle) => result.output.includes(needle))) {
+  else if (!passed) {
     failures.push(name + ': expected scaffold diagnostic, got: ' + result.output.trim());
   }
+  completeCurrentControlScope(controlId, passed);
 }
 
 // Control 42: a trailing backslash is content inside a closing code span. Equal body rows
-assertControlOutcome(true, 'Control 41 outcome assertion failed');
+assertControlOutcome(controlScopePassed(41), 'Control 41 outcome assertion failed', 41);
 
 observeControls(42);
 // must still produce one duplicate signature.
@@ -764,7 +841,7 @@ observeControls(42);
   const row = '| ' + t + 'trailing\\' + t + ' | body |';
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row, row]));
-  expectFixture(result, 'trailing-backslash code-span duplicate', 1, ['duplicate code-pattern trigger rows', 'trailing']);
+  expectFixture(result, 'trailing-backslash code-span duplicate', 1, ['duplicate code-pattern trigger rows', 'trailing'], 42);
 }
 
 // Control 43: an unmatched/false code span must not hide unsupported syntax that follows it.
@@ -774,7 +851,7 @@ observeControls(43);
   const row = '| prose ' + t + ' <custom-tag | body |';
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row]));
-  expectUnsupported(result, 'false code-span outside raw-markup control');
+  expectUnsupported(result, 'false code-span outside raw-markup control', 43);
 }
 
 // Control 44: exact anchors and end markers written inside a supported fence are literals.
@@ -794,7 +871,7 @@ observeControls(44);
     'When two or more triggers fire in one request',
     fence, '',
   ]));
-  expectFixture(result, 'fenced anchors and end markers are ignored', 0);
+  expectFixture(result, 'fenced anchors and end markers are ignored', 0, [], 44);
 }
 
 // Control 45: fencing the entire required code-pattern table hides its scaffold and must fail.
@@ -814,7 +891,7 @@ observeControls(45);
     lines.splice(header, 0, fence + 'md');
     return lines.join('\n');
   });
-  expectAnchorScaffold(result, 'fenced required code-pattern table', ['missing', 'code-pattern'], ['unclosed project fence']);
+  expectAnchorScaffold(result, 'fenced required code-pattern table', ['missing', 'code-pattern'], ['unclosed project fence'], 45);
 }
 
 // Control 46: a zero-body table with its required blank separator is still malformed.
@@ -829,7 +906,7 @@ observeControls(46);
     lines.splice(delimiter + 1, marker - delimiter - 1, '');
     return lines.join('\n');
   });
-  expectStructural(result, 'zero-body code-pattern table', ['body', 'row']);
+  expectStructural(result, 'zero-body code-pattern table', ['body', 'row'], 46);
 }
 
 // Control 47: an end marker after one valid row cannot hide the remaining rows. The marker is
@@ -849,7 +926,7 @@ observeControls(47);
     lines.splice(delimiter + 2, 0, markerLine);
     return lines.join('\n');
   });
-  expectStructural(result, 'early code-pattern end marker after one body row', ['end marker', 'blank']);
+  expectStructural(result, 'early code-pattern end marker after one body row', ['end marker', 'blank'], 47);
 }
 
 // Control 48: moving the sole code anchor before the prompt anchor is an order violation, not a
@@ -869,21 +946,21 @@ observeControls(48);
       lines.splice(newPrompt, 0, ...block);
       return lines.join('\n');
     })());
-  expectAnchorScaffold(result, 'code anchor before prompt anchor', ['out of order']);
+  expectAnchorScaffold(result, 'code anchor before prompt anchor', ['out of order'], [], 48);
 }
 
 // Controls 49-53: nested/mixed container-prefixed fences and HTML are unsupported styles. Each
 observeControls({ start: 49, end: 53 });
 // probe is a single container-prefixed line so an unprefixed closing line cannot mask the trigger.
-for (const [name, lines] of [
+for (const [index, [name, lines]] of [
   ['nested list-quote fence', ['- > ' + fixtureTick.repeat(3) + 'md']],
   ['nested quote-list fence', ['> - ' + fixtureTick.repeat(3) + 'md']],
   ['nested mixed fence', ['>  - ' + fixtureTick.repeat(3) + 'md']],
   ['list-prefixed HTML', ['- <div>']],
   ['blockquote-prefixed HTML', ['>  <div>']],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => appendProbe(source, ['', ...lines, '']));
-  expectUnsupported(result, name + ' unsupported-style control');
+  expectUnsupported(result, name + ' unsupported-style control', 49 + index);
 }
 
 // Control 54: a generic closing raw tag is unsupported even when it is not a block tag.
@@ -891,7 +968,7 @@ observeControls(54);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', '</custom-tag>', '']));
-  expectUnsupported(result, 'generic closing raw tag unsupported-style control');
+  expectUnsupported(result, 'generic closing raw tag unsupported-style control', 54);
 }
 
 // Controls 55-60: extended autolinks outside code spans are unsupported. These are bare URI and
@@ -903,24 +980,25 @@ const extendedAutolinkProbeLine = (() => {
   const hit = anchoredTableLine(original, 'code', 'delimiter');
   return hit ? hit.lineNumber + 1 : null;
 })();
-function expectExactUnsupported(result, name, needles, controlId = null) {
-  expectUnsupported(result, name, controlId);
-  if (!result.skipped && !result.executionFailure && (result.status === 0 || needles.some((needle) => !result.output.includes(needle)))) {
-    failures.push(name + ': expected exact unsupported-style diagnostic and location, got: ' + result.output.trim());
-  }
+function expectExactUnsupported(result, name, needles, controlId) {
+  const passed = !result.skipped && !result.executionFailure && result.status !== 0 && /unsupported/i.test(result.output) && !needles.some((needle) => !result.output.includes(needle));
+  if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
+  else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
+  else if (!passed) failures.push(name + ': expected exact unsupported-style diagnostic and location, got: ' + result.output.trim());
+  completeCurrentControlScope(controlId, passed);
 }
-for (const [name, row] of [
+for (const [index, [name, row]] of [
   ['https autolink', '| https://example.test | body |'],
   ['http autolink', '| http://example.test | body |'],
   ['www autolink', '| www.example.test | body |'],
   ['email-like autolink', '| user@example.test | body |'],
   ['mailto autolink', '| mailto:user@example.test | body |'],
   ['xmpp autolink', '| xmpp:user@example.test | body |'],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row]));
   const lineNeedle = extendedAutolinkProbeLine === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${extendedAutolinkProbeLine}:`;
-  expectExactUnsupported(result, name + ' unsupported-style control', [lineNeedle, 'unsupported URI/email-like token syntax']);
+  expectExactUnsupported(result, name + ' unsupported-style control', [lineNeedle, 'unsupported URI/email-like token syntax'], 55 + index);
 }
 
 // Control 61: opening-only raw HTML is rejected at its own line.
@@ -928,7 +1006,7 @@ observeControls(61);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', '<div>', '']));
-  expectExactUnsupported(result, 'raw HTML opening-only unsupported-style control', ['skill/SKILL.md:', 'unsupported angle-bracket-leading/raw-HTML-style line']);
+  expectExactUnsupported(result, 'raw HTML opening-only unsupported-style control', ['skill/SKILL.md:', 'unsupported angle-bracket-leading/raw-HTML-style line'], 61);
 }
 
 // Control 62: closing-only raw HTML is independently rejected at its own line.
@@ -936,7 +1014,7 @@ observeControls(62);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', '</div>', '']));
-  expectExactUnsupported(result, 'raw HTML closing-only unsupported-style control', ['skill/SKILL.md:', 'unsupported angle-bracket-leading/raw-HTML-style line']);
+  expectExactUnsupported(result, 'raw HTML closing-only unsupported-style control', ['skill/SKILL.md:', 'unsupported angle-bracket-leading/raw-HTML-style line'], 62);
 }
 
 // Control 63: a valid tilde fence suppresses its internal escape, then the post-closer escape
@@ -947,7 +1025,7 @@ observeControls(63);
   const fence = '~'.repeat(3);
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', fence + 'md', 'let inside = "x \\" y";', fence, 'let outside = "x \\" y";', '']));
-  expectFixture(result, 'tilde fence and post-closer escape', 1, ['literal \\" escape outside a fenced code block']);
+  expectFixture(result, 'tilde fence and post-closer escape', 1, ['literal \\" escape outside a fenced code block'], 63);
 }
 
 // Control 64: a fully valid tilde fence is a positive case and must not be reported as unclosed.
@@ -957,7 +1035,7 @@ observeControls(64);
   const fence = '~'.repeat(3);
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', fence + 'md', 'let inside = "x \\" y";', fence, '']));
-  expectFixture(result, 'positive tilde fence', 0);
+  expectFixture(result, 'positive tilde fence', 0, [], 64);
 }
 
 // Control 65: when a multi-backtick run has an escaped first tick, its remaining suffix is still
@@ -969,7 +1047,7 @@ observeControls(65);
   const row = '| ' + slash + t + t + 'suffix-opener' + t + ' | body |';
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row, row]));
-  expectFixture(result, 'escaped multi-backtick suffix opener', 1, ['[suffix-opener]']);
+  expectFixture(result, 'escaped multi-backtick suffix opener', 1, ['[suffix-opener]'], 65);
 }
 
 // Controls 66-67: this repository's code-span scanner uses slash parity for delimiter escaping.
@@ -982,10 +1060,10 @@ observeControls({ start: 66, end: 67 });
   const evenRow = '| \\\\' + t + 'even-slash' + t + ' | body |';
   const odd = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [oddRow, oddRow]));
-  expectFixture(odd, 'odd backslash code-span opener', 0);
+  expectFixture(odd, 'odd backslash code-span opener', 0, [], 66);
   const even = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [evenRow, evenRow]));
-  expectFixture(even, 'even backslash code-span opener', 1, ['[even-slash]']);
+  expectFixture(even, 'even backslash code-span opener', 1, ['[even-slash]'], 67);
 }
 
 // Control 68: an escaped/false opener must not swallow a raw-markup diagnostic later in the
@@ -996,7 +1074,7 @@ observeControls(68);
   const row = '| \\' + t + ' false-span <custom-tag | body |';
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [row]));
-  expectUnsupported(result, 'escaped false-span outside angle markup control');
+  expectUnsupported(result, 'escaped false-span outside angle markup control', 68);
 }
 
 // Control 69: a complete Category map-looking table inside a supported fence is a decoy. It
@@ -1020,7 +1098,7 @@ observeControls(69);
       '');
     return lines.join('\n');
   });
-  expectFixture(result, 'fenced Category map decoy is ignored', 0);
+  expectFixture(result, 'fenced Category map decoy is ignored', 0, [], 69);
 }
 
 // Control 70: a fenced category heading is not a live module heading and must not inflate the
@@ -1035,7 +1113,7 @@ observeControls(70);
     lines.splice(live, 0, t.repeat(3) + 'md', '## \u00a7Z99. fenced decoy', t.repeat(3));
     return lines.join('\n');
   });
-  expectFixture(result, 'fenced category heading does not inflate count', 0);
+  expectFixture(result, 'fenced category heading does not inflate count', 0, [], 70);
 }
 
 // Control 71: moving the only live B2 heading into a fence must not replace the real module
@@ -1051,14 +1129,14 @@ observeControls(71);
     lines.splice(live, 1, t.repeat(3) + 'md', heading, t.repeat(3));
     return lines.join('\n');
   });
-  expectFixture(result, 'fenced heading cannot replace live category heading', 1, ['B2']);
+  expectFixture(result, 'fenced heading cannot replace live category heading', 1, ['B2'], 71);
 }
 
 // Controls 72-74: the Category map scaffold is load-bearing. Deleting its prose, header, or
 observeControls({ start: 72, end: 74 });
 // delimiter must fail even when all of the category rows remain present and parity is otherwise
 // recoverable.
-for (const [name, mutate] of [
+for (const [index, [name, mutate]] of [
   ['Category map prose deletion', (lines) => {
     const at = lines.findIndex((line) => line.startsWith('The category bodies live in sibling modules'));
     if (at < 0) return false;
@@ -1077,12 +1155,12 @@ for (const [name, mutate] of [
     lines[at] = '|---|';
     return true;
   }],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
     const lines = splitFixtureLines(source);
     return mutate(lines) ? lines.join('\n') : null;
   });
-  expectFixture(result, name, 1);
+  expectFixture(result, name, 1, [], 72 + index);
 }
 
 // Control 75: commenting out a workflow MODULES entry must not make the parity check silently
@@ -1100,7 +1178,7 @@ observeControls(75);
     lines[at] = '//' + lines[at];
     return lines.join('\n');
   });
-  expectFixture(result, 'commented workflow MODULES entry fails parity', 1, ['async.md']);
+  expectFixture(result, 'commented workflow MODULES entry fails parity', 1, ['async.md'], 75);
 }
 
 // Control 76: force the deterministic code-span budget path directly. This keeps the guard pinned
@@ -1118,7 +1196,7 @@ observeControls(76);
     }
     return insertCodeRows(source, ['| ' + fixtureTick + 'budget-probe' + fixtureTick + ' | body |']);
   });
-  expectFixture(result, 'forced code-span operation budget', 1, ['codeSpanTokens exceeded its linear operation budget']);
+  expectFixture(result, 'forced code-span operation budget', 1, ['codeSpanTokens exceeded its linear operation budget'], 76);
 }
 
 // Control 77: the map prose and the cross-reference note are separated by exactly one blank
@@ -1132,7 +1210,7 @@ observeControls(77);
     lines.splice(marker - 1, 1);
     return lines.join('\n');
   });
-  expectFixture(result, 'Category map final blank before cross-reference', 1);
+  expectFixture(result, 'Category map final blank before cross-reference', 1, [], 77);
 }
 
 // Control 78: a second executable MODULES object for the same file is an integrity error, even
@@ -1147,7 +1225,7 @@ observeControls(78);
     lines.splice(at + 1, 0, lines[at]);
     return lines.join('\n');
   });
-  expectFixture(result, 'duplicate executable workflow MODULES entry', 1, ['async.md']);
+  expectFixture(result, 'duplicate executable workflow MODULES entry', 1, ['async.md'], 78);
 }
 
 // Control 79: quoted string and template-literal decoys containing a complete canonical-looking
@@ -1172,7 +1250,7 @@ observeControls(79);
     lines[asyncEntry] = '//' + lines[asyncEntry];
     return lines.join('\n');
   });
-  expectFixture(result, 'quoted MODULES decoys do not mask live corruption', 1, ['async.md']);
+  expectFixture(result, 'quoted MODULES decoys do not mask live corruption', 1, ['async.md'], 79);
 }
 
 // Control 80: an executable MODULES array may not contain an extra unparsed element. A parser
@@ -1189,7 +1267,7 @@ observeControls(80);
     lines.splice(at + 1, 0, '  null,');
     return lines.join('\n');
   });
-  expectFixture(result, 'unparsed MODULES element is rejected', 1, ['MODULES']);
+  expectFixture(result, 'unparsed MODULES element is rejected', 1, ['MODULES'], 80);
 }
 
 // Control 81: a double-quoted object is not an executable MODULES entry in this workflow's
@@ -1209,7 +1287,7 @@ observeControls(81);
     lines.splice(at + 1, 0, quoted);
     return lines.join('\n');
   });
-  expectFixture(result, 'double-quoted MODULES object is rejected', 1, ['async.md']);
+  expectFixture(result, 'double-quoted MODULES object is rejected', 1, ['async.md'], 81);
 }
 
 // Control 82: duplicate category ids within one executable MODULES entry are an integrity error,
@@ -1223,7 +1301,7 @@ observeControls(82);
     lines[at] = lines[at].replace("'B2','B3'", "'B2','B2','B3'");
     return lines.join('\n');
   });
-  expectFixture(result, 'duplicate category id within MODULES entry', 1, ['duplicate category', 'async.md']);
+  expectFixture(result, 'duplicate category id within MODULES entry', 1, ['duplicate category', 'async.md'], 82);
 }
 
 // Controls 83-85: every Category-map ownership collision is rejected: repeated ids in one row,
@@ -1237,7 +1315,7 @@ observeControls({ start: 83, end: 85 });
     lines[at] = lines[at].replace('| \u00a7B2,', '| \u00a7B2, \u00a7B2,');
     return lines.join('\n');
   });
-  expectFixture(result, 'duplicate Category-map id in one row', 1, ['category map contains duplicate', '\u00a7B2']);
+  expectFixture(result, 'duplicate Category-map id in one row', 1, ['category map contains duplicate', '\u00a7B2'], 83);
 }
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1247,7 +1325,7 @@ observeControls({ start: 83, end: 85 });
     lines.splice(at + 1, 0, lines[at]);
     return lines.join('\n');
   });
-  expectFixture(result, 'duplicate Category-map row', 1, ['category map contains duplicate', '\u00a7B2']);
+  expectFixture(result, 'duplicate Category-map row', 1, ['category map contains duplicate', '\u00a7B2'], 84);
 }
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1257,7 +1335,7 @@ observeControls({ start: 83, end: 85 });
     lines.splice(at + 1, 0, '| \u00a7B2 | `concurrency-and-state.md` |');
     return lines.join('\n');
   });
-  expectFixture(result, 'cross-owner Category-map duplicate', 1, ['category map contains duplicate', '\u00a7B2']);
+  expectFixture(result, 'cross-owner Category-map duplicate', 1, ['category map contains duplicate', '\u00a7B2'], 85);
 }
 
 // Controls 86-87: live category headings are unique both within one module and across modules.
@@ -1270,7 +1348,7 @@ observeControls({ start: 86, end: 87 });
     lines.splice(at + 1, 0, lines[at]);
     return lines.join('\n');
   });
-  expectFixture(result, 'duplicate live heading within module', 1, ['live module headings contain duplicate', '\u00a7B2']);
+  expectFixture(result, 'duplicate live heading within module', 1, ['live module headings contain duplicate', '\u00a7B2'], 86);
 }
 {
   const result = runValidateAgainstMutatedFiles(['skill/concurrency-and-state.md', 'skills/rust-intel/concurrency-and-state.md'], (source) => {
@@ -1280,7 +1358,7 @@ observeControls({ start: 86, end: 87 });
     lines.splice(at + 1, 0, '## \u00a7B2. duplicate cross-module heading');
     return lines.join('\n');
   });
-  expectFixture(result, 'duplicate live heading across modules', 1, ['live module headings contain duplicate', '\u00a7B2']);
+  expectFixture(result, 'duplicate live heading across modules', 1, ['live module headings contain duplicate', '\u00a7B2'], 87);
 }
 
 // Control 88: a Category-map row whose category cell contains no category id is malformed, even
@@ -1294,7 +1372,7 @@ observeControls(88);
     lines.splice(at + 1, 0, '| no-category-id | `async.md` |');
     return lines.join('\n');
   });
-  expectFixture(result, 'Category-map no-op cell is rejected', 1, ['Category map']);
+  expectFixture(result, 'Category-map no-op cell is rejected', 1, ['Category map'], 88);
 }
 
 // Control 89: recognized category ids may not be followed by unparsed residue. Otherwise a
@@ -1308,7 +1386,7 @@ observeControls(89);
     lines[at] = lines[at].replace('\u00a7B2,', '\u00a7B2, typo-residue,');
     return lines.join('\n');
   });
-  expectFixture(result, 'Category-map unparsed residue is rejected', 1, ['category map']);
+  expectFixture(result, 'Category-map unparsed residue is rejected', 1, ['category map'], 89);
 }
 
 // Control 90: a regex literal containing `[` before MODULES is not executable array syntax and
@@ -1328,7 +1406,7 @@ observeControls(90);
     lines[shiftedAsync] = '//' + lines[shiftedAsync];
     return lines.join('\n');
   });
-  expectFixture(result, 'regex literal before MODULES does not hide assignment', 1, ['async.md']);
+  expectFixture(result, 'regex literal before MODULES does not hide assignment', 1, ['async.md'], 90);
 }
 
 // Controls 91-96: live module headings may be indented by 1-3 spaces in Markdown, and duplicate
@@ -1342,7 +1420,7 @@ for (const spaces of [' ', '  ', '   ']) {
     lines.splice(at + 1, 0, spaces + lines[at]);
     return lines.join('\n');
   });
-  expectFixture(result, `${spaces.length}-space duplicate live heading within module`, 1, ['live module headings contain duplicate', '\u00a7B2']);
+  expectFixture(result, `${spaces.length}-space duplicate live heading within module`, 1, ['live module headings contain duplicate', '\u00a7B2'], 90 + spaces.length);
   const cross = runValidateAgainstMutatedFiles(['skill/concurrency-and-state.md', 'skills/rust-intel/concurrency-and-state.md'], (source) => {
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line.startsWith('## \u00a7A2.'));
@@ -1350,7 +1428,7 @@ for (const spaces of [' ', '  ', '   ']) {
     lines.splice(at + 1, 0, spaces + '## \u00a7B2. duplicate cross-module heading');
     return lines.join('\n');
   });
-  expectFixture(cross, `${spaces.length}-space duplicate live heading across modules`, 1, ['live module headings contain duplicate', '\u00a7B2']);
+  expectFixture(cross, `${spaces.length}-space duplicate live heading across modules`, 1, ['live module headings contain duplicate', '\u00a7B2'], 93 + spaces.length);
 }
 
 // Control 97: an escaped angle-leading raw tag in a code-pattern first cell is still raw-markup
@@ -1363,7 +1441,7 @@ observeControls(97);
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, ['| prose \\<custom> | body |']));
   const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber + 1}:`;
-  expectExactUnsupported(result, 'escaped raw HTML in code-pattern cell unsupported-style control', [lineNeedle, 'unsupported raw inline HTML/angle-leading construct']);
+  expectExactUnsupported(result, 'escaped raw HTML in code-pattern cell unsupported-style control', [lineNeedle, 'unsupported raw inline HTML/angle-leading construct'], 97);
 }
 
 // Control 98: a four-backtick opener is not closed by a shorter three-backtick interior line.
@@ -1374,7 +1452,7 @@ observeControls(98);
   const t = fixtureTick;
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', t.repeat(4) + 'md', 'let inside = "x \\" y";', t.repeat(3), '']));
-  expectFixture(result, 'short fence line does not close four-backtick opener', 1, ['unclosed project fence']);
+  expectFixture(result, 'short fence line does not close four-backtick opener', 1, ['unclosed project fence'], 98);
   if (!result.skipped && !result.executionFailure && result.output.includes('literal \\" escape outside a fenced code block')) {
     failures.push('short fence line does not close four-backtick opener: interior escape was incorrectly treated as outside the fence');
   }
@@ -1387,7 +1465,7 @@ observeControls(99);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', fixtureTick.repeat(3) + 'md', 'let inside = "x \\" y";', '\t' + fixtureTick.repeat(3), 'let stillInside = "x \\" y";', fixtureTick.repeat(3), '']));
-  expectFixture(result, 'tab-indented fake closer is ignored', 0);
+  expectFixture(result, 'tab-indented fake closer is ignored', 0, [], 99);
   if (!result.skipped && !result.executionFailure && result.output.includes('literal \\" escape outside a fenced code block')) {
     failures.push('tab-indented fake closer is ignored: escape after fake closer was treated as outside the fence');
   }
@@ -1400,7 +1478,7 @@ observeControls(100);
   const t = fixtureTick;
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', t.repeat(3) + 'md', 'let inside = "x \\" y";', t.repeat(3) + '\f', '']));
-  expectFixture(result, 'form-feed fence suffix is not a closer', 1, ['unclosed project fence']);
+  expectFixture(result, 'form-feed fence suffix is not a closer', 1, ['unclosed project fence'], 100);
   if (!result.skipped && !result.executionFailure && result.output.includes('literal \\" escape outside a fenced code block')) {
     failures.push('form-feed fence suffix is not a closer: interior escape was incorrectly treated as outside the fence');
   }
@@ -1416,7 +1494,7 @@ observeControls(101);
     hit.lines.splice(hit.target, 0, '\u00a0');
     return hit.lines.join('\n');
   });
-  expectStructural(result, 'NBSP-only anchored body line is not blank', ['code-pattern table body row has', 'expected 2']);
+  expectStructural(result, 'NBSP-only anchored body line is not blank', ['code-pattern table body row has', 'expected 2'], 101);
 }
 
 // Control 102: NBSP is not table whitespace. This exact two-column delimiter-looking line must
@@ -1432,16 +1510,16 @@ observeControls(102);
     lines[header + 1] = '|\u00a0---\u00a0|---|';
     return lines.join('\n');
   });
-  expectStructural(result, 'NBSP-wrapped delimiter marker is invalid', ['code-pattern table delimiter row has wrong width or syntax']);
+  expectStructural(result, 'NBSP-wrapped delimiter marker is invalid', ['code-pattern table delimiter row has wrong width or syntax'], 102);
 }
 
 // Controls 103-104: line-ending normalization is part of the validator contract. The complete
 observeControls({ start: 103, end: 104 });
 // canonical and mirror skill trees must validate identically under CRLF and lone-CR input.
-for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
+for (const [index, [name, ending]] of [['CRLF', '\r\n'], ['lone CR', '\r']].entries()) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     source.replace(/\r\n?|\n/g, ending));
-  expectFixture(result, name + ' skill copies normalize successfully', 0);
+  expectFixture(result, name + ' skill copies normalize successfully', 0, [], 103 + index);
 }
 
 // Control 105: a backtick-bearing info string is not a valid project fence opener. When inserted
@@ -1454,7 +1532,7 @@ observeControls(105);
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, [fixtureTick.repeat(3) + 'bad' + fixtureTick]));
   const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber + 1}:`;
-  expectStructural(result, 'invalid backtick info string is a body row', [lineNeedle, 'code-pattern table body row has 1 cells; expected 2']);
+  expectStructural(result, 'invalid backtick info string is a body row', [lineNeedle, 'code-pattern table body row has 1 cells; expected 2'], 105);
   if (!result.skipped && !result.executionFailure && result.output.includes('unclosed project fence')) {
     failures.push('invalid backtick info string is a body row: invalid opener was treated as an open fence');
   }
@@ -1470,7 +1548,7 @@ for (const spaces of [' ', '   ']) for (const kind of ['header', 'delimiter', 'b
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     mutateAnchoredLine(source, 'code', kind, (line) => spaces + line));
   const lineNeedle = hit === null ? 'skill/SKILL.md:' : `skill/SKILL.md:${hit.lineNumber}:`;
-  expectStructural(result, `${spaces.length}-space leading-whitespace code ${kind} raw-pipe contract`, [lineNeedle, `has ${spaces.length} leading space(s)`]);
+  expectStructural(result, `${spaces.length}-space leading-whitespace code ${kind} raw-pipe contract`, [lineNeedle, `has ${spaces.length} leading space(s)`], 106 + (spaces.length === 1 ? 0 : 3) + ['header', 'delimiter', 'body'].indexOf(kind));
 }
 
 
@@ -1665,16 +1743,16 @@ function breakFixtureScript(source) {
   const replacement = `${marker}\nconsole.error('deliberately broken nested fixture sentinel');\nprocess.exit(23);`;
   return source.includes(marker) ? source.replace(marker, replacement) : null;
 }
-for (const [value, status, needles, name] of [
+for (const [index, [value, status, needles, name]] of [
   ['1', 0, [], 'skip env exact one skips nested fixtures'],
   ['0', 1, ['deliberately broken nested fixture sentinel'], 'skip env zero runs broken nested fixture'],
   ['yes', 1, ['RUST_INTEL_SKIP_NESTED_FIXTURES'], 'skip env invalid value fails explicitly'],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], breakFixtureScript, {
     env: { RUST_INTEL_SKIP_NESTED_FIXTURES: value },
     timeoutMs: 300_000,
   });
-  expectFixture(result, name, status, needles);
+  expectFixture(result, name, status, needles, 112 + index);
 }
 
 // Controls 115-116: rule-text extraction must ignore signatures placed inside supported fenced
@@ -1729,15 +1807,15 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 117: a tab-indented fence-looking line is not a standalone project fence opener. The
-assertControlOutcome(true, 'Control 115 outcome assertion failed', 115);
-assertControlOutcome(true, 'Control 116 outcome assertion failed', 116);
+assertControlOutcome(controlScopePassed(115), 'Control 115 outcome assertion failed', 115);
+assertControlOutcome(controlScopePassed(116), 'Control 116 outcome assertion failed', 116);
 
 observeControls(117);
 // escape on the following line is therefore outside a fence and must remain observable.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', '\t' + fixtureTick.repeat(3) + 'md', 'let escaped = "x \\" y";', '']));
-  expectFixture(result, 'tab-indented fake fence opener is not active', 1, ['literal \\" escape outside a fenced code block']);
+  expectFixture(result, 'tab-indented fake fence opener is not active', 1, ['literal \\" escape outside a fenced code block'], 117);
 }
 
 // Control 118: a malformed Category-map cell with a category-shaped prefix must not be silently
@@ -1751,7 +1829,7 @@ observeControls(118);
     lines[at] = lines[at].replace('\u00a7B2,', '\u00a7not-an-id,');
     return lines.join('\n');
   });
-  expectFixture(result, 'malformed Category-map id cell is rejected', 1, ['Category map']);
+  expectFixture(result, 'malformed Category-map id cell is rejected', 1, ['Category map'], 118);
 }
 
 // Control 119: regexp literals, including character classes and a regexp in statement position,
@@ -1768,7 +1846,7 @@ observeControls(119);
         'const MODULES_REGEX_DECOY_CLASS_2 = /[/*]/;');
       return true;
     }));
-  expectFixture(result, 'regexp decoys before MODULES are ignored', 0);
+  expectFixture(result, 'regexp decoys before MODULES are ignored', 0, [], 119);
 }
 
 // Control 120: a trailing comma in an otherwise intact Category-map category cell is not a
@@ -1786,7 +1864,7 @@ observeControls(120);
     lines[at] = lines[at].replace(intactCellEnd, '\u00a7B23, | `async.md` |');
     return lines.join('\n');
   });
-  expectFixture(result, 'trailing Category-map category comma is rejected', 1, ['Category map']);
+  expectFixture(result, 'trailing Category-map category comma is rejected', 1, ['Category map'], 120);
 }
 
 // Controls 121-131: AUDIT_UNITS is a complete, statically validated partition of the workflow.
@@ -1800,7 +1878,7 @@ observeControls({ start: 121, end: 131 });
       lines.splice(end, 0, '  null,');
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS extra null is rejected', 1, ['AUDIT_UNITS']);
+  expectFixture(result, 'AUDIT_UNITS extra null is rejected', 1, ['AUDIT_UNITS'], 121);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1810,7 +1888,7 @@ observeControls({ start: 121, end: 131 });
       lines[at] = '//' + lines[at];
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS missing testing unit is rejected', 1, ['testing.md']);
+  expectFixture(result, 'AUDIT_UNITS missing testing unit is rejected', 1, ['testing.md'], 122);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1820,7 +1898,7 @@ observeControls({ start: 121, end: 131 });
       lines[at] = lines[at].replace('B3a, ', '');
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS async category omission is rejected', 1, ['omit']);
+  expectFixture(result, 'AUDIT_UNITS async category omission is rejected', 1, ['omit'], 123);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1830,7 +1908,7 @@ observeControls({ start: 121, end: 131 });
       lines[at] = lines[at].replace("E1'", "E1, B2'");
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS async category overlap is rejected', 1, ['overlap']);
+  expectFixture(result, 'AUDIT_UNITS async category overlap is rejected', 1, ['overlap'], 124);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1840,7 +1918,7 @@ observeControls({ start: 121, end: 131 });
       lines[at] = lines[at].replace("'configs']", "'unknown']");
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS unknown artifact group is rejected', 1, ['AUDIT_UNITS']);
+  expectFixture(result, 'AUDIT_UNITS unknown artifact group is rejected', 1, ['AUDIT_UNITS'], 125);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1850,7 +1928,7 @@ observeControls({ start: 121, end: 131 });
       lines[at] = lines[at].replace("'configs']", "'configs', 'configs']");
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS duplicate artifact group is rejected', 1, ['artifact group']);
+  expectFixture(result, 'AUDIT_UNITS duplicate artifact group is rejected', 1, ['artifact group'], 126);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1860,7 +1938,7 @@ observeControls({ start: 121, end: 131 });
       lines[at] = lines[at].replace("requiredArtifactGroups: ['manifests', 'configs']", 'requiredArtifactGroups: []');
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS altered security artifact groups are rejected', 1, ['wrong required artifact groups']);
+  expectFixture(result, 'AUDIT_UNITS altered security artifact groups are rejected', 1, ['wrong required artifact groups'], 127);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1870,7 +1948,7 @@ observeControls({ start: 121, end: 131 });
       lines[at] = lines[at].replace("'ci', 'scripts']", "'ci']");
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS altered dependency artifact groups are rejected', 1, ['wrong required artifact groups']);
+  expectFixture(result, 'AUDIT_UNITS altered dependency artifact groups are rejected', 1, ['wrong required artifact groups'], 128);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1880,7 +1958,7 @@ observeControls({ start: 121, end: 131 });
       lines[at] = lines[at].replace(', requiresDocs: true', '');
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS semantics docs obligation is required', 1, ['requiresDocs']);
+  expectFixture(result, 'AUDIT_UNITS semantics docs obligation is required', 1, ['requiresDocs'], 129);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1890,7 +1968,7 @@ observeControls({ start: 121, end: 131 });
       lines[end] = '].filter(Boolean)';
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS chained filter suffix is rejected', 1, ['AUDIT_UNITS']);
+  expectFixture(result, 'AUDIT_UNITS chained filter suffix is rejected', 1, ['AUDIT_UNITS'], 130);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -1903,7 +1981,7 @@ observeControls({ start: 121, end: 131 });
       return true;
     });
   });
-  expectFixture(result, 'later AUDIT_UNITS pop mutation after freeze removal is rejected', 1, ['deepFreeze']);
+  expectFixture(result, 'later AUDIT_UNITS pop mutation after freeze removal is rejected', 1, ['deepFreeze'], 131);
 }
 
 // Control 132: the runtime merger must reject an audit result whose module disagrees with the
@@ -1921,7 +1999,7 @@ observeControls(132);
 }
 
 // Control 133: a category-map boundary indented by one space is not the live scaffold marker.
-assertControlOutcome(true, 'Control 132 outcome assertion failed');
+assertControlOutcome(controlScopePassed(132), 'Control 132 outcome assertion failed', 132);
 
 observeControls(133);
 // It must be diagnosed as a malformed boundary, not accepted as a second live table.
@@ -1933,7 +2011,7 @@ observeControls(133);
     lines[at] = ' ' + lines[at];
     return lines.join('\n');
   });
-  expectFixture(result, 'indented Category-map boundary is rejected', 1, ['Category map']);
+  expectFixture(result, 'indented Category-map boundary is rejected', 1, ['Category map'], 133);
 }
 
 // Control 134: a fenced prose decoy containing a required row must not satisfy the rule-text
@@ -1956,7 +2034,7 @@ observeControls(134);
 }
 
 // Control 135: JavaScript array elision is distinct from a Category-map trailing comma. Keep
-assertControlOutcome(true, 'Control 134 outcome assertion failed');
+assertControlOutcome(controlScopePassed(134), 'Control 134 outcome assertion failed', 134);
 
 observeControls(135);
 // the parser regression for the executable MODULES literal as a separate, accurately named case.
@@ -1968,7 +2046,7 @@ observeControls(135);
       lines[at] = lines[at].replace("categories: ['B2','B3'", "categories: ['B2',,'B3'");
       return true;
     }));
-  expectFixture(result, 'JavaScript MODULES array elision is rejected', 1, ['workflow MODULES']);
+  expectFixture(result, 'JavaScript MODULES array elision is rejected', 1, ['workflow MODULES'], 135);
 }
 
 // Control 136: a trailing comma in a real JavaScript categories array is valid syntax. This is
@@ -1986,25 +2064,27 @@ observeControls(136);
       lines[at] = mutated;
       return true;
     }));
-  expectFixture(result, 'JavaScript MODULES categories trailing comma is accepted', 0);
+  expectFixture(result, 'JavaScript MODULES categories trailing comma is accepted', 0, [], 136);
 }
 
 // Controls 137-140: MODULES/AUDIT_UNITS are declarative data, so each deep-freeze layer is a
 observeControls({ start: 137, end: 140 });
 // contract, not a best-effort runtime convention. Each mutant removes exactly one freeze layer
 // or adds a multiline chain after the initializer and must be rejected by the validator.
-for (const [name, mutate] of [
+for (const [index, [name, mutate]] of [
   ['MODULES deepFreezeRecords invocation', (source) => source.replace('const MODULES = deepFreezeRecords([', 'const MODULES = [')],
   ['nested-array Object.freeze(value) call', (source) => source.replace('if (Array.isArray(value)) Object.freeze(value)', 'if (Array.isArray(value)) { /* nested freeze removed */ }')],
   ['record Object.freeze(record) call', (source) => source.replace('Object.freeze(record)', 'void record /* record freeze removed */')],
   ['outer-array Object.freeze(records) call', (source) => source.replace('return Object.freeze(records)', 'return records')],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     const mutated = mutate(source);
     return mutated === source ? null : mutated;
   });
-  expectFixture(result, name + ' is rejected', 1);
+  expectFixture(result, name + ' is rejected', 1, [], 137 + index);
 }
+// Control 141: the multiline filter-chain mutation is rejected even though the syntax is valid.
+observeControls(141);
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
@@ -2014,16 +2094,10 @@ for (const [name, mutate] of [
       lines.splice(end + 1, 0, '  filter(Boolean);');
       return true;
     }));
-  expectFixture(result, 'multiline AUDIT_UNITS filter chain is rejected', 1);
+  expectFixture(result, 'multiline AUDIT_UNITS filter chain is rejected', 1, [], 141);
 }
 
-// Control 141: the multiline filter-chain mutation above is a separately numbered control.
-observeControls(141);
-// It must be rejected even though `]).filter(Boolean)` is valid JavaScript.
-
 // Control 142: a source that removes the outer freeze and then mutates an alias must still fail
-assertControlOutcome(true, 'Control 141 outcome assertion failed');
-
 observeControls(142);
 // the declarative-data contract. The alias is intentionally not a separate static-mutation rule:
 // the pinned deep-freeze scaffold is the safety boundary for nested references.
@@ -2035,18 +2109,18 @@ observeControls(142);
     if (!withoutFreeze.includes(marker)) return null;
     return withoutFreeze.replace(marker, "const moduleCategoriesAlias = MODULES[0].categories;\nmoduleCategoriesAlias.push('Z99');\n\n" + marker);
   });
-  expectFixture(result, 'unfrozen nested alias mutation is rejected', 1);
+  expectFixture(result, 'unfrozen nested alias mutation is rejected', 1, [], 142);
 }
 
 // Controls 143-145: mutation through a let alias, an alias of an alias, or a nested-array alias
 observeControls({ start: 143, end: 145 });
 // must be rejected after the immutable workflow declarations. These are separate controls so a
 // validator change that spots only one syntactic mutation shape cannot silently reopen the others.
-for (const [name, mutation] of [
+for (const [index, [name, mutation]] of [
   ['let MODULES alias mutation', "let modulesAlias = MODULES;\nmodulesAlias.push({ file: 'decoy.md', categories: [] });"],
   ['alias-of-alias MODULES mutation', "const modulesAlias = MODULES;\nconst secondAlias = modulesAlias;\nsecondAlias.push({ file: 'decoy.md', categories: [] });"],
   ['nested-array alias mutation', "const categoriesAlias = MODULES[0].categories;\ncategoriesAlias.push('Z99');"],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     const lines = splitFixtureLines(source);
     const end = workflowArrayEnd(lines, 'MODULES');
@@ -2054,7 +2128,7 @@ for (const [name, mutation] of [
     lines.splice(end + 1, 0, mutation);
     return lines.join('\n');
   });
-  expectFixture(result, name + ' is rejected', 1, ['workflow']);
+  expectFixture(result, name + ' is rejected', 1, ['workflow'], 143 + index);
 }
 
 // Control 146: a top-level loop decoy must not satisfy the runtime module-identity helper
@@ -2067,25 +2141,25 @@ observeControls(146);
     const altered = source.replace(live, 'const auditResultModuleMatches = (result, unit) => result.label === unit.module;');
     return altered.replace('const resultsByLabel =', 'for (;;) { const auditResultModuleMatches = (result, unit) => result.module === unit.module; break; }\nconst resultsByLabel =');
   });
-  expectFixture(result, 'top-level loop runtime helper decoy does not mask altered helper', 1, ['workflow']);
+  expectFixture(result, 'top-level loop runtime helper decoy does not mask altered helper', 1, ['workflow'], 146);
 }
 
 // Controls 147-151: every independent input to orchestrationComplete is part of the gate.
 observeControls({ start: 147, end: 151 });
 // Replace exactly one comparison with a literal while preserving the expression syntax; the
 // validator must reject each weakened gate with its structural workflow diagnostic.
-for (const [name, expression] of [
+for (const [index, [name, expression]] of [
   ['missing scope gate', 'missingScopeFields.length === 0'],
   ['missing slices gate', 'missingSlices.length === 0'],
   ['missing unit inputs gate', 'Object.keys(missingUnitInputs).length === 0'],
   ['stray labels gate', 'strayLabels.length === 0'],
   ['dropped agents gate', 'dropped === 0'],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     if (!source.includes(expression)) return null;
     return source.replace(expression, 'true');
   });
-  expectFixture(result, 'orchestrationComplete ' + name + ' is required', 1, ['orchestrationComplete']);
+  expectFixture(result, 'orchestrationComplete ' + name + ' is required', 1, ['orchestrationComplete'], 147 + index);
 }
 
 // Control 152: an incorrect live runtime helper plus a dead canonical helper decoy must fail;
@@ -2099,12 +2173,10 @@ observeControls(152);
     const altered = source.replace(live, 'const auditResultModuleMatches = (result, unit) => result.label === unit.module;');
     return altered.replace('const resultsByLabel =', 'if (false) { const auditResultModuleMatches = (result, unit) => result.module === unit.module; }\nconst resultsByLabel =');
   });
-  expectFixture(result, 'dead runtime module comparison does not mask altered helper', 1, ['workflow']);
+  expectFixture(result, 'dead runtime module comparison does not mask altered helper', 1, ['workflow'], 152);
 }
 
 // Control 153: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
-assertControlOutcome(true, 'Control 152 outcome assertion failed');
-
 observeControls(153);
 // the live row while cloning it under a wrong-header/wrong-width table must fail the scoped
 // rule-text oracle; a first-arbitrary-table lookup would incorrectly pass.
@@ -2127,7 +2199,7 @@ observeControls(153);
 }
 
 // Control 154: an earlier unfenced numbered item is outside the named Operating mode list.
-assertControlOutcome(true, 'Control 153 outcome assertion failed');
+assertControlOutcome(controlScopePassed(153), 'Control 153 outcome assertion failed', 153);
 
 observeControls(154);
 {
@@ -2148,7 +2220,7 @@ observeControls(154);
 }
 
 // Control 155: a numbered item after an indented level-2 heading belongs to the following
-assertControlOutcome(true, 'Control 154 outcome assertion failed');
+assertControlOutcome(controlScopePassed(154), 'Control 154 outcome assertion failed', 154);
 
 observeControls(155);
 // section, not to Operating mode. This protects the section boundary from first-match drift.
@@ -2170,7 +2242,7 @@ observeControls(155);
 }
 
 // Control 156: a true trailing array elision (`[...,,]`) is not the same thing as one legal
-assertControlOutcome(true, 'Control 155 outcome assertion failed');
+assertControlOutcome(controlScopePassed(155), 'Control 155 outcome assertion failed', 155);
 
 observeControls(156);
 // trailing separator comma. Keep all
@@ -2186,23 +2258,23 @@ observeControls(156);
       lines[at] = mutated;
       return true;
     }));
-  expectFixture(result, 'true trailing MODULES array elision is rejected', 1, ['workflow MODULES']);
+  expectFixture(result, 'true trailing MODULES array elision is rejected', 1, ['workflow MODULES'], 156);
 }
 
 // Controls 157-159: the per-unit coverage gate must retain both required-input loops and the
 observeControls({ start: 157, end: 159 });
 // final assignment that records missing inputs. Deleting any one of these leaves the source
 // executable but turns an incomplete orchestration into a false complete result.
-for (const [name, fragment] of [
+for (const [index, [name, fragment]] of [
   ['artifact coverage loop deletion', 'for (const artifact of expected) if (!reviewed.has(artifact)) missing.push(artifact)'],
   ['docs coverage loop deletion', 'for (const doc of (scoperResult && scoperResult.docsFiles) || []) if (!reviewed.has(doc)) missing.push(doc)'],
   ['missingUnitInputs final assignment deletion', 'if (missing.length) missingUnitInputs[unit.label] = missing'],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     if (!source.includes(fragment)) return null;
     return source.replace(fragment, '');
   });
-  expectFixture(result, name, 1, ['workflow']);
+  expectFixture(result, name, 1, ['workflow'], 157 + index);
 }
 
 // Control 160: the live deep-freeze helper must be canonical. A later helper-shaped declaration
@@ -2226,7 +2298,7 @@ observeControls(160);
 `;
     return weakened.replace('const MODULES = deepFreezeRecords([', decoy + 'const MODULES = deepFreezeRecords([');
   });
-  expectFixture(result, 'dead deepFreezeRecords decoy does not mask weakened live helper', 1, ['deepFreeze']);
+  expectFixture(result, 'dead deepFreezeRecords decoy does not mask weakened live helper', 1, ['deepFreeze'], 160);
 }
 
 // Control 161: the live missingUnitInputs declaration is unique and top-level. A dead canonical
@@ -2239,7 +2311,7 @@ observeControls(161);
     const decoy = 'if (false) { const missingUnitInputs = {}; }\n';
     return weakened.replace('const orchestrationComplete =', decoy + 'const orchestrationComplete =');
   });
-  expectFixture(result, 'dead missingUnitInputs declaration decoy does not mask weakened live declaration', 1, ['missingUnitInputs']);
+  expectFixture(result, 'dead missingUnitInputs declaration decoy does not mask weakened live declaration', 1, ['missingUnitInputs'], 161);
 }
 
 // Control 162: the live missing-input loop must be unique and top-level. A dead canonical loop
@@ -2261,7 +2333,7 @@ observeControls(162);
 `;
     return weakened.replace('const orchestrationComplete =', decoy + 'const orchestrationComplete =');
   });
-  expectFixture(result, 'dead missingUnitInputs loop decoy does not mask deleted live loop', 1, ['coverage-production']);
+  expectFixture(result, 'dead missingUnitInputs loop decoy does not mask deleted live loop', 1, ['coverage-production'], 162);
 }
 
 // Control 163: orchestrationComplete is a unique top-level gate. A dead copy containing all
@@ -2277,12 +2349,10 @@ observeControls(163);
 `;
     return weakened.replace('const totalSourceFiles =', decoy + 'const totalSourceFiles =');
   });
-  expectFixture(result, 'dead orchestrationComplete decoy does not mask weakened live gate', 1, ['orchestrationComplete']);
+  expectFixture(result, 'dead orchestrationComplete decoy does not mask weakened live gate', 1, ['orchestrationComplete'], 163);
 }
 
 // Control 164: two canonical catalog tables in the same module section, with the live row
-assertControlOutcome(true, 'Control 163 outcome assertion failed');
-
 observeControls(164);
 // reverted and the earlier table still complete, must not satisfy moduleTableRowOf.
 {
@@ -2306,7 +2376,7 @@ observeControls(164);
 }
 
 // Control 165: two target rows in one canonical catalog are ambiguous and must not be accepted
-assertControlOutcome(true, 'Control 164 outcome assertion failed');
+assertControlOutcome(controlScopePassed(164), 'Control 164 outcome assertion failed', 164);
 
 observeControls(165);
 // by a first-match lookup.
@@ -2326,7 +2396,7 @@ observeControls(165);
 }
 
 // Control 166: two target numbered items in the named section, with the original reverted, must
-assertControlOutcome(true, 'Control 165 outcome assertion failed');
+assertControlOutcome(controlScopePassed(165), 'Control 165 outcome assertion failed', 165);
 
 observeControls(166);
 // not satisfy numberedItemOf through the first matching item.
@@ -2348,13 +2418,13 @@ observeControls(166);
 }
 
 // Controls 167-170: the per-unit coverage proof must be semantic, not a text-shaped ornament.
-assertControlOutcome(true, 'Control 166 outcome assertion failed');
+assertControlOutcome(controlScopePassed(166), 'Control 166 outcome assertion failed', 166);
 
 observeControls({ start: 167, end: 170 });
 // Each mutant preserves a plausible JavaScript program while removing one live coverage edge:
 // erasing the expected artifact set, comparing against that expected set instead of the agent's
 // report, disabling the artifact loop in a dead branch, or skipping the documentation loop.
-for (const [name, mutate] of [
+for (const [index, [name, mutate]] of [
   ['artifact expected set erased', (source) => source.replace(
     'const expected = scoperResult && scoperResult.artifactFiles ? (scoperResult.artifactFiles[group] || []) : []',
     'const expected = []',
@@ -2371,22 +2441,22 @@ for (const [name, mutate] of [
     'for (const doc of (scoperResult && scoperResult.docsFiles) || []) if (!reviewed.has(doc)) missing.push(doc)',
     'continue; for (const doc of (scoperResult && scoperResult.docsFiles) || []) if (!reviewed.has(doc)) missing.push(doc)',
   )],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     const mutated = mutate(source);
     return mutated === source ? null : mutated;
   });
-  expectFixture(result, name + ' is rejected', 1, ['workflow']);
+  expectFixture(result, name + ' is rejected', 1, ['workflow'], 167 + index);
 }
 
 // Controls 171-172: mutation calls inside template-literal interpolation are executable code,
 observeControls({ start: 171, end: 172 });
 // not inert documentation. The second probe also passes through an alias so masking the whole
 // template while scanning JavaScript cannot hide the root's mutation provenance.
-for (const [name, mutation] of [
+for (const [index, [name, mutation]] of [
   ['template interpolation MODULES mutation', "const templateProbe = `${MODULES.push({ file: 'template.md', categories: [] })}`;"],
   ['template interpolation alias mutation', "const templateAlias = MODULES;\nconst templateProbe = `${templateAlias.push({ file: 'template-alias.md', categories: [] })}`;"],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
       const end = workflowArrayEnd(lines, 'MODULES');
@@ -2394,19 +2464,19 @@ for (const [name, mutation] of [
       lines.splice(end + 1, 0, mutation);
       return true;
     }));
-  expectFixture(result, name + ' is rejected', 1, ['workflow']);
+  expectFixture(result, name + ' is rejected', 1, ['workflow'], 171 + index);
 }
 
 // Controls 173-176: direct root, nested-array, delete, and Reflect.set mutations are all
 observeControls({ start: 173, end: 176 });
 // forbidden. These isolated forms complement the alias-chain controls above and pin the exact
 // syntax families the mutation scanner promises to reject.
-for (const [name, mutation] of [
+for (const [index, [name, mutation]] of [
   ['isolated direct MODULES.push mutation', "MODULES.push({ file: 'direct.md', categories: [] });"],
   ['isolated direct nested categories.push mutation', "MODULES[0].categories.push('Z99');"],
   ['isolated delete MODULES element mutation', 'delete MODULES[0];'],
   ['isolated Reflect.set AUDIT_UNITS mutation', "Reflect.set(AUDIT_UNITS, 0, { module: 'decoy.md', label: 'decoy', requiredArtifactGroups: [] });"],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
       const end = workflowArrayEnd(lines, 'MODULES');
@@ -2414,17 +2484,17 @@ for (const [name, mutation] of [
       lines.splice(end + 1, 0, mutation);
       return true;
     }));
-  expectFixture(result, name + ' is rejected', 1, ['workflow']);
+  expectFixture(result, name + ' is rejected', 1, ['workflow'], 173 + index);
 }
 
 // Controls 177-178: ordinary bookkeeping that merely reads immutable declarations is allowed.
 observeControls({ start: 177, end: 178 });
 // Length is a primitive, including through quoted bracket notation, so changing the local
 // counter cannot mutate the frozen MODULES graph.
-for (const [name, mutation] of [
+for (const [index, [name, mutation]] of [
   ['MODULES length read and counter mutation', 'let count = MODULES.length; count += 1;'],
   ['MODULES bracket-length read and counter mutation', 'let bracketCount = MODULES[\'length\']; bracketCount += 1;'],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
       const end = workflowArrayEnd(lines, 'MODULES');
@@ -2432,7 +2502,7 @@ for (const [name, mutation] of [
       lines.splice(end + 1, 0, mutation);
       return true;
     }));
-  expectFixture(result, name + ' remains accepted', 0);
+  expectFixture(result, name + ' remains accepted', 0, [], 177 + index);
 }
 
 // Control 179: numberedItemOf requires one unambiguous live Operating mode section. Revert the
@@ -2457,7 +2527,7 @@ observeControls(179);
 }
 
 // Control 180: a good numbered-item decoy immediately before the reverted live item is still an
-assertControlOutcome(true, 'Control 179 outcome assertion failed');
+assertControlOutcome(controlScopePassed(179), 'Control 179 outcome assertion failed', 179);
 
 observeControls(180);
 // ambiguity. Exactly-one matching-item semantics must reject it rather than accepting the first.
@@ -2479,7 +2549,7 @@ observeControls(180);
 }
 
 // Control 181: a truthy disjunction on a new line is still an unconditional bypass of the
-assertControlOutcome(true, 'Controls 179-180 outcome assertion failed');
+assertControlOutcome(controlScopePassed(180), 'Control 180 outcome assertion failed', 180);
 
 observeControls(181);
 // orchestration gate. The source checker must validate the complete expression, not just the
@@ -2490,7 +2560,7 @@ observeControls(181);
     if (!source.includes(marker)) return null;
     return source.replace(marker, '  dropped === 0 || true;\n');
   });
-  expectFixture(result, 'multiline orchestrationComplete disjunction bypass is rejected', 1, ['orchestrationComplete']);
+  expectFixture(result, 'multiline orchestrationComplete disjunction bypass is rejected', 1, ['orchestrationComplete'], 181);
 }
 
 // Controls 182-185: each coverage signal must be produced by its live, reachable computation.
@@ -2498,7 +2568,7 @@ observeControls({ start: 182, end: 185 });
 // Replacing a producer with an empty/zero literal leaves the five-way gate text intact, but makes
 // the run report COMPLETE for missing scope, slices, labels, or dropped agents. The validator pins
 // this whole reachable producer block separately from the final orchestration expression.
-for (const [name, mutate] of [
+for (const [index, [name, mutate]] of [
   ['dropped producer erased', (source) => source.replace(
     'const dropped = AUDIT_UNITS.length - auditResults.length',
     'const dropped = 0',
@@ -2518,12 +2588,12 @@ for (const [name, mutate] of [
     const end = source.indexOf('const resultsByLabel =', start);
     return start < 0 || end < 0 ? source : source.slice(0, start) + 'const strayLabels = []\n' + source.slice(end);
   }],
-]) {
+].entries()) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
     const mutated = mutate(source);
     return mutated === source ? null : mutated;
   });
-  expectFixture(result, name + ' is rejected by the coverage producer block', 1, ['workflow coverage']);
+  expectFixture(result, name + ' is rejected by the coverage producer block', 1, ['workflow coverage'], 182 + index);
 }
 
 // Controls 186-187: declaration order is part of the reachable workflow contract. Both helpers
@@ -2540,7 +2610,7 @@ observeControls({ start: 186, end: 187 });
     const without = source.slice(0, helperStart) + source.slice(moduleStart);
     return without.replace('const AUDIT_UNITS = deepFreezeRecords([', helper + 'const AUDIT_UNITS = deepFreezeRecords([');
   });
-  expectFixture(result, 'deepFreezeRecords declaration below first call is rejected', 1, ['workflow']);
+  expectFixture(result, 'deepFreezeRecords declaration below first call is rejected', 1, ['workflow'], 186);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -2549,7 +2619,7 @@ observeControls({ start: 186, end: 187 });
     const without = source.replace(helper, '');
     return without.replace('const orchestrationComplete =', helper + 'const orchestrationComplete =');
   });
-  expectFixture(result, 'auditResultModuleMatches declaration below first use is rejected', 1, ['workflow']);
+  expectFixture(result, 'auditResultModuleMatches declaration below first use is rejected', 1, ['workflow'], 187);
 }
 
 // Control 188: a dead canonical helper placed AFTER the weakened live helper must not repair it.
@@ -2564,7 +2634,7 @@ observeControls(188);
     const decoy = `if (false) {\n  const auditResultModuleMatches = (result, unit) => result.module === unit.module;\n}\n`;
     return weakened.replace('const missingUnitInputs = {}', decoy + 'const missingUnitInputs = {}');
   });
-  expectFixture(result, 'after-live dead runtime module helper does not mask weakened helper', 1, ['workflow']);
+  expectFixture(result, 'after-live dead runtime module helper does not mask weakened helper', 1, ['workflow'], 188);
 }
 
 function insertWorkflowMutation(source, name, mutation) {
@@ -2593,7 +2663,7 @@ for (const [number, name, mutation] of [
   [197, 'bracket categories MODULES binding', "const categoriesAlias = MODULES[0]['categories']; categoriesAlias.push('Z99');"],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias'], number);
 }
 
 // Controls 198-199: binding a `.map()` result is an alias boundary, not a safe-copy boundary. The
@@ -2605,7 +2675,7 @@ for (const [number, name, mutation] of [
   [199, 'parenthesized MODULES map binding with descendant mutation', "const moduleEntries = (MODULES.map((entry) => entry)); moduleEntries[0].categories.push('Z99');"],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias'], number);
 }
 
 // Controls 200-203: direct assignments to the root array's length are mutations too. Keep both
@@ -2621,7 +2691,7 @@ for (const [number, name, root, property] of [
     const target = insertWorkflowMutation(source, root, `${root}${property} = 0;`);
     return target;
   });
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 204-212: the same direct-alias contract applies to AUDIT_UNITS, including all
@@ -2642,7 +2712,7 @@ for (const [number, name, mutation] of [
     const target = insertWorkflowMutation(source, 'AUDIT_UNITS', mutation);
     return target;
   });
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow', 'alias'], number);
 }
 
 // Controls 213-214: length is a primitive and remains safe through quoted bracket notation, but a
@@ -2655,7 +2725,7 @@ for (const [number, name, mutation] of [
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'AUDIT_UNITS', mutation));
   const expected = number === 213 ? 0 : 1;
   const required = number === 213 ? [] : ['workflow', 'alias'];
-  expectFixture(result, `Control ${number}: ${name} ${expected ? 'is rejected' : 'remains accepted'}`, expected, required);
+  expectFixture(result, `Control ${number}: ${name} ${expected ? 'is rejected' : 'remains accepted'}`, expected, required, number);
 }
 
 // Controls 215-216: inline consumption/iteration is not binding and remains legal. These positive
@@ -2668,7 +2738,7 @@ for (const [number, name, root] of [
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     insertWorkflowMutation(source, root, `{ ${root}.map((entry) => entry.file || entry.label).join(','); for (const entry of ${root}) { void (entry.file || entry.label); } }`));
-  expectFixture(result, `Control ${number}: ${name} remain accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} remain accepted`, 0, [], number);
 }
 
 // Control 217: an alias-like variable name used only for unrelated local arrays in separate
@@ -2684,7 +2754,7 @@ observeControls(217);
   const auditUnitsAlias = [];
   auditUnitsAlias.push('local-audit');
 }`));
-  expectFixture(result, 'Control 217: unrelated local alias names remain accepted', 0);
+  expectFixture(result, 'Control 217: unrelated local alias names remain accepted', 0, [], 217);
 }
 
 // Control 218: a short-circuit expression that returns the immutable root on its truthy side is
@@ -2693,7 +2763,7 @@ observeControls(218);
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     insertWorkflowMutation(source, 'MODULES', 'const conditionalAlias = MODULES.length && MODULES; conditionalAlias.push({ file: \'conditional.md\', categories: [] });'));
-  expectFixture(result, 'Control 218: conditional MODULES alias mutation is rejected', 1, ['workflow', 'alias']);
+  expectFixture(result, 'Control 218: conditional MODULES alias mutation is rejected', 1, ['workflow', 'alias'], 218);
 }
 
 // Controls 219-220: parenthesized primitive length reads remain safe. These are deliberately
@@ -2706,7 +2776,7 @@ for (const [number, name, root, expression] of [
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     insertWorkflowMutation(source, root, `const safeCount${number} = ${expression}; void safeCount${number};`));
-  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0, [], number);
 }
 
 // Controls 221-224: binding-site diagnostics must fire even when the bound value is never
@@ -2720,7 +2790,7 @@ for (const [number, name, root, mutation] of [
   [224, 'bound AUDIT_UNITS filter result', 'AUDIT_UNITS', 'const unusedAuditEntries = AUDIT_UNITS.filter((entry) => entry); void unusedAuditEntries;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected at binding site`, 1, ['workflow', 'alias']);
+  expectFixture(result, `Control ${number}: ${name} is rejected at binding site`, 1, ['workflow', 'alias'], number);
 }
 
 // Controls 225-227: both increment directions are writes, whether applied to a root, a nested
@@ -2733,7 +2803,7 @@ for (const [number, name, root, mutation] of [
   [227, 'postfix length increment', 'AUDIT_UNITS', 'AUDIT_UNITS.length++;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 228-234: assignment operators beyond plain/arithmetical/logical assignment must be
@@ -2750,7 +2820,7 @@ for (const [number, name, root, mutation] of [
   [234, 'unsigned-right-shift nested assignment', 'AUDIT_UNITS', 'AUDIT_UNITS[0].requiredArtifactGroups[0] >>>= 1;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 235-238: logical/nullish assignment remains forbidden, while pure comparison and
@@ -2763,11 +2833,11 @@ for (const [number, name, root, mutation] of [
   [237, 'nullish-coalescing length assignment', 'AUDIT_UNITS', 'AUDIT_UNITS.length ??= 0;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'AUDIT_UNITS', `void (MODULES === AUDIT_UNITS);\nvoid (MODULES.length >= AUDIT_UNITS['length']);\nvoid (() => MODULES[0].file)();`));
-  expectFixture(result, 'Control 238: comparison and arrow reads remain accepted', 0);
+  expectFixture(result, 'Control 238: comparison and arrow reads remain accepted', 0, [], 238);
 }
 
 // Controls 239-240: mutator calls remain writes when the method or an intermediate nested
@@ -2779,7 +2849,7 @@ for (const [number, name, root, mutation] of [
   [240, 'bracket nested mutator call', 'MODULES', "MODULES[0]['categories']['push']('Z99');"],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 241-243: fully parenthesized root and nested chains must not hide a mutator or a
@@ -2792,7 +2862,7 @@ for (const [number, name, root, mutation] of [
   [243, 'fully-parenthesized nested postfix update', 'MODULES', '(MODULES[0].categories[0])--;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 244-245: comments between a prefix update operator and its root are non-code and
@@ -2803,7 +2873,7 @@ for (const [number, name, root, mutation] of [
   [245, 'line-comment-separated prefix decrement', 'AUDIT_UNITS', '//c\n--AUDIT_UNITS;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 
 // Control 246: comments surrounding a quoted bracket mutator name are still lexical trivia. The
@@ -2815,7 +2885,7 @@ observeControls(246);
     'MODULES',
     "MODULES[/* before */ 'push' /* after */]({ file: 'comment-bracket.md', categories: [] });",
   ));
-  expectFixture(result, 'comments around quoted bracket mutator name', 1, ['workflow']);
+  expectFixture(result, 'comments around quoted bracket mutator name', 1, ['workflow'], 246);
 }
 
 // Controls 247-248: comments may occur at both property-boundary positions in a direct nested
@@ -2826,7 +2896,7 @@ for (const [number, name, mutation] of [
   [248, 'comment after nested dot before property', "MODULES[0]. /* dot-property */ categories.push('Z99');"],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 249-253: statement-position mutations remain visible after control-flow headers and
@@ -2841,7 +2911,7 @@ for (const [number, name, root, mutation] of [
   [253, 'do-position length update', 'AUDIT_UNITS', 'do --AUDIT_UNITS.length; while(false);'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 254-255: roots used as call arguments are reads, even when the call result is later
@@ -2854,7 +2924,7 @@ observeControls({ start: 254, end: 255 });
     'MODULES',
     "factory(MODULES).push({ file: 'factory-result.md', categories: [] });",
   ));
-  expectFixture(result, 'factory call result mutator remains accepted', 0);
+  expectFixture(result, 'factory call result mutator remains accepted', 0, [], 254);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
@@ -2862,7 +2932,7 @@ observeControls({ start: 254, end: 255 });
     'AUDIT_UNITS',
     'consume(MODULES); invoke(AUDIT_UNITS);',
   ));
-  expectFixture(result, 'function call argument contexts remain accepted', 0);
+  expectFixture(result, 'function call argument contexts remain accepted', 0, [], 255);
 }
 
 // Controls 256-261: ASI separates a completed root property read from the next prefix update,
@@ -2877,7 +2947,7 @@ observeControls({ start: 256, end: 261 });
     'MODULES',
     'MODULES.length\n++unrelatedCounter;',
   ));
-  expectFixture(result, 'ASI separates root length read from unrelated prefix update', 0);
+  expectFixture(result, 'ASI separates root length read from unrelated prefix update', 0, [], 256);
 }
 for (const [number, name, mutation] of [
   [257, 'ASI prefix update after a call', 'doSomething()\n++MODULES.length;'],
@@ -2885,7 +2955,7 @@ for (const [number, name, mutation] of [
   [259, 'ASI prefix update after a multiline block comment', 'doSomething() /* boundary\n*/ ++MODULES.length;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow'], number);
 }
 for (const [number, name, property] of [
   [260, 'property named if is not a control header', 'if'],
@@ -2896,7 +2966,7 @@ for (const [number, name, property] of [
     'MODULES',
     `const propertyFactory${number} = { ${property}: () => () => [] };\npropertyFactory${number}.${property}(true)\n(MODULES).pop();`,
   ));
-  expectFixture(result, `Control ${number}: ${name}`, 0);
+  expectFixture(result, `Control ${number}: ${name}`, 0, [], number);
 }
 
 // Controls 262-269: ECMAScript treats U+2028/U+2029 as line terminators.  They must therefore
@@ -2917,7 +2987,7 @@ for (const [number, name, root, mutation] of [
   [269, 'U+2029 block-comment terminator before AUDIT_UNITS update', 'AUDIT_UNITS', 'doSomething() /* boundary\u2029 */ ++AUDIT_UNITS.length;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name}`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name}`, 1, ['workflow'], number);
 }
 
 // Controls 270-272: a closing brace ends a statement/block context, so a prefix update on the
@@ -2930,7 +3000,7 @@ for (const [number, name, root, mutation] of [
   [272, 'prefix update after bare block close', 'MODULES', '{ void 0; } ++MODULES.length;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
-  expectFixture(result, `Control ${number}: ${name}`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name}`, 1, ['workflow'], number);
 }
 
 // Control 273: closing an object-literal/expression is not itself a mutation.  This positive
@@ -2943,7 +3013,7 @@ observeControls(273);
     'MODULES',
     'const objectExpression = ({ count: 1 });\nconst objectFactory = () => ({});\nvoid objectExpression;\nvoid objectFactory;\nvoid MODULES.length;',
   ));
-  expectFixture(result, 'Control 273: object-literal expression close remains accepted', 0);
+  expectFixture(result, 'Control 273: object-literal expression close remains accepted', 0, [], 273);
 }
 
 // Controls 274-275: a class declaration's closing brace also ends the preceding statement or
@@ -2959,7 +3029,7 @@ for (const [number, name, root] of [
     root,
     `class Example${number} {} ++${root}.length;`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 276-277: private methods whose names are reserved words are still callable
@@ -2982,7 +3052,7 @@ for (const [number, name, privateName] of [
       `};\n` +
       `void PrivateContext${number};`,
   ));
-  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0, [], number);
 }
 
 // Controls 278-281: an export-default class declaration has a statement-level closing brace,
@@ -3001,7 +3071,7 @@ for (const [number, name, root, declaration] of [
     root,
     `${declaration} ++${root}.length;`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 282-285: ECMAScript class declarations may use Unicode identifier names, including
@@ -3019,7 +3089,7 @@ for (const [number, name, root, className] of [
     root,
     `export default class ${className} {} ++${root}.length;`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 286-289: Unicode class syntax in expression/object positions is not itself a
@@ -3038,7 +3108,7 @@ for (const [number, name, root, expression] of [
     `const UnicodeObjectContext289 = { value: class Δelta289 {}, size: ${'AUDIT_UNITS'}.length }; void UnicodeObjectContext289;`],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
-  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0, [], number);
 }
 
 // Controls 290-293: valid braced Unicode escapes in class names must not make the following
@@ -3058,7 +3128,7 @@ for (const [number, name, root, declaration] of [
     root,
     `${declaration} ++${root}.length;`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 294-297: class declarations can occur directly in switch case/default clauses.
@@ -3076,7 +3146,7 @@ for (const [number, name, root, label, operator] of [
     root,
     `switch (value) { ${label} class SwitchClass${number} {} ${operator}${root}.length; }`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 298-301: a completed postfix update before a line break does not turn the following
@@ -3094,7 +3164,7 @@ for (const [number, name, root, operator] of [
     root,
     `const value${number} = 0; value${number}++\nclass FollowingClass${number} {} ${operator}${root}.length;`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 302-305: class expressions in object-property and ternary-colon positions are not
@@ -3108,7 +3178,7 @@ for (const [number, name, root, expression] of [
   [305, 'ternary-colon class expression context', 'AUDIT_UNITS', 'const ternaryClass305 = flag ? class {} : class {}; void AUDIT_UNITS.length;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
-  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0, [], number);
 }
 
 // Controls 306-313: identifiers that merely contain a protected root name are unrelated local
@@ -3131,7 +3201,7 @@ for (const [number, name, identifier] of [
     root,
     `const ${identifier} = []; ${identifier}.push(${number});`,
   ));
-  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0, [], number);
 }
 
 // Controls 314-319: a switch case expression may contain an object literal, a class expression,
@@ -3151,7 +3221,7 @@ for (const [number, name, root, caseExpression] of [
     root,
     `switch (value) { case ${caseExpression}: class SwitchExpressionClass${number} {} ++${root}.length; }`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 320-321: an astral IdentifierStart variable can be updated before a line break just
@@ -3167,7 +3237,7 @@ for (const [number, name, root] of [
     root,
     `const 𐐀 = 0; 𐐀++\nclass FollowingAstralClass${number} {} ++${root}.length;`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 322-325: object-literal and ternary colons outside a switch are expression syntax, not
@@ -3181,7 +3251,7 @@ for (const [number, name, root, expression] of [
   [325, 'ternary colon outside switch', 'AUDIT_UNITS', 'const ternaryColon325 = flag ? ({ value: 1 }) : ({ value: 2 }); void AUDIT_UNITS.length;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
-  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0, [], number);
 }
 
 // Controls 326-329: the colon that terminates a switch case may be preceded by one or more
@@ -3199,7 +3269,7 @@ for (const [number, name, root, caseExpression] of [
     root,
     `switch (value) { case ${caseExpression}: class SwitchTernaryClass${number} {} ++${root}.length; }`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 330-335: each first clause ends at a case label after an automatic-semicolon-insertion
@@ -3220,7 +3290,7 @@ for (const [number, name, root, previousClause] of [
     root,
     `switch (value) { case 1: ${previousClause}\ncase 2: class SwitchAsiClass${number} {} ++${root}.length; }`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 336-339: object methods named like switch clauses are ordinary property definitions,
@@ -3237,7 +3307,7 @@ for (const [number, name, root, property] of [
     root,
     `const methodKeyword${number} = { ${property}() { return ${root}.length; } }; void methodKeyword${number}.${property}();`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0, [], number);
 }
 
 // Controls 340-341: `flag?.5:0` is a decimal/consequent conditional expression, not optional
@@ -3255,7 +3325,7 @@ for (const [number, root] of [
     root,
     `switch (value) { case flag?.5:0: class DecimalConsequentClass${number} {} ++${root}.length; }`,
   ));
-  expectFixture(result, `Control ${number}: decimal/consequent ternary switch case (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: decimal/consequent ternary switch case (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 342-343: genuine optional chaining in a switch-case expression is not a ternary.  Keep
@@ -3273,7 +3343,7 @@ for (const [number, root] of [
     root,
     `switch (value) { case optionalTarget?.property: class OptionalChainCaseClass${number} {} ++${root}.length; }`,
   ));
-  expectFixture(result, `Control ${number}: genuine optional-chaining switch case (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: genuine optional-chaining switch case (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 344-347: a switch clause may end at the next case label by ASI after either a
@@ -3292,7 +3362,7 @@ for (const [number, name, root, previousClause] of [
     root,
     `switch (value) { case 1: ${previousClause}\ncase 2: class SwitchNullishAsiClass${number} {} ++${root}.length; }`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Control 348: the package manifest's exact Node.js floor is part of the live contract. A stale
@@ -3303,7 +3373,7 @@ observeControls(348);
     if (!source.includes('"node": ">=24.0.0"')) return null;
     return source.replace('"node": ">=24.0.0"', '"node": ">=16.7.0"');
   });
-  expectFixture(result, 'package engine floor is exact', 1, ['package.json engine floor must be exactly >=24.0.0']);
+  expectFixture(result, 'package engine floor is exact', 1, ['package.json engine floor must be exactly >=24.0.0'], 348);
 }
 
 // Controls 349-354: the package manifest and both published workflows must keep the same Node 24
@@ -3316,7 +3386,7 @@ observeControls({ start: 349, end: 354 });
     if (!source.includes(block)) return null;
     return source.replace(block, '  "engines": {},');
   });
-  expectFixture(result, 'package engine declaration cannot be removed', 1, ['package.json engine floor must be exactly >=24.0.0']);
+  expectFixture(result, 'package engine declaration cannot be removed', 1, ['package.json engine floor must be exactly >=24.0.0'], 349);
 }
 
 for (const [number, name, replacement, needles] of [
@@ -3333,7 +3403,7 @@ for (const [number, name, replacement, needles] of [
     if (replacement === null) return source.slice(0, marker.index) + source.slice(marker.index + marker[0].length + 1);
     return source.slice(0, marker.index) + marker[1] + replacement + source.slice(marker.index + marker[0].length);
   });
-  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, needles);
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, needles, number);
 }
 
 // Control 355: the shared helper's declared floor is itself part of the contract. Pinning only
@@ -3345,7 +3415,7 @@ observeControls(355);
     if (!source.includes(marker)) return null;
     return source.replace(marker, "const MIN_NODE_VERSION = '16.7.0';");
   });
-  expectFixture(result, 'shared Node helper floor is exact', 1, ['node-version.js', '24.0.0']);
+  expectFixture(result, 'shared Node helper floor is exact', 1, ['node-version.js', '24.0.0'], 355);
 }
 
 // Control 356: direct boundary oracle for the shared predicate. This is intentionally not a
@@ -3367,7 +3437,7 @@ observeControls(356);
 }
 
 // Controls 357-360: every executable entry point carries its own runtime guard call. Commenting
-assertControlOutcome(true, 'Control 356 outcome assertion failed');
+assertControlOutcome(controlScopePassed(356), 'Control 356 outcome assertion failed', 356);
 
 observeControls({ start: 357, end: 360 });
 // one call at a time must be visible to the repository validator; raw source matching would
@@ -3383,7 +3453,7 @@ for (const [number, file] of [
     if (!source.includes(marker)) return null;
     return source.replace(marker, `// ${marker}`);
   });
-  expectFixture(result, `Control ${number}: ${file} runtime guard call is required`, 1, [file, 'assertSupportedNodeVersion']);
+  expectFixture(result, `Control ${number}: ${file} runtime guard call is required`, 1, [file, 'assertSupportedNodeVersion'], number);
 }
 
 // Controls 361-364: the four entry points' maintainer-facing declarations must describe the same
@@ -3400,7 +3470,7 @@ for (const [number, file, marker] of [
     if (!source.includes(marker)) return null;
     return source.replace(marker, marker.replace('24.0.0', '16.7.0'));
   });
-  expectFixture(result, `Control ${number}: ${file} Node floor declaration is current`, 1, [file, '24.0.0']);
+  expectFixture(result, `Control ${number}: ${file} Node floor declaration is current`, 1, [file, '24.0.0'], number);
 }
 
 // Controls 365-366: the installers must declare the shared helper dependency as well as calling
@@ -3415,7 +3485,7 @@ for (const [number, file] of [
     if (!source.includes(marker)) return null;
     return source.replace(marker, '/* shared Node helper declaration removed by fixture */');
   });
-  expectFixture(result, `Control ${number}: ${file} shared Node helper declaration is required`, 1, [file, 'node-version.js']);
+  expectFixture(result, `Control ${number}: ${file} shared Node helper declaration is required`, 1, [file, 'node-version.js'], number);
 }
 
 // Control 367: the helper's public guard export is a structural contract, not an implementation
@@ -3427,7 +3497,7 @@ observeControls(367);
     if (!source.includes(marker)) return null;
     return source.replace(marker, '');
   });
-  expectFixture(result, 'shared Node helper guard export is required', 1);
+  expectFixture(result, 'shared Node helper guard export is required', 1, [], 367);
 }
 
 // Control 368: latest Node 24 coverage does not substitute for the exact supported floor.
@@ -3437,7 +3507,7 @@ observeControls(368);
     if (!source.includes('node-version: 24.0.0')) return null;
     return source.replace('node-version: 24.0.0', 'node-version: 24.1.0');
   });
-  expectFixture(result, 'exact Node 24.0.0 CI floor is required', 1, ['job node-floor must use exactly one actions/setup-node']);
+  expectFixture(result, 'exact Node 24.0.0 CI floor is required', 1, ['job node-floor must use exactly one actions/setup-node'], 368);
 }
 
 // Controls 369-371: each workflow's named job must carry its own setup-node value. A valid decoy
@@ -3475,7 +3545,7 @@ for (const [number, file, job, expected, replacement, decoy, label] of [
   [371, '.github/workflows/npm-publish.yml', 'publish', '24', '23.11.1', 'decoy-publish', 'npm-publish publish'],
 ]) {
   const result = runValidateAgainstMutatedFiles([file], (source) => mutateNamedWorkflowNodeVersion(source, job, expected, replacement, decoy));
-  expectFixture(result, `Control ${number}: ${label} node-version is job-scoped`, 1, [`job ${job} must use exactly one actions/setup-node`]);
+  expectFixture(result, `Control ${number}: ${label} node-version is job-scoped`, 1, [`job ${job} must use exactly one actions/setup-node`], number);
 }
 
 // Control 372: the exported runtime guard must execute, not merely exist as a named function. A
@@ -3486,7 +3556,7 @@ observeControls(372);
     const mutated = source.replace(/function assertSupportedNodeVersion\([\s\S]*?\n}\n\nmodule\.exports/, 'function assertSupportedNodeVersion() {}\n\nmodule.exports');
     return mutated === source ? null : mutated;
   });
-  expectFixture(result, 'Control 372: runtime guard implementation is causal', 1, ['Node runtime guard probe 23.11.1 expected status 1']);
+  expectFixture(result, 'Control 372: runtime guard implementation is causal', 1, ['Node runtime guard probe 23.11.1 expected status 1'], 372);
 }
 
 // Controls 373-375: an unversioned second setup-node step inside the protected job can replace
@@ -3506,7 +3576,7 @@ for (const [number, file, job] of [
     const insertion = '      - uses: actions/setup-node@v7\n';
     return source.slice(0, steps + '    steps:\n'.length) + insertion + source.slice(steps + '    steps:\n'.length);
   });
-  expectFixture(result, `Control ${number}: ${job} rejects a second unversioned setup-node step`, 1, [`job ${job} must use exactly one actions/setup-node`]);
+  expectFixture(result, `Control ${number}: ${job} rejects a second unversioned setup-node step`, 1, [`job ${job} must use exactly one actions/setup-node`], number);
 }
 
 // Controls 376-377: ECMAScript braced Unicode escapes permit arbitrarily many leading zeroes.
@@ -3523,7 +3593,7 @@ for (const [number, name, root, declaration] of [
     root,
     `${declaration} ++${root}.length;`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow'], number);
 }
 
 // Controls 378-379: braced Unicode escapes whose numeric value is outside the Unicode scalar
@@ -3554,28 +3624,6 @@ function classifyInvalidUnicodeResult(result) {
   return 'unexpected';
 }
 
-// Controls 380-384: in-process calibration for every classifier branch. Control 381 preserves the
-assertControlOutcome(true, 'Control 378 outcome assertion failed', 378);
-assertControlOutcome(true, 'Control 379 outcome assertion failed', 379);
-
-observeControls({ start: 380, end: 384 });
-// exact intentional diagnostic against reintroduction of the former over-broad workflow predicate.
-// The remaining cases ensure that a generic status-1 error, the specific mutation diagnostic, or a
-// failed child cannot be accepted.
-for (const [number, name, result, accepted, expectedClass] of [
-  [380, 'current quiet status 0', { status: 0, output: 'rust-intel validation passed (12 skill markdown files checked)' }, true, 'quiet'],
-  [381, 'exact intentional workflow-prefixed status 1 diagnostic', { status: 1, output: 'ERROR: workflow invalid Unicode escape in identifier' }, true, 'intentional-diagnostic'],
-  [382, 'specific false workflow-mutation status 1 diagnostic', { status: 1, output: 'ERROR: workflow MODULES has an executable increment/decrement mutation' }, false, 'false-workflow-mutation'],
-  [383, 'unrelated status 1 diagnostic', { status: 1, output: 'ERROR: unrelated validator failure' }, false, 'unexpected'],
-  [384, 'execution failure', { executionFailure: true, status: 1, output: 'ERROR: workflow invalid Unicode escape in identifier' }, false, 'execution-failure'],
-]) {
-  const actualClass = classifyInvalidUnicodeResult(result);
-  const actualAccepted = actualClass === 'quiet' || actualClass === 'intentional-diagnostic';
-  if (actualClass !== expectedClass || actualAccepted !== accepted) {
-    failures.push(`Control ${number}: ${name} classifier calibration expected ${expectedClass}/${accepted}, got ${actualClass}/${actualAccepted}`);
-  }
-}
-
 for (const [number, name, root, declaration] of [
   [378, 'out-of-range braced Unicode escape', 'MODULES', 'class \\u{0000000000110000}Invalid378 {}'],
   [379, 'surrogate braced Unicode escape', 'AUDIT_UNITS', 'export default class \\u{00000000000D800}Invalid379 {}'],
@@ -3586,61 +3634,89 @@ for (const [number, name, root, declaration] of [
     `${declaration} ++${root}.length;`,
   ));
   const label = `Control ${number}: ${name} (${root})`;
-  if (result.skipped) failures.push(`${label}: mutation was not applied`);
-  else {
+  if (result.skipped) {
+    failures.push(`${label}: mutation was not applied`);
+    completeCurrentControlScope(number, false);
+  } else {
     const classification = classifyInvalidUnicodeResult(result);
-    if (classification !== 'quiet' && classification !== 'intentional-diagnostic') {
+    const passed = classification === 'quiet' || classification === 'intentional-diagnostic';
+    if (!passed) {
       failures.push(`${label}: expected quiet success or exact intentional Unicode diagnostic, got ${classification} (status ${result.status}, output: ${result.output.trim()})`);
     }
+    completeCurrentControlScope(number, passed);
   }
 }
 
-// Control 389: executable accounting must fail when the assertion body is removed, even if the
-// observeControls marker remains, and when a genuinely asserted next control is added without the
-// declared header/docs update.
-assertControlOutcome(true, 'Control 380 outcome assertion failed', 380);
-assertControlOutcome(true, 'Control 381 outcome assertion failed', 381);
-assertControlOutcome(true, 'Control 382 outcome assertion failed', 382);
-assertControlOutcome(true, 'Control 383 outcome assertion failed', 383);
-assertControlOutcome(true, 'Control 384 outcome assertion failed', 384);
+// Controls 380-384: in-process calibration for every classifier branch. Control 381 preserves the
+// exact intentional diagnostic against reintroduction of the former over-broad workflow predicate.
+observeControls({ start: 380, end: 384 });
+for (const [number, name, result, accepted, expectedClass] of [
+  [380, 'current quiet status 0', { status: 0, output: 'rust-intel validation passed (12 skill markdown files checked)' }, true, 'quiet'],
+  [381, 'exact intentional workflow-prefixed status 1 diagnostic', { status: 1, output: 'ERROR: workflow invalid Unicode escape in identifier' }, true, 'intentional-diagnostic'],
+  [382, 'specific false workflow-mutation status 1 diagnostic', { status: 1, output: 'ERROR: workflow MODULES has an executable increment/decrement mutation' }, false, 'false-workflow-mutation'],
+  [383, 'unrelated status 1 diagnostic', { status: 1, output: 'ERROR: unrelated validator failure' }, false, 'unexpected'],
+  [384, 'execution failure', { executionFailure: true, status: 1, output: 'ERROR: workflow invalid Unicode escape in identifier' }, false, 'execution-failure'],
+]) {
+  const actualClass = classifyInvalidUnicodeResult(result);
+  const actualAccepted = actualClass === 'quiet' || actualClass === 'intentional-diagnostic';
+  const passed = actualClass === expectedClass && actualAccepted === accepted;
+  if (!passed) failures.push(`Control ${number}: ${name} classifier calibration expected ${expectedClass}/${accepted}, got ${actualClass}/${actualAccepted}`);
+  completeCurrentControlScope(number, passed);
+}
 
+// Control 389: the registry state machine is calibrated in-process with bounded synthetic cases.
+// The real fixture suite below is run exactly once; these checks never recursively replay it.
 observeControls(389);
-if (process.env.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1') {
-  const assertionBodyRemoved = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
-    const body = /if \(process\.env\.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1'\) \{[\s\S]*?\n\}\n\nfor \(const fixture of cases\)/u;
-    if (!body.test(source)) return null;
-    return source.replace(body, "if (process.env.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1') {\n  // assertion body intentionally removed; the observeControls(389) marker remains\n}\n\nfor (const fixture of cases)");
-  }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
-  expectFixture(assertionBodyRemoved, 'Control 389: removing assertion body cannot pass with marker retained', 1, [
-    'missing executable controls',
-  ]);
-
-  const rangeIterationRemoved = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
-    const loop = "for (const kind of ['header', 'delimiter', 'body']) {";
-    if (!source.includes(loop)) return null;
-    return source.replace(loop, "for (const kind of ['header', 'delimiter', 'body'].filter((candidate) => !(table === 'code' && candidate === 'delimiter'))) {");
-  }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
-  expectFixture(rangeIterationRemoved, 'Control 389: removing one middle range assertion cannot pass', 1, [
-    'missing executable controls: 9, 389',
-  ]);
-
-  const unlistedControlAdded = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
-    const registry = 'const CONTROL_REGISTRY_TOTAL = 389;';
-    const insertion = '\nfor (const fixture of cases)';
-    if (!source.includes(registry) || !source.includes(insertion)) return null;
-    return source.replace(registry, 'const CONTROL_REGISTRY_TOTAL = 390;')
-      .replace(insertion, "\nobserveControls(390);\nexpectFixture({ skipped: false, executionFailure: false, status: 0, output: '' }, 'Control 390: asserted next control', 0);\nfor (const fixture of cases)");
-  }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
-  expectFixture(unlistedControlAdded, 'Control 389: registered control without header update is rejected', 1, [
-    'control registry/header mismatch',
-  ]);
-
-  const duplicateDiagnostics = [];
-  observeControls(389, new Set([389]), duplicateDiagnostics);
-  if (!duplicateDiagnostics.includes('executable control 389 was observed more than once')) {
-    failures.push('Control 389: duplicate executable registration was not rejected');
+function declaredRegistryTotal(source) {
+  const matches = [...source.matchAll(/^const CONTROL_REGISTRY_TOTAL = (\d+);$/gmu)];
+  return matches.length === 1 ? Number.parseInt(matches[0][1], 10) : null;
+}
+function expectRegistryCase(name, run, expectedDiagnostics) {
+  const diagnostics = run();
+  if (!expectedDiagnostics.length && diagnostics.length) failures.push(`Control 389: ${name} unexpectedly failed: ${diagnostics.join('; ')}`);
+  for (const expected of expectedDiagnostics) {
+    if (!diagnostics.includes(expected)) failures.push(`Control 389: ${name} expected diagnostic ${expected}, got ${diagnostics.join('; ')}`);
   }
 }
+expectRegistryCase('missing semantic outcome', () => {
+  const registry = createControlRegistry(3);
+  registry.register({ start: 1, end: 3 });
+  registry.complete(1, true);
+  registry.complete(3, true);
+  return registry.finalize();
+}, ['missing executable controls: 2']);
+expectRegistryCase('duplicate explicit outcome', () => {
+  const registry = createControlRegistry(3);
+  registry.register(1);
+  registry.complete(1, true);
+  registry.complete(1, true);
+  return registry.finalize();
+}, ['executable control 1 was observed more than once']);
+expectRegistryCase('foreign explicit outcome', () => {
+  const registry = createControlRegistry(389);
+  registry.register(389);
+  registry.complete(390, true);
+  return registry.finalize();
+}, ['assertion/outcome helper claimed control 390, outside current executable scope 389']);
+expectRegistryCase('omitted middle plus neighboring duplicate', () => {
+  const registry = createControlRegistry(3);
+  registry.register({ start: 1, end: 3 });
+  registry.complete(1, true);
+  registry.complete(1, true);
+  registry.complete(3, true);
+  return registry.finalize();
+}, ['executable control 1 was observed more than once', 'missing executable controls: 2']);
+expectRegistryCase('header total drift', () => {
+  const registry = createControlRegistry(389);
+  registry.checkHeader(388);
+  return registry.finalize();
+}, ['control registry/header mismatch: executable registry declares 389, scope header declares 388']);
+expectRegistryCase('declaration decoys do not replace live declaration', () => {
+  const source = '// const CONTROL_REGISTRY_TOTAL = 777;\nconst text = `const CONTROL_REGISTRY_TOTAL = 888;`;\nconst CONTROL_REGISTRY_TOTAL = 389;';
+  return declaredRegistryTotal(source) === 389 ? [] : ['live executable registry declaration'];
+}, []);
+const control389Passed = !failures.some((failure) => failure.startsWith('Control 389:'));
+completeCurrentControlScope(389, control389Passed);
 
 for (const fixture of cases) {
   const source = fs.readFileSync(path.join(fixtureRoot, fixture.file), 'utf8');
@@ -3651,6 +3727,7 @@ for (const fixture of cases) {
   }
 }
 
+for (const diagnostic of controlRegistry.finalize()) failures.push(diagnostic);
 const missingExecutedControls = [...CONTROL_REGISTRY].filter((id) => !observedControls.has(id));
 if (missingExecutedControls.length) {
   failures.push(`missing executable controls: ${missingExecutedControls.join(', ')}`);
