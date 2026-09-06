@@ -62,6 +62,43 @@ const detectors = new Map([
 ]);
 const failures = [];
 
+// Runtime control registry. The executable registry is deliberately independent of source labels:
+// labels are only a secondary inventory for review readability. Every control section invokes
+// observeControls on its live path, and the observed set is the sole source of the final report.
+// Keep this literal independent from the scope header so either side can detect drift.
+const CONTROL_REGISTRY_TOTAL = 389;
+const CONTROL_REGISTRY = new Set(Array.from({ length: CONTROL_REGISTRY_TOTAL }, (_, index) => index + 1));
+const observedControls = new Set();
+const fixtureSource = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+const scopeHeaderMatch = /^\/\/ Scope, stated honestly: (\d+) hand-written controls:/m.exec(fixtureSource);
+const scopeHeaderTotal = scopeHeaderMatch ? Number.parseInt(scopeHeaderMatch[1], 10) : null;
+if (scopeHeaderTotal !== CONTROL_REGISTRY_TOTAL) {
+  failures.push(`control registry/header mismatch: executable registry declares ${CONTROL_REGISTRY_TOTAL}, scope header declares ${scopeHeaderTotal ?? 'missing'}`);
+}
+
+function controlIds(value) {
+  if (Number.isSafeInteger(value)) return [value];
+  if (!value || !Number.isSafeInteger(value.start) || !Number.isSafeInteger(value.end) || value.start > value.end) {
+    failures.push(`invalid executable control registration: ${JSON.stringify(value)}`);
+    return [];
+  }
+  return Array.from({ length: value.end - value.start + 1 }, (_, offset) => value.start + offset);
+}
+
+function observeControls(value, target = observedControls, diagnostics = failures) {
+  for (const id of controlIds(value)) {
+    if (!CONTROL_REGISTRY.has(id)) {
+      diagnostics.push(`executable control ${id} is not declared in the control registry`);
+      continue;
+    }
+    if (target.has(id)) {
+      diagnostics.push(`executable control ${id} was observed more than once`);
+      continue;
+    }
+    target.add(id);
+  }
+}
+
 // Structural contract: a fixture may not cite a category that has been renamed away or that no
 // longer appears in SKILL.md's routing tables. This catches the real drift (a category id going
 // stale under the fixtures) without touching rule text.
@@ -154,7 +191,10 @@ const optionalValidateInputs = ['.app.json', '.mcp.json'];
 function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}) {
   const tmpRoot = makeTempRootOutside(root);
   try {
-    for (const rel of validateInputs) {
+    const inputs = spawnOptions.script === 'dev/validate-fixtures.mjs'
+      ? [...validateInputs.filter((rel) => rel !== 'examples/fixtures/cases.json'), 'examples/fixtures']
+      : validateInputs;
+    for (const rel of inputs) {
       fs.cpSync(path.join(root, rel), path.join(tmpRoot, rel), { recursive: true });
     }
     for (const rel of optionalValidateInputs) {
@@ -196,6 +236,7 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 }
 
 // Control 1: mutate the banner's required count to a wrong number outright.
+observeControls(1);
 {
   const result = runValidateAgainstMutatedCopy((original) => {
     const m = original.match(/Numbered categories now \*\*(\d+)\*\*/);
@@ -210,6 +251,7 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 }
 
 // Control 2: keep the correct, required `**N**` banner intact, but add a COEXISTING stale
+observeControls(2);
 // Markdown-emphasized count elsewhere in the same scanned region. This is the false-negative this
 // fixture previously could not have caught: the stale-count scanner's digit pattern requires
 // whitespace immediately after the digits, which `**58**` (digit, then `**`, then space) does not
@@ -228,6 +270,7 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 }
 
 // Control 3: same coexistence shape as Control 2, but with the stale mention wrapped in
+observeControls(3);
 // underscore-emphasis (`__58__`) instead of `**58**` — proves the scanner strips more than one
 // Markdown wrapper form, not just the one form Control 2 happens to use.
 {
@@ -244,6 +287,7 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 }
 
 // Control 4: TEMP/TMP resolves — via a symlink on POSIX, a junction on Windows — to a directory
+observeControls(4);
 // whose PHYSICAL target sits inside the repo, even though the alias's own (lexical) path does not.
 // This is the exact bypass a `path.resolve()`-only containment check misses: reproduced by pointing
 // `TEMP` at a junction whose real target is `root/.rust-intel-validate-junction-target-*`, which
@@ -297,6 +341,7 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 }
 
 // Controls 385-388: release-facing fixture counts must track the authoritative scope header, while
+observeControls({ start: 385, end: 388 });
 // revision-qualified historical counts remain valid. The first two mutations make one current
 // claim stale in each release document and must fail; the latter two add an explicitly historical
 // count beside the unchanged current claim and must pass.
@@ -372,6 +417,7 @@ function expectUnsupported(result, name) {
 }
 
 // Controls 5-10: header, delimiter, and body rows of BOTH anchored tables retain raw column one.
+observeControls({ start: 5, end: 10 });
 for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
   for (const kind of ['header', 'delimiter', 'body']) {
     const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
@@ -385,6 +431,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 }
 
 // Controls 11-12: one-column and arbitrary tables outside anchors are ignored.
+observeControls({ start: 11, end: 12 });
 for (const [name, rows] of [
   ['outside-anchor one-column', ['| outside-one-column |', '|---|', '| ' + fixtureTick + 'outside-one-column' + fixtureTick + ' |', '| ' + fixtureTick + 'outside-one-column' + fixtureTick + ' |']],
   ['outside-anchor arbitrary', ['| outside-arbitrary | other |', '|---|---|', '| ' + fixtureTick + 'outside-arbitrary' + fixtureTick + ' | body |', '| ' + fixtureTick + 'outside-arbitrary' + fixtureTick + ' | body |']],
@@ -394,6 +441,7 @@ for (const [name, rows] of [
 }
 
 // Control 13: duplicate detection is bounded to the anchored code-pattern body; the structural
+observeControls(13);
 // header is not itself an occurrence, and equal body rows remain an observable positive.
 {
   const t = fixtureTick;
@@ -406,6 +454,7 @@ for (const [name, rows] of [
 }
 
 // Controls 14-15: odd/even escaped-pipe parity is applied before cell extraction. This is the
+observeControls({ start: 14, end: 15 });
 // repository's raw-pipe convention, not a claim that GFM's table parser exposes this exact API.
 for (const [name, row, token] of [
   ['odd escaped-pipe parity', '| ' + fixtureTick + 'odd-parity' + fixtureTick + ' \\| second cell | body |', '[odd-parity]'],
@@ -417,6 +466,7 @@ for (const [name, row, token] of [
 }
 
 // Control 16: maximal delimiters and preserved interior whitespace remain in the allowed subset.
+observeControls(16);
 {
   const t = fixtureTick;
   const row = '| ' + t + t + t + t + 'multi  backtick' + t + t + t + t + ' | body |';
@@ -426,6 +476,7 @@ for (const [name, row, token] of [
 }
 
 // Control 17: edge-space normalization makes these two spans equal.
+observeControls(17);
 {
   const t = fixtureTick;
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
@@ -434,6 +485,7 @@ for (const [name, row, token] of [
 }
 
 // Control 18: the signature map key is injective ([a,b] differs from [a + b]).
+observeControls(18);
 {
   const t = fixtureTick;
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
@@ -443,6 +495,7 @@ for (const [name, row, token] of [
 
 
 // Controls 19-22: unsupported complex inline constructs in a code-pattern first cell are
+observeControls({ start: 19, end: 22 });
 // rejected explicitly rather than silently hiding backticks or becoming duplicate rows.
 for (const [name, row] of [
   ['inline link', '| [link](https://example.test/' + fixtureTick + 'destination' + fixtureTick + ') | body |'],
@@ -456,6 +509,7 @@ for (const [name, row] of [
 }
 
 // Controls 23-25: raw HTML blocks and list/blockquote-prefixed fences are unsupported styles
+observeControls({ start: 23, end: 25 });
 // for the explicit top-level contract and must produce a named diagnostic.
 for (const [name, rows] of [
   ['raw HTML block', ['<div>', '| ' + fixtureTick + 'html-unsupported' + fixtureTick + ' | body |', '|---|---|', '| ' + fixtureTick + 'html-unsupported' + fixtureTick + ' | body |', '</div>']],
@@ -467,6 +521,7 @@ for (const [name, rows] of [
 }
 
 // Controls 26-29: actual project fences with each legal root indentation (0-3 spaces) keep
+observeControls({ start: 26, end: 29 });
 // a JSON-style escaped quote literal, so it is not reported.
 for (const spaces of ['', ' ', '  ', '   ']) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -482,6 +537,7 @@ for (const spaces of ['', ' ', '  ', '   ']) {
 }
 
 // Controls 30-32: false closers/info strings remain observable. Valid closers keep the first
+observeControls({ start: 30, end: 32 });
 // two quiet; an invalid info string exposes the escape diagnostic.
 for (const [name, rows, status, needle] of [
   ['trailing-text false closer', [fixtureTick + fixtureTick + fixtureTick + 'md', fixtureTick + fixtureTick + fixtureTick + ' trailing', 'let escaped = "x \\" y";', fixtureTick + fixtureTick + fixtureTick], 0, null],
@@ -512,6 +568,7 @@ function expectStructural(result, name, needles = []) {
 }
 
 // Controls 33-34: a blank in the middle of either anchored table is not a valid early
+observeControls({ start: 33, end: 34 });
 // truncation. The validator must report the broken table structure.
 for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -524,6 +581,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 }
 
 // Controls 35-36: removing every pipe from a known body row must produce the exact
+observeControls({ start: 35, end: 36 });
 // wrong-width diagnostic at that row, not a silent end-of-table.
 for (const [table, label, width] of [['phrase', 'phrase', 3], ['code', 'code-pattern', 2]]) {
   const original = fs.readFileSync(path.join(root, 'skill/SKILL.md'), 'utf8');
@@ -535,6 +593,7 @@ for (const [table, label, width] of [['phrase', 'phrase', 3], ['code', 'code-pat
 }
 
 // Controls 37-38: each canonical header anchor is unique. A duplicate must be diagnosed as
+observeControls({ start: 37, end: 38 });
 // an anchor-integrity error, rather than allowing the duplicate to redefine the scan range.
 for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -549,6 +608,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 }
 
 // Control 39: the explicit end marker is unique.
+observeControls(39);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
     const hit = anchoredTableEnd(source, 'code');
@@ -562,6 +622,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 }
 
 // Control 40: removing the required blank immediately before the code-table end marker must
+observeControls(40);
 // be diagnosed as malformed table structure.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -576,6 +637,7 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 }
 
 // Control 41: a parser-termination smoke probe over many unmatched, constant-size double-backtick
+observeControls(41);
 // runs. Each raw run is escaped at its first tick, which exposes a synthetic one-tick opener, but
 // the input has no raw one-tick run that could close it. The validator's deterministic
 // linear-operation budget is the primary oracle (a budget diagnostic is a failure); the generous
@@ -613,6 +675,7 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Control 42: a trailing backslash is content inside a closing code span. Equal body rows
+observeControls(42);
 // must still produce one duplicate signature.
 {
   const t = fixtureTick;
@@ -623,6 +686,7 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Control 43: an unmatched/false code span must not hide unsupported syntax that follows it.
+observeControls(43);
 {
   const t = fixtureTick;
   const row = '| prose ' + t + ' <custom-tag | body |';
@@ -632,6 +696,7 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Control 44: exact anchors and end markers written inside a supported fence are literals.
+observeControls(44);
 {
   const t = fixtureTick;
   const fence = t.repeat(3);
@@ -651,6 +716,7 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Control 45: fencing the entire required code-pattern table hides its scaffold and must fail.
+observeControls(45);
 {
   const t = fixtureTick;
   const fence = t.repeat(3);
@@ -670,6 +736,7 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Control 46: a zero-body table with its required blank separator is still malformed.
+observeControls(46);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
     const lines = splitFixtureLines(source);
@@ -684,6 +751,7 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Control 47: an end marker after one valid row cannot hide the remaining rows. The marker is
+observeControls(47);
 // moved before the untouched remainder, so the surrounding post-marker scaffold is otherwise the
 // canonical one and the failure is attributable to the early boundary itself.
 {
@@ -703,6 +771,7 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Control 48: moving the sole code anchor before the prompt anchor is an order violation, not a
+observeControls(48);
 // duplicate-anchor case. This mutates one shared array and preserves both table scaffolds.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
@@ -722,6 +791,7 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Controls 49-53: nested/mixed container-prefixed fences and HTML are unsupported styles. Each
+observeControls({ start: 49, end: 53 });
 // probe is a single container-prefixed line so an unprefixed closing line cannot mask the trigger.
 for (const [name, lines] of [
   ['nested list-quote fence', ['- > ' + fixtureTick.repeat(3) + 'md']],
@@ -735,6 +805,7 @@ for (const [name, lines] of [
 }
 
 // Control 54: a generic closing raw tag is unsupported even when it is not a block tag.
+observeControls(54);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', '</custom-tag>', '']));
@@ -742,6 +813,7 @@ for (const [name, lines] of [
 }
 
 // Controls 55-60: extended autolinks outside code spans are unsupported. These are bare URI and
+observeControls({ start: 55, end: 60 });
 // email-like forms: angle-bracket rejection would be the wrong diagnostic and would miss the
 // actual CommonMark extended-autolink grammar.
 const extendedAutolinkProbeLine = (() => {
@@ -770,6 +842,7 @@ for (const [name, row] of [
 }
 
 // Control 61: opening-only raw HTML is rejected at its own line.
+observeControls(61);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', '<div>', '']));
@@ -777,6 +850,7 @@ for (const [name, row] of [
 }
 
 // Control 62: closing-only raw HTML is independently rejected at its own line.
+observeControls(62);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     appendProbe(source, ['', '</div>', '']));
@@ -784,6 +858,7 @@ for (const [name, row] of [
 }
 
 // Control 63: a valid tilde fence suppresses its internal escape, then the post-closer escape
+observeControls(63);
 // is independently diagnosed.
 {
   const t = fixtureTick;
@@ -794,6 +869,7 @@ for (const [name, row] of [
 }
 
 // Control 64: a fully valid tilde fence is a positive case and must not be reported as unclosed.
+observeControls(64);
 {
   const t = fixtureTick;
   const fence = '~'.repeat(3);
@@ -803,6 +879,7 @@ for (const [name, row] of [
 }
 
 // Control 65: when a multi-backtick run has an escaped first tick, its remaining suffix is still
+observeControls(65);
 // a real one-tick opener. Two equal rows must therefore expose the suffix-derived signature.
 {
   const t = fixtureTick;
@@ -814,6 +891,7 @@ for (const [name, row] of [
 }
 
 // Controls 66-67: this repository's code-span scanner uses slash parity for delimiter escaping.
+observeControls({ start: 66, end: 67 });
 // One slash escapes the opener; two slashes escape the slash and leave an active opener. This is
 // a validator convention, not a claim about GFM table-cell parsing.
 {
@@ -829,6 +907,7 @@ for (const [name, row] of [
 }
 
 // Control 68: an escaped/false opener must not swallow a raw-markup diagnostic later in the
+observeControls(68);
 // same cell; the angle-leading construct remains outside any accepted code span.
 {
   const t = fixtureTick;
@@ -839,6 +918,7 @@ for (const [name, row] of [
 }
 
 // Control 69: a complete Category map-looking table inside a supported fence is a decoy. It
+observeControls(69);
 // must not become the map of record or add a made-up category to the live parity graph.
 {
   const t = fixtureTick;
@@ -862,6 +942,7 @@ for (const [name, row] of [
 }
 
 // Control 70: a fenced category heading is not a live module heading and must not inflate the
+observeControls(70);
 // derived numbered-category count. The unknown id makes accidental fence inclusion observable.
 {
   const t = fixtureTick;
@@ -876,6 +957,7 @@ for (const [name, row] of [
 }
 
 // Control 71: moving the only live B2 heading into a fence must not replace the real module
+observeControls(71);
 // heading. This is deliberately a failure: the map still routes B2, but the body no longer does.
 {
   const t = fixtureTick;
@@ -891,6 +973,7 @@ for (const [name, row] of [
 }
 
 // Controls 72-74: the Category map scaffold is load-bearing. Deleting its prose, header, or
+observeControls({ start: 72, end: 74 });
 // delimiter must fail even when all of the category rows remain present and parity is otherwise
 // recoverable.
 for (const [name, mutate] of [
@@ -921,6 +1004,7 @@ for (const [name, mutate] of [
 }
 
 // Control 75: commenting out a workflow MODULES entry must not make the parity check silently
+observeControls(75);
 // accept a missing route. The textual module-presence loop still sees the filename in the comment,
 // so this specifically exercises the structured MODULES parser.
 {
@@ -938,6 +1022,7 @@ for (const [name, mutate] of [
 }
 
 // Control 76: force the deterministic code-span budget path directly. This keeps the guard pinned
+observeControls(76);
 // even on a fast machine where the wall-time termination smoke test would not distinguish a missing
 // charge from a correctly bounded scanner.
 {
@@ -955,6 +1040,7 @@ for (const [name, mutate] of [
 }
 
 // Control 77: the map prose and the cross-reference note are separated by exactly one blank
+observeControls(77);
 // line. Removing that final blank must fail the Category map scaffold check.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -968,6 +1054,7 @@ for (const [name, mutate] of [
 }
 
 // Control 78: a second executable MODULES object for the same file is an integrity error, even
+observeControls(78);
 // though the last parsed entry would otherwise overwrite the first and leave parity apparently
 // correct.
 {
@@ -982,6 +1069,7 @@ for (const [name, mutate] of [
 }
 
 // Control 79: quoted string and template-literal decoys containing a complete canonical-looking
+observeControls(79);
 // MODULES assignment must not become the parser's source of truth. Commenting out the live async
 // entry must still fail parity even when both decoys appear before the real declaration.
 {
@@ -1006,6 +1094,7 @@ for (const [name, mutate] of [
 }
 
 // Control 80: an executable MODULES array may not contain an extra unparsed element. A parser
+observeControls(80);
 // that extracts only the recognizable object-shaped entries would silently accept this drift.
 {
   const result = runValidateAgainstMutatedFiles([
@@ -1022,6 +1111,7 @@ for (const [name, mutate] of [
 }
 
 // Control 81: a double-quoted object is not an executable MODULES entry in this workflow's
+observeControls(81);
 // documented literal form. Removing the real entry and replacing it with a complete double-
 // quoted equivalent must remain a missing-route failure, not a parser false positive.
 {
@@ -1041,6 +1131,7 @@ for (const [name, mutate] of [
 }
 
 // Control 82: duplicate category ids within one executable MODULES entry are an integrity error,
+observeControls(82);
 // even though Set-based parity would otherwise hide the repeated token.
 {
   const result = runValidateAgainstMutatedFiles(['skill/audit-project.workflow.js'], (source) => {
@@ -1054,6 +1145,7 @@ for (const [name, mutate] of [
 }
 
 // Controls 83-85: every Category-map ownership collision is rejected: repeated ids in one row,
+observeControls({ start: 83, end: 85 });
 // repeated rows, and the same id routed to two different module files.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1087,6 +1179,7 @@ for (const [name, mutate] of [
 }
 
 // Controls 86-87: live category headings are unique both within one module and across modules.
+observeControls({ start: 86, end: 87 });
 {
   const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
     const lines = splitFixtureLines(source);
@@ -1109,6 +1202,7 @@ for (const [name, mutate] of [
 }
 
 // Control 88: a Category-map row whose category cell contains no category id is malformed, even
+observeControls(88);
 // if its module filename happens to be valid.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1122,6 +1216,7 @@ for (const [name, mutate] of [
 }
 
 // Control 89: recognized category ids may not be followed by unparsed residue. Otherwise a
+observeControls(89);
 // typo in the ownership cell could be silently ignored while parity still appears correct.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1135,6 +1230,7 @@ for (const [name, mutate] of [
 }
 
 // Control 90: a regex literal containing `[` before MODULES is not executable array syntax and
+observeControls(90);
 // must not hide the real top-level assignment from the MODULES parser.
 {
   const result = runValidateAgainstMutatedFiles([
@@ -1154,6 +1250,7 @@ for (const [name, mutate] of [
 }
 
 // Controls 91-96: live module headings may be indented by 1-3 spaces in Markdown, and duplicate
+observeControls({ start: 91, end: 96 });
 // detection must still see them both within one module and across module files.
 for (const spaces of [' ', '  ', '   ']) {
   const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
@@ -1175,6 +1272,7 @@ for (const spaces of [' ', '  ', '   ']) {
 }
 
 // Control 97: an escaped angle-leading raw tag in a code-pattern first cell is still raw-markup
+observeControls(97);
 // style outside code and must not evade the first-cell contract merely because the first byte is
 // a backslash.
 {
@@ -1187,6 +1285,7 @@ for (const spaces of [' ', '  ', '   ']) {
 }
 
 // Control 98: a four-backtick opener is not closed by a shorter three-backtick interior line.
+observeControls(98);
 // The escaped quote remains inside the unclosed fence, so only the fence-state diagnostic is
 // expected.
 {
@@ -1200,6 +1299,7 @@ for (const spaces of [' ', '  ', '   ']) {
 }
 
 // Control 99: a tab-indented fence-looking closer is not a project-fence closer. The valid opener
+observeControls(99);
 // remains active through that fake closer, so the escape after it is still fenced; the later valid
 // closer then terminates the fence without producing an unclosed-fence diagnostic.
 {
@@ -1212,6 +1312,7 @@ for (const spaces of [' ', '  ', '   ']) {
 }
 
 // Control 100: form-feed is not permitted after a fence marker. It must not close the opener or
+observeControls(100);
 // suppress the eventual unclosed-fence diagnostic.
 {
   const t = fixtureTick;
@@ -1224,6 +1325,7 @@ for (const spaces of [' ', '  ', '   ']) {
 }
 
 // Control 101: NBSP-only content inside an anchored body is not an ASCII blank separator and must
+observeControls(101);
 // be diagnosed as a malformed-width body row.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1236,6 +1338,7 @@ for (const spaces of [' ', '  ', '   ']) {
 }
 
 // Control 102: NBSP is not table whitespace. This exact two-column delimiter-looking line must
+observeControls(102);
 // not be accepted as the code-pattern delimiter scaffold. The mutation starts from the intact
 // canonical scaffold, so a rollback to Unicode-wide trim() turns this control into a baseline
 // false pass rather than silently changing what the control exercises.
@@ -1251,6 +1354,7 @@ for (const spaces of [' ', '  ', '   ']) {
 }
 
 // Controls 103-104: line-ending normalization is part of the validator contract. The complete
+observeControls({ start: 103, end: 104 });
 // canonical and mirror skill trees must validate identically under CRLF and lone-CR input.
 for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
@@ -1259,6 +1363,7 @@ for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
 }
 
 // Control 105: a backtick-bearing info string is not a valid project fence opener. When inserted
+observeControls(105);
 // into the anchored body it must produce the exact body-width diagnostic, without creating an
 // unclosed-fence error.
 {
@@ -1274,6 +1379,7 @@ for (const [name, ending] of [['CRLF', '\r\n'], ['lone CR', '\r']]) {
 }
 
 // Controls 106-111: one or three leading ASCII spaces preserve the raw pipe and table cells but
+observeControls({ start: 106, end: 111 });
 // violate this repository's column-1 contract. The validator must identify the whitespace, not
 // report a generic missing anchor or wrong width.
 for (const spaces of [' ', '   ']) for (const kind of ['header', 'delimiter', 'body']) {
@@ -1468,6 +1574,7 @@ for (const control of ruleTextControls) {
 }
 
 // Controls 112-114: the nested-fixture escape hatch is intentionally a strict test-only switch.
+observeControls({ start: 112, end: 114 });
 // A value of exactly "1" skips the nested suite; "0" runs it and must execute this deliberately
 // broken fixture sentinel; any other value is itself an explicit validator error. Mutating the
 // child script avoids recursively running this fixture suite from inside its own control.
@@ -1489,6 +1596,7 @@ for (const [value, status, needles, name] of [
 }
 
 // Controls 115-116: rule-text extraction must ignore signatures placed inside supported fenced
+observeControls({ start: 115, end: 116 });
 // code. Removing the live signature while adding the same text as a fenced decoy must fail both
 // section-scoped and row-scoped rule controls.
 {
@@ -1539,6 +1647,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 117: a tab-indented fence-looking line is not a standalone project fence opener. The
+observeControls(117);
 // escape on the following line is therefore outside a fence and must remain observable.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
@@ -1547,6 +1656,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 118: a malformed Category-map cell with a category-shaped prefix must not be silently
+observeControls(118);
 // treated as a no-op row. The whole cell is validated, not just successfully extracted ids.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1560,6 +1670,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 119: regexp literals, including character classes and a regexp in statement position,
+observeControls(119);
 // are decoys. They must neither become the MODULES declaration nor confuse its bracket matcher.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1576,6 +1687,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 120: a trailing comma in an otherwise intact Category-map category cell is not a
+observeControls(120);
 // valid category list. Keep every live id in the cell; the comma is the sole mutation.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1593,6 +1705,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Controls 121-131: AUDIT_UNITS is a complete, statically validated partition of the workflow.
+observeControls({ start: 121, end: 131 });
 // Each mutation targets one invariant while leaving the mirror tree byte-identical.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1709,6 +1822,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 132: the runtime merger must reject an audit result whose module disagrees with the
+observeControls(132);
 // assigned unit, even when its label is valid. This is a source-presence contract: changing the
 // module comparison to another field must make the validator fail the workflow check.
 {
@@ -1722,6 +1836,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 133: a category-map boundary indented by one space is not the live scaffold marker.
+observeControls(133);
 // It must be diagnosed as a malformed boundary, not accepted as a second live table.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -1735,6 +1850,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 134: a fenced prose decoy containing a required row must not satisfy the rule-text
+observeControls(134);
 // oracle when the live row is reverted. The same text outside a fence is only a decoy if it is
 // outside both anchored trigger-table body ranges.
 {
@@ -1753,6 +1869,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 135: JavaScript array elision is distinct from a Category-map trailing comma. Keep
+observeControls(135);
 // the parser regression for the executable MODULES literal as a separate, accurately named case.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -1766,6 +1883,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 136: a trailing comma in a real JavaScript categories array is valid syntax. This is
+observeControls(136);
 // deliberately positive: it prevents the executable-array parser from confusing a legal final
 // comma with an interior elision (Control 135).
 {
@@ -1783,6 +1901,7 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Controls 137-140: MODULES/AUDIT_UNITS are declarative data, so each deep-freeze layer is a
+observeControls({ start: 137, end: 140 });
 // contract, not a best-effort runtime convention. Each mutant removes exactly one freeze layer
 // or adds a multiline chain after the initializer and must be rejected by the validator.
 for (const [name, mutate] of [
@@ -1810,9 +1929,11 @@ for (const [name, mutate] of [
 }
 
 // Control 141: the multiline filter-chain mutation above is a separately numbered control.
+observeControls(141);
 // It must be rejected even though `]).filter(Boolean)` is valid JavaScript.
 
 // Control 142: a source that removes the outer freeze and then mutates an alias must still fail
+observeControls(142);
 // the declarative-data contract. The alias is intentionally not a separate static-mutation rule:
 // the pinned deep-freeze scaffold is the safety boundary for nested references.
 {
@@ -1827,6 +1948,7 @@ for (const [name, mutate] of [
 }
 
 // Controls 143-145: mutation through a let alias, an alias of an alias, or a nested-array alias
+observeControls({ start: 143, end: 145 });
 // must be rejected after the immutable workflow declarations. These are separate controls so a
 // validator change that spots only one syntactic mutation shape cannot silently reopen the others.
 for (const [name, mutation] of [
@@ -1845,6 +1967,7 @@ for (const [name, mutation] of [
 }
 
 // Control 146: a top-level loop decoy must not satisfy the runtime module-identity helper
+observeControls(146);
 // contract when the live helper is changed to compare a different field.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -1857,6 +1980,7 @@ for (const [name, mutation] of [
 }
 
 // Controls 147-151: every independent input to orchestrationComplete is part of the gate.
+observeControls({ start: 147, end: 151 });
 // Replace exactly one comparison with a literal while preserving the expression syntax; the
 // validator must reject each weakened gate with its structural workflow diagnostic.
 for (const [name, expression] of [
@@ -1874,6 +1998,7 @@ for (const [name, expression] of [
 }
 
 // Control 152: an incorrect live runtime helper plus a dead canonical helper decoy must fail;
+observeControls(152);
 // the decoy is deliberately a complete function so a broad text search cannot satisfy the
 // contract by finding the right expression in unreachable code.
 {
@@ -1887,6 +2012,7 @@ for (const [name, expression] of [
 }
 
 // Control 153: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
+observeControls(153);
 // the live row while cloning it under a wrong-header/wrong-width table must fail the scoped
 // rule-text oracle; a first-arbitrary-table lookup would incorrectly pass.
 {
@@ -1908,6 +2034,7 @@ for (const [name, expression] of [
 }
 
 // Control 154: an earlier unfenced numbered item is outside the named Operating mode list.
+observeControls(154);
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
@@ -1926,6 +2053,7 @@ for (const [name, expression] of [
 }
 
 // Control 155: a numbered item after an indented level-2 heading belongs to the following
+observeControls(155);
 // section, not to Operating mode. This protects the section boundary from first-match drift.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
@@ -1945,6 +2073,7 @@ for (const [name, expression] of [
 }
 
 // Control 156: a true trailing array elision (`[...,,]`) is not the same thing as one legal
+observeControls(156);
 // trailing separator comma. Keep all
 // category ids and add the second comma at the end of the executable literal.
 {
@@ -1962,6 +2091,7 @@ for (const [name, expression] of [
 }
 
 // Controls 157-159: the per-unit coverage gate must retain both required-input loops and the
+observeControls({ start: 157, end: 159 });
 // final assignment that records missing inputs. Deleting any one of these leaves the source
 // executable but turns an incomplete orchestration into a false complete result.
 for (const [name, fragment] of [
@@ -1977,6 +2107,7 @@ for (const [name, fragment] of [
 }
 
 // Control 160: the live deep-freeze helper must be canonical. A later helper-shaped declaration
+observeControls(160);
 // in dead code cannot repair a weakened live helper or satisfy a broad text search.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -2000,6 +2131,7 @@ for (const [name, fragment] of [
 }
 
 // Control 161: the live missingUnitInputs declaration is unique and top-level. A dead canonical
+observeControls(161);
 // declaration inserted after it must not mask changing the live object into another value.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -2012,6 +2144,7 @@ for (const [name, fragment] of [
 }
 
 // Control 162: the live missing-input loop must be unique and top-level. A dead canonical loop
+observeControls(162);
 // after the live one must not mask deleting its unit iteration.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -2033,6 +2166,7 @@ for (const [name, fragment] of [
 }
 
 // Control 163: orchestrationComplete is a unique top-level gate. A dead copy containing all
+observeControls(163);
 // five conjuncts must not make a weakened live expression acceptable.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => {
@@ -2048,6 +2182,7 @@ for (const [name, fragment] of [
 }
 
 // Control 164: two canonical catalog tables in the same module section, with the live row
+observeControls(164);
 // reverted and the earlier table still complete, must not satisfy moduleTableRowOf.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
@@ -2070,6 +2205,7 @@ for (const [name, fragment] of [
 }
 
 // Control 165: two target rows in one canonical catalog are ambiguous and must not be accepted
+observeControls(165);
 // by a first-match lookup.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
@@ -2087,6 +2223,7 @@ for (const [name, fragment] of [
 }
 
 // Control 166: two target numbered items in the named section, with the original reverted, must
+observeControls(166);
 // not satisfy numberedItemOf through the first matching item.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
@@ -2106,6 +2243,7 @@ for (const [name, fragment] of [
 }
 
 // Controls 167-170: the per-unit coverage proof must be semantic, not a text-shaped ornament.
+observeControls({ start: 167, end: 170 });
 // Each mutant preserves a plausible JavaScript program while removing one live coverage edge:
 // erasing the expected artifact set, comparing against that expected set instead of the agent's
 // report, disabling the artifact loop in a dead branch, or skipping the documentation loop.
@@ -2135,6 +2273,7 @@ for (const [name, mutate] of [
 }
 
 // Controls 171-172: mutation calls inside template-literal interpolation are executable code,
+observeControls({ start: 171, end: 172 });
 // not inert documentation. The second probe also passes through an alias so masking the whole
 // template while scanning JavaScript cannot hide the root's mutation provenance.
 for (const [name, mutation] of [
@@ -2152,6 +2291,7 @@ for (const [name, mutation] of [
 }
 
 // Controls 173-176: direct root, nested-array, delete, and Reflect.set mutations are all
+observeControls({ start: 173, end: 176 });
 // forbidden. These isolated forms complement the alias-chain controls above and pin the exact
 // syntax families the mutation scanner promises to reject.
 for (const [name, mutation] of [
@@ -2171,6 +2311,7 @@ for (const [name, mutation] of [
 }
 
 // Controls 177-178: ordinary bookkeeping that merely reads immutable declarations is allowed.
+observeControls({ start: 177, end: 178 });
 // Length is a primitive, including through quoted bracket notation, so changing the local
 // counter cannot mutate the frozen MODULES graph.
 for (const [name, mutation] of [
@@ -2188,6 +2329,7 @@ for (const [name, mutation] of [
 }
 
 // Control 179: numberedItemOf requires one unambiguous live Operating mode section. Revert the
+observeControls(179);
 // real item and place a complete decoy in a second same-named section; a global first-match scan
 // would incorrectly satisfy the rule-text oracle.
 {
@@ -2208,6 +2350,7 @@ for (const [name, mutation] of [
 }
 
 // Control 180: a good numbered-item decoy immediately before the reverted live item is still an
+observeControls(180);
 // ambiguity. Exactly-one matching-item semantics must reject it rather than accepting the first.
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
@@ -2227,6 +2370,7 @@ for (const [name, mutation] of [
 }
 
 // Control 181: a truthy disjunction on a new line is still an unconditional bypass of the
+observeControls(181);
 // orchestration gate. The source checker must validate the complete expression, not just the
 // first line or the presence of the five conjunct names.
 {
@@ -2239,6 +2383,7 @@ for (const [name, mutation] of [
 }
 
 // Controls 182-185: each coverage signal must be produced by its live, reachable computation.
+observeControls({ start: 182, end: 185 });
 // Replacing a producer with an empty/zero literal leaves the five-way gate text intact, but makes
 // the run report COMPLETE for missing scope, slices, labels, or dropped agents. The validator pins
 // this whole reachable producer block separately from the final orchestration expression.
@@ -2271,6 +2416,7 @@ for (const [name, mutate] of [
 }
 
 // Controls 186-187: declaration order is part of the reachable workflow contract. Both helpers
+observeControls({ start: 186, end: 187 });
 // are moved below their first use while preserving valid JavaScript, so a source-text search that
 // ignores execution order cannot silently accept a temporal-dead-zone failure.
 {
@@ -2296,6 +2442,7 @@ for (const [name, mutate] of [
 }
 
 // Control 188: a dead canonical helper placed AFTER the weakened live helper must not repair it.
+observeControls(188);
 // This complements the pre-live decoy in Control 152 and pins declaration uniqueness/order in
 // both directions.
 {
@@ -2319,6 +2466,7 @@ function insertWorkflowMutation(source, name, mutation) {
 }
 
 // Controls 189-197: direct bindings into the frozen MODULES graph are rejected, including
+observeControls({ start: 189, end: 197 });
 // parenthesized/const/let/var roots, alias chains, array and object destructuring, and bracket
 // nested-array aliases. Derived `.map()` bindings remain rejected because their entries can still
 // reference the frozen graph; only primitive length bindings are positive controls.
@@ -2338,6 +2486,7 @@ for (const [number, name, mutation] of [
 }
 
 // Controls 198-199: binding a `.map()` result is an alias boundary, not a safe-copy boundary. The
+observeControls({ start: 198, end: 199 });
 // callback can return source entries, so mutating a descendant through the bound result must be
 // rejected just like a direct MODULES alias.
 for (const [number, name, mutation] of [
@@ -2349,6 +2498,7 @@ for (const [number, name, mutation] of [
 }
 
 // Controls 200-203: direct assignments to the root array's length are mutations too. Keep both
+observeControls({ start: 200, end: 203 });
 // dot and quoted bracket notation pinned for MODULES and AUDIT_UNITS.
 for (const [number, name, root, property] of [
   [200, 'direct MODULES length assignment', 'MODULES', '.length'],
@@ -2364,6 +2514,7 @@ for (const [number, name, root, property] of [
 }
 
 // Controls 204-212: the same direct-alias contract applies to AUDIT_UNITS, including all
+observeControls({ start: 204, end: 212 });
 // declaration kinds, alias chains, both destructuring forms, and bracket nested-array access.
 for (const [number, name, mutation] of [
   [204, 'parenthesized AUDIT_UNITS alias', 'const auditUnitsAlias = (AUDIT_UNITS); auditUnitsAlias.pop();'],
@@ -2384,6 +2535,7 @@ for (const [number, name, mutation] of [
 }
 
 // Controls 213-214: length is a primitive and remains safe through quoted bracket notation, but a
+observeControls({ start: 213, end: 214 });
 // `.filter()` result is still an alias boundary when it carries source entries to a descendant.
 for (const [number, name, mutation] of [
   [213, 'AUDIT_UNITS bracket-length binding', "let auditUnitCount = AUDIT_UNITS['length']; auditUnitCount += 1;"],
@@ -2396,6 +2548,7 @@ for (const [number, name, mutation] of [
 }
 
 // Controls 215-216: inline consumption/iteration is not binding and remains legal. These positive
+observeControls({ start: 215, end: 216 });
 // controls deliberately consume mapped primitive values and iterate the root directly, so a
 // validator that rejects every occurrence of the root identifier would be too broad.
 for (const [number, name, root] of [
@@ -2408,6 +2561,7 @@ for (const [number, name, root] of [
 }
 
 // Control 217: an alias-like variable name used only for unrelated local arrays in separate
+observeControls(217);
 // scopes is harmless. This catches a global name-set implementation that remembers a spelling
 // as an alias even when its RHS never references MODULES/AUDIT_UNITS.
 {
@@ -2423,6 +2577,7 @@ for (const [number, name, root] of [
 }
 
 // Control 218: a short-circuit expression that returns the immutable root on its truthy side is
+observeControls(218);
 // still an alias. The binding-site check must not be bypassed by the intervening `.length &&`.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -2431,6 +2586,7 @@ for (const [number, name, root] of [
 }
 
 // Controls 219-220: parenthesized primitive length reads remain safe. These are deliberately
+observeControls({ start: 219, end: 220 });
 // full binding expressions so the derived-value exception cannot accidentally depend on the root
 // being the first unparenthesized token or on dot notation alone.
 for (const [number, name, root, expression] of [
@@ -2443,6 +2599,7 @@ for (const [number, name, root, expression] of [
 }
 
 // Controls 221-224: binding-site diagnostics must fire even when the bound value is never
+observeControls({ start: 221, end: 224 });
 // mutated. This isolates direct roots, destructuring, and method-result bindings from the later
 // mutation scanner and prevents an alias from becoming invisible merely because it is unused.
 for (const [number, name, root, mutation] of [
@@ -2456,6 +2613,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 225-227: both increment directions are writes, whether applied to a root, a nested
+observeControls({ start: 225, end: 227 });
 // value, or the length property. Keep these as separate controls so each operator family remains
 // visible when a regex branch is changed.
 for (const [number, name, root, mutation] of [
@@ -2468,6 +2626,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 228-234: assignment operators beyond plain/arithmetical/logical assignment must be
+observeControls({ start: 228, end: 234 });
 // covered on root, nested, and length targets. The list mirrors every extra operator family in
 // workflowMutationCheck's write recognizer, including bitwise and all three shifts.
 for (const [number, name, root, mutation] of [
@@ -2484,6 +2643,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 235-238: logical/nullish assignment remains forbidden, while pure comparison and
+observeControls({ start: 235, end: 238 });
 // arrow-function reads remain legal. Keep reads as expression statements so they cannot be
 // confused with a binding whose RHS begins with a declarative root.
 for (const [number, name, root, mutation] of [
@@ -2500,6 +2660,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 239-240: mutator calls remain writes when the method or an intermediate nested
+observeControls({ start: 239, end: 240 });
 // property uses quoted bracket notation. These are deliberately static probes: the inserted
 // expressions need not execute, because workflowMutationCheck is validating the source contract.
 for (const [number, name, root, mutation] of [
@@ -2511,6 +2672,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 241-243: fully parenthesized root and nested chains must not hide a mutator or a
+observeControls({ start: 241, end: 243 });
 // postfix update from the write recognizer. Keep the root, nested-chain, and update forms
 // separate so each parenthesis boundary remains independently pinned.
 for (const [number, name, root, mutation] of [
@@ -2523,6 +2685,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 244-245: comments between a prefix update operator and its root are non-code and
+observeControls({ start: 244, end: 245 });
 // must not create a scanner gap. The line-comment case also proves the newline-separated form.
 for (const [number, name, root, mutation] of [
   [244, 'block-comment-separated prefix increment', 'MODULES', '/*c*/++MODULES;'],
@@ -2533,6 +2696,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Control 246: comments surrounding a quoted bracket mutator name are still lexical trivia. The
+observeControls(246);
 // property is statically known to be `push`, so the direct call must remain rejected.
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
@@ -2544,6 +2708,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 247-248: comments may occur at both property-boundary positions in a direct nested
+observeControls({ start: 247, end: 248 });
 // chain. They must not hide either the root-to-dot transition or the property after a dot.
 for (const [number, name, mutation] of [
   [247, 'comment between root and dot', "MODULES /* root-dot */ .categories.push('Z99');"],
@@ -2554,6 +2719,7 @@ for (const [number, name, mutation] of [
 }
 
 // Controls 249-253: statement-position mutations remain visible after control-flow headers and
+observeControls({ start: 249, end: 253 });
 // branch keywords. Grouping after `if` and prefix updates after `while`/`for` are especially easy
 // to misclassify as call-argument or postfix contexts when the preceding `)` is inspected.
 for (const [number, name, root, mutation] of [
@@ -2568,6 +2734,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 254-255: roots used as call arguments are reads, even when the call result is later
+observeControls({ start: 254, end: 255 });
 // mutated. Preserve these positive contexts so the direct-reference scanner does not reject every
 // occurrence of MODULES/AUDIT_UNITS merely because it is adjacent to parentheses or `.push()`.
 {
@@ -2588,6 +2755,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 256-261: ASI separates a completed root property read from the next prefix update,
+observeControls({ start: 256, end: 261 });
 // while a call followed by a line terminator still leaves the update attached to the new
 // statement.  Comments are lexical trivia here, so both comment forms preserve the same ASI
 // boundary.  The final two controls pin that `if`/`while` property names are not control-flow
@@ -2621,6 +2789,7 @@ for (const [number, name, property] of [
 }
 
 // Controls 262-269: ECMAScript treats U+2028/U+2029 as line terminators.  They must therefore
+observeControls({ start: 262, end: 269 });
 // terminate a line comment and close a multiline block comment before a prefix update; neither
 // Unicode separator may hide a write to either immutable root.  Keep the full 2x2x2 matrix so
 // each separator, comment form, and immutable root is independently pinned.  The block-comment
@@ -2641,6 +2810,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 270-272: a closing brace ends a statement/block context, so a prefix update on the
+observeControls({ start: 270, end: 272 });
 // same line is still a new write statement.  Cover control-flow, try/finally, and a bare block
 // separately; a scanner must not treat a preceding `}` as a continuation that hides the update.
 for (const [number, name, root, mutation] of [
@@ -2653,6 +2823,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Control 273: closing an object-literal/expression is not itself a mutation.  This positive
+observeControls(273);
 // case keeps brace-boundary handling from over-reporting a harmless object expression containing
 // an immutable-root read.
 {
@@ -2665,6 +2836,7 @@ for (const [number, name, root, mutation] of [
 }
 
 // Controls 274-275: a class declaration's closing brace also ends the preceding statement or
+observeControls({ start: 274, end: 275 });
 // declaration on the same line.  Keep both immutable roots covered so a brace-specific context
 // heuristic cannot hide a same-line prefix update after a class body.
 for (const [number, name, root] of [
@@ -2680,6 +2852,7 @@ for (const [number, name, root] of [
 }
 
 // Controls 276-277: private methods whose names are reserved words are still callable
+observeControls({ start: 276, end: 277 });
 // expressions.  Their call results are immediately invoked with a root expression on the next
 // line, so MODULES remains a call argument and must stay accepted rather than being mistaken for
 // a statement-position mutator after a keyword-named property.  Keep both #if and #while bounded
@@ -2702,6 +2875,7 @@ for (const [number, name, privateName] of [
 }
 
 // Controls 278-281: an export-default class declaration has a statement-level closing brace,
+observeControls({ start: 278, end: 281 });
 // including both the named and anonymous forms.  Keep both immutable roots covered: a context
 // heuristic that only recognizes `class Name {}` or only recognizes declaration names would let
 // the same-line prefix update escape.
@@ -2720,6 +2894,7 @@ for (const [number, name, root, declaration] of [
 }
 
 // Controls 282-285: ECMAScript class declarations may use Unicode identifier names, including
+observeControls({ start: 282, end: 285 });
 // Unicode escapes in IdentifierName position.  Both spellings must still classify an
 // export-default class body as a statement boundary for the following root update.
 for (const [number, name, root, className] of [
@@ -2737,6 +2912,7 @@ for (const [number, name, root, className] of [
 }
 
 // Controls 286-289: Unicode class syntax in expression/object positions is not itself a
+observeControls({ start: 286, end: 289 });
 // statement boundary.  These are positive reads, one class-expression and one object-literal
 // context per immutable root, guarding the declaration fix from becoming an over-broad class
 // or brace rejection.
@@ -2755,6 +2931,7 @@ for (const [number, name, root, expression] of [
 }
 
 // Controls 290-293: valid braced Unicode escapes in class names must not make the following
+observeControls({ start: 290, end: 293 });
 // update disappear at a class-boundary.  Keep both a dollar-sign escape and a letter escape,
 // each with a trailing literal identifier part, in both bare and export-default declarations.
 // The trailing part is important: a fallback scanner must not mistake the escaped closing `}`
@@ -2774,6 +2951,7 @@ for (const [number, name, root, declaration] of [
 }
 
 // Controls 294-297: class declarations can occur directly in switch case/default clauses.
+observeControls({ start: 294, end: 297 });
 // The label colon is a statement boundary for the class declaration, so an update after its
 // closing brace remains an executable mutation in either direction and for either root.
 for (const [number, name, root, label, operator] of [
@@ -2791,6 +2969,7 @@ for (const [number, name, root, label, operator] of [
 }
 
 // Controls 298-301: a completed postfix update before a line break does not turn the following
+observeControls({ start: 298, end: 301 });
 // class declaration into an expression continuation.  Pin both update directions and both roots
 // because the previous statement's postfix operator is an easy context leak for boundary scans.
 for (const [number, name, root, operator] of [
@@ -2808,6 +2987,7 @@ for (const [number, name, root, operator] of [
 }
 
 // Controls 302-305: class expressions in object-property and ternary-colon positions are not
+observeControls({ start: 302, end: 305 });
 // statement declarations.  Their closing braces must not poison the surrounding expression
 // context or cause an unrelated primitive read of an immutable root to be reported.
 for (const [number, name, root, expression] of [
@@ -2821,6 +3001,7 @@ for (const [number, name, root, expression] of [
 }
 
 // Controls 306-313: identifiers that merely contain a protected root name are unrelated local
+observeControls({ start: 306, end: 313 });
 // arrays.  Their own mutators must stay quiet; static rejection of escaped root/property spellings
 // is intentionally out of scope and is not asserted here.
 for (const [number, name, identifier] of [
@@ -2843,6 +3024,7 @@ for (const [number, name, identifier] of [
 }
 
 // Controls 314-319: a switch case expression may contain an object literal, a class expression,
+observeControls({ start: 314, end: 319 });
 // or an arrow body before its label colon. None of those colons is a statement boundary, but the
 // class declaration after the label is one; the following root update must therefore be rejected.
 for (const [number, name, root, caseExpression] of [
@@ -2862,6 +3044,7 @@ for (const [number, name, root, caseExpression] of [
 }
 
 // Controls 320-321: an astral IdentifierStart variable can be updated before a line break just
+observeControls({ start: 320, end: 321 });
 // like an ASCII local. The following class declaration must remain a statement boundary, so the
 // root update after it is rejected for both protected roots.
 for (const [number, name, root] of [
@@ -2877,6 +3060,7 @@ for (const [number, name, root] of [
 }
 
 // Controls 322-325: object-literal and ternary colons outside a switch are expression syntax, not
+observeControls({ start: 322, end: 325 });
 // labels. Keep these positive reads beside the switch-label negatives so a broad colon heuristic
 // cannot turn ordinary object/conditional expressions into false positives.
 for (const [number, name, root, expression] of [
@@ -2890,6 +3074,7 @@ for (const [number, name, root, expression] of [
 }
 
 // Controls 326-329: the colon that terminates a switch case may be preceded by one or more
+observeControls({ start: 326, end: 329 });
 // conditional-expression colons. These are expression syntax, not statement labels; after the
 // case is selected, the class declaration and root update are still reached and must be rejected.
 for (const [number, name, root, caseExpression] of [
@@ -2907,6 +3092,7 @@ for (const [number, name, root, caseExpression] of [
 }
 
 // Controls 330-335: each first clause ends at a case label after an automatic-semicolon-insertion
+observeControls({ start: 330, end: 335 });
 // boundary. The next clause contains a class declaration followed by the protected-root update.
 // Cover a call, an array literal, and an object literal for both immutable roots so case-label
 // scanning cannot lose the statement boundary at the preceding clause.
@@ -2927,6 +3113,7 @@ for (const [number, name, root, previousClause] of [
 }
 
 // Controls 336-339: object methods named like switch clauses are ordinary property definitions,
+observeControls({ start: 336, end: 339 });
 // not case/default labels. Their body reads of each immutable root must remain accepted.
 for (const [number, name, root, property] of [
   [336, 'property method named case', 'MODULES', 'case'],
@@ -2943,6 +3130,7 @@ for (const [number, name, root, property] of [
 }
 
 // Controls 340-341: `flag?.5:0` is a decimal/consequent conditional expression, not optional
+observeControls({ start: 340, end: 341 });
 // chaining.  The decimal immediately after `?.` changes tokenization, so its first colon belongs
 // to the ternary and the second colon terminates the switch case.  Keep the class declaration and
 // direct root update on the reached case path; a scanner that treats the first colon as the label
@@ -2960,6 +3148,7 @@ for (const [number, root] of [
 }
 
 // Controls 342-343: genuine optional chaining in a switch-case expression is not a ternary.  Keep
+observeControls({ start: 342, end: 343 });
 // the class declaration and direct root update on the reached case path: if `?.` is misclassified
 // as a ternary, the scanner suppresses the case label and loses the mutation, incorrectly
 // accepting both immutable roots.  The member property is deliberately followed by the final
@@ -2977,6 +3166,7 @@ for (const [number, root] of [
 }
 
 // Controls 344-347: a switch clause may end at the next case label by ASI after either a
+observeControls({ start: 344, end: 347 });
 // nullish-coalescing expression or a nullish assignment.  The following clause contains a class
 // declaration and a direct protected-root update, so losing the zero-depth final-colon boundary
 // would make the mutation disappear.  Cover both operators and both immutable roots.
@@ -2995,6 +3185,7 @@ for (const [number, name, root, previousClause] of [
 }
 
 // Control 348: the package manifest's exact Node.js floor is part of the live contract. A stale
+observeControls(348);
 // lower floor must fail with the dedicated engine diagnostic rather than being accepted silently.
 {
   const result = runValidateAgainstMutatedFiles(['package.json'], (source) => {
@@ -3005,6 +3196,7 @@ for (const [number, name, root, previousClause] of [
 }
 
 // Controls 349-354: the package manifest and both published workflows must keep the same Node 24
+observeControls({ start: 349, end: 354 });
 // contract. Each mutation is deliberately isolated: a validator that only checks one workflow,
 // or only checks that a setup-node step exists, must not make these controls pass.
 {
@@ -3034,6 +3226,7 @@ for (const [number, name, replacement, needles] of [
 }
 
 // Control 355: the shared helper's declared floor is itself part of the contract. Pinning only
+observeControls(355);
 // package.json would leave a stale executable guard able to accept a runtime the package rejects.
 {
   const result = runValidateAgainstMutatedFiles(['bin/node-version.js'], (source) => {
@@ -3045,6 +3238,7 @@ for (const [number, name, replacement, needles] of [
 }
 
 // Control 356: direct boundary oracle for the shared predicate. This is intentionally not a
+observeControls(356);
 // mutation of validate.mjs: it catches a helper that has the right spelling and exports but gets
 // the 23.x/24.0.0 boundary wrong. 24.0.0 prereleases remain below the stable floor.
 {
@@ -3062,6 +3256,7 @@ for (const [number, name, replacement, needles] of [
 }
 
 // Controls 357-360: every executable entry point carries its own runtime guard call. Commenting
+observeControls({ start: 357, end: 360 });
 // one call at a time must be visible to the repository validator; raw source matching would
 // otherwise accept the commented spelling as an executable guard.
 for (const [number, file] of [
@@ -3079,6 +3274,7 @@ for (const [number, file] of [
 }
 
 // Controls 361-364: the four entry points' maintainer-facing declarations must describe the same
+observeControls({ start: 361, end: 364 });
 // supported runtime. This catches a validator that enforces executable calls but lets stale
 // Node-16 comments remain in the shipped scripts.
 for (const [number, file, marker] of [
@@ -3095,6 +3291,7 @@ for (const [number, file, marker] of [
 }
 
 // Controls 365-366: the installers must declare the shared helper dependency as well as calling
+observeControls({ start: 365, end: 366 });
 // it. A guard call copied inline could otherwise drift away from the one audited predicate.
 for (const [number, file] of [
   [365, 'bin/install.js'],
@@ -3109,6 +3306,7 @@ for (const [number, file] of [
 }
 
 // Control 367: the helper's public guard export is a structural contract, not an implementation
+observeControls(367);
 // detail. Removing it must fail validation even though the floor constant remains present.
 {
   const result = runValidateAgainstMutatedFiles(['bin/node-version.js'], (source) => {
@@ -3120,6 +3318,7 @@ for (const [number, file] of [
 }
 
 // Control 368: latest Node 24 coverage does not substitute for the exact supported floor.
+observeControls(368);
 {
   const result = runValidateAgainstMutatedFiles(['.github/workflows/ci.yml'], (source) => {
     if (!source.includes('node-version: 24.0.0')) return null;
@@ -3129,6 +3328,7 @@ for (const [number, file] of [
 }
 
 // Controls 369-371: each workflow's named job must carry its own setup-node value. A valid decoy
+observeControls({ start: 369, end: 371 });
 // job elsewhere in the same file must not satisfy a stale value in the real repository-checks,
 // node-floor, or publish job.
 function mutateNamedWorkflowNodeVersion(source, jobName, expected, replacement, decoyJobName) {
@@ -3166,6 +3366,7 @@ for (const [number, file, job, expected, replacement, decoy, label] of [
 }
 
 // Control 372: the exported runtime guard must execute, not merely exist as a named function. A
+observeControls(372);
 // no-op replacement must make the validator's pure child probe observe the unsupported 23.x input.
 {
   const result = runValidateAgainstMutatedFiles(['bin/node-version.js'], (source) => {
@@ -3176,6 +3377,7 @@ for (const [number, file, job, expected, replacement, decoy, label] of [
 }
 
 // Controls 373-375: an unversioned second setup-node step inside the protected job can replace
+observeControls({ start: 373, end: 375 });
 // the pinned runtime. Count setup steps independently from their node-version values.
 for (const [number, file, job] of [
   [373, '.github/workflows/ci.yml', 'repository-checks'],
@@ -3195,6 +3397,7 @@ for (const [number, file, job] of [
 }
 
 // Controls 376-377: ECMAScript braced Unicode escapes permit arbitrarily many leading zeroes.
+observeControls({ start: 376, end: 377 });
 // These class declarations must still be recognized as statement boundaries, so the following
 // protected-root updates remain visible. Keeping one bare and one export-default spelling covers
 // both class-header paths without imposing an artificial six-digit spelling limit.
@@ -3211,6 +3414,7 @@ for (const [number, name, root, declaration] of [
 }
 
 // Controls 378-379: braced Unicode escapes whose numeric value is outside the Unicode scalar
+observeControls({ start: 378, end: 379 });
 // range (above 0x10FFFF or inside the surrogate range) are not identifier spellings. They must not
 // turn the following class body into a statement boundary and therefore must not produce the
 // workflow diagnostic. The source-only scan currently stays quiet, but an intentional future
@@ -3238,6 +3442,7 @@ function classifyInvalidUnicodeResult(result) {
 }
 
 // Controls 380-384: in-process calibration for every classifier branch. Control 381 preserves the
+observeControls({ start: 380, end: 384 });
 // exact intentional diagnostic against reintroduction of the former over-broad workflow predicate.
 // The remaining cases ensure that a generic status-1 error, the specific mutation diagnostic, or a
 // failed child cannot be accepted.
@@ -3274,19 +3479,34 @@ for (const [number, name, root, declaration] of [
   }
 }
 
-// Control 389: the source-level control registration invariant must reject a newly registered
-// control when the authoritative scope header is not updated. This is a counterfactual mutation:
-// the added label is never executed as a fixture, but dev/validate.mjs must still reject the
-// structurally inconsistent suite before any release-facing count can remain green.
-{
-  const result = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
-    const marker = '// Scope, stated honestly: 389 hand-written controls:';
+// Control 389: the two independent executable-registry counterfactuals must fail.
+observeControls(389);
+if (process.env.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1') {
+  const registrationRemoved = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
+    const marker = 'observeControls(389);';
     if (!source.includes(marker)) return null;
-    return source.replace(marker, `${marker}\n// Control 390: counterfactual registration without a header update.`);
-  });
-  expectFixture(result, 'Control 389: numbered control registration cannot outrun the scope header', 1, [
-    'numbered control 390 exceeds authoritative header 389',
+    return source.replace(marker, '// executable registration intentionally bypassed');
+  }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
+  expectFixture(registrationRemoved, 'Control 389: removing executable registration cannot pass', 1, [
+    'missing executable controls',
   ]);
+
+  const unlistedControlAdded = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
+    const registry = 'const CONTROL_REGISTRY_TOTAL = 389;';
+    const execution = 'observeControls(389);';
+    if (!source.includes(registry) || !source.includes(execution)) return null;
+    return source.replace(registry, 'const CONTROL_REGISTRY_TOTAL = 390;')
+      .replace(execution, `${execution}\nobserveControls(390);`);
+  }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
+  expectFixture(unlistedControlAdded, 'Control 389: registered control without header update is rejected', 1, [
+    'control registry/header mismatch',
+  ]);
+
+  const duplicateDiagnostics = [];
+  observeControls(389, new Set([389]), duplicateDiagnostics);
+  if (!duplicateDiagnostics.includes('executable control 389 was observed more than once')) {
+    failures.push('Control 389: duplicate executable registration was not rejected');
+  }
 }
 
 for (const fixture of cases) {
@@ -3298,8 +3518,16 @@ for (const fixture of cases) {
   }
 }
 
+const missingExecutedControls = [...CONTROL_REGISTRY].filter((id) => !observedControls.has(id));
+if (missingExecutedControls.length) {
+  failures.push(`missing executable controls: ${missingExecutedControls.join(', ')}`);
+}
+if (observedControls.size !== CONTROL_REGISTRY.size) {
+  failures.push(`executed control count ${observedControls.size} does not match registry count ${CONTROL_REGISTRY.size}`);
+}
+
 if (failures.length) {
   console.error(failures.map((failure) => `ERROR: ${failure}`).join('\n'));
   process.exit(1);
 }
-console.log(`fixture validation passed (${cases.length} cases)`);
+console.log(`fixture validation passed (${cases.length} cases; ${observedControls.size} controls executed)`);

@@ -280,7 +280,7 @@ function isRegexLiteralStart(source, index) {
 // Keep only executable JavaScript while preserving offsets/newlines.  This is deliberately a
 // separate view from stripJsComments(): the semantic workflow checks below must not be satisfied
 // by a quoted example, a comment, or a regexp body containing the same spelling.
-function maskJsNonCode(source) {
+function maskJsNonCode(source, { preserveLineComments = false } = {}) {
   // Keep UTF-16 code-unit offsets identical to `source`: Array.from() would collapse astral
   // characters (the workflow prompt contains emoji) and shift every later structural index.
   const output = source.split('');
@@ -353,9 +353,12 @@ function maskJsNonCode(source) {
       const character = source[index];
       const next = source[index + 1];
       if (character === '/' && next === '/') {
-        blankRange(index, index + 2);
+        if (!preserveLineComments) blankRange(index, index + 2);
         index += 2;
-        while (index < source.length && !isJsLineTerminator(source[index])) { blank(index); index += 1; }
+        while (index < source.length && !isJsLineTerminator(source[index])) {
+          if (!preserveLineComments) blank(index);
+          index += 1;
+        }
         continue;
       }
       if (character === '/' && next === '*') {
@@ -1764,9 +1767,10 @@ for (const [file, text] of categoryCountFileTexts) {
   }
 }
 
-// The fixture runner's scope header is the authoritative source for its control count. Keep the
-// release-facing copies in README and the current CHANGELOG section mechanically tied to that
-// header, while leaving revision-qualified historical counts free to document earlier states.
+// The fixture runner's executable registry is the authority for its control count. The scope
+// header and release-facing copies must agree with that registry, while revision-qualified
+// historical counts remain free to document earlier states. Read the declaration from the
+// comment/string-masked executable view so a template-literal or quoted decoy cannot register.
 const fixtureSource = fs.readFileSync(path.join(root, 'dev/validate-fixtures.mjs'), 'utf8');
 const fixtureCountHeaderMatches = [...fixtureSource.matchAll(/^\/\/ Scope, stated honestly: (\d+) hand-written controls:/gm)];
 if (fixtureCountHeaderMatches.length !== 1) {
@@ -1778,16 +1782,30 @@ const fixtureControlCount = fixtureCountHeaderMatches.length === 1
 if (!Number.isSafeInteger(fixtureControlCount) || fixtureControlCount <= 0) {
   errors.push(`dev/validate-fixtures.mjs: authoritative control count must be a positive safe integer (got ${fixtureControlCount ?? 'missing'})`);
 }
+const fixtureExecutableSource = maskJsNonCode(fixtureSource);
+const fixtureRegistryMatches = [...fixtureExecutableSource.matchAll(/^const CONTROL_REGISTRY_TOTAL = (\d+);$/gm)];
+if (fixtureRegistryMatches.length !== 1) {
+  errors.push(`dev/validate-fixtures.mjs: executable control registry declaration must occur exactly once (found ${fixtureRegistryMatches.length})`);
+}
+const fixtureRegistryCount = fixtureRegistryMatches.length === 1
+  ? Number.parseInt(fixtureRegistryMatches[0][1], 10)
+  : null;
+if (!Number.isSafeInteger(fixtureRegistryCount) || fixtureRegistryCount <= 0) {
+  errors.push(`dev/validate-fixtures.mjs: executable control registry count must be a positive safe integer (got ${fixtureRegistryCount ?? 'missing'})`);
+}
+if (fixtureControlCount !== null && fixtureRegistryCount !== null && fixtureControlCount !== fixtureRegistryCount) {
+  errors.push(`dev/validate-fixtures.mjs: scope header ${fixtureControlCount} does not match executable registry ${fixtureRegistryCount}`);
+}
 
-// Control labels are the fixture suite's source-level registration grammar. A singular label
-// registers one control; a plural range registers every integer in the inclusive range. Parse
-// only labels at the beginning of a line, so prose references such as "Control 2" do not become
-// registrations. This proves the stated total against the numbered suite itself while preserving
-// the compact ranges used by loop-generated controls. It is intentionally a source invariant, not
-// a runtime count derived from the same header value: every id 1..headerTotal must be present once,
-// and no label may register an id above the header.
-const controlLabelMatches = [...fixtureSource.matchAll(/^\/\/ Controls? (\d+)(?:-(\d+))?:[ \t]/gm)];
-const registeredControlIds = new Set();
+// Control labels are only a secondary source-label inventory. A singular label names one control;
+// a plural range names every integer in the inclusive range. Parse only labels at the beginning
+// of a line, so prose references such as "Control 2" do not become inventory entries. The
+// executable registry and observed runtime set above remain the release-facing authority; this
+// inventory catches documentation drift and preserves compact descriptions of loop-generated
+// controls without pretending that comments prove execution.
+const fixtureLineCommentSource = maskJsNonCode(fixtureSource, { preserveLineComments: true });
+const controlLabelMatches = [...fixtureLineCommentSource.matchAll(/^\/\/ Controls? (\d+)(?:-(\d+))?:[ \t]/gm)];
+const sourceLabelControlIds = new Set();
 if (fixtureControlCount !== null) {
   for (const match of controlLabelMatches) {
     const start = Number.parseInt(match[1], 10);
@@ -1801,16 +1819,16 @@ if (fixtureControlCount !== null) {
       continue;
     }
     for (let id = start; id <= end; id += 1) {
-      if (registeredControlIds.has(id)) errors.push(`dev/validate-fixtures.mjs: numbered control ${id} is registered more than once`);
-      registeredControlIds.add(id);
+      if (sourceLabelControlIds.has(id)) errors.push(`dev/validate-fixtures.mjs: source label for control ${id} occurs more than once`);
+      sourceLabelControlIds.add(id);
     }
   }
   const missingControlIds = [];
   for (let id = 1; id <= fixtureControlCount; id += 1) {
-    if (!registeredControlIds.has(id)) missingControlIds.push(id);
+    if (!sourceLabelControlIds.has(id)) missingControlIds.push(id);
   }
   if (missingControlIds.length) {
-    errors.push(`dev/validate-fixtures.mjs: numbered controls must cover every id 1..${fixtureControlCount}; missing ${missingControlIds.join(', ')}`);
+    errors.push(`dev/validate-fixtures.mjs: source-label inventory must cover every id 1..${fixtureControlCount}; missing ${missingControlIds.join(', ')}`);
   }
 }
 
