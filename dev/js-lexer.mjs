@@ -169,6 +169,22 @@ function scanLexical(source) {
       previousToken = 'word';
       continue;
     }
+    // A private name is an IdentifierName token, even when its spelling is a reserved word.
+    // Carry that property role through the call so `this.#if() / value` cannot be mistaken for
+    // a control-header close followed by a regexp.  Keep the hash and name visible to preserve
+    // offsets; only the token-role state changes.
+    if (character === '#' && isIdentifierStart(next)) {
+      index += 1;
+      const start = index;
+      index += 1;
+      while (index < source.length && isIdentifierContinue(source[index])) { index += 1; step(); }
+      previousWord = source.slice(start, index);
+      previousWasDot = false;
+      previousWasProperty = true;
+      canStartRegex = false;
+      previousToken = 'word';
+      continue;
+    }
     if (/[0-9]/u.test(character) || (character === '.' && /[0-9]/u.test(next))) {
       index += 1;
       while (index < source.length && /[A-Za-z0-9._]/u.test(source[index])) { index += 1; step(); }
@@ -199,12 +215,15 @@ function scanLexical(source) {
     }
     if (character === ')' || character === ']' || character === '}') {
       const expected = character === ')' ? 'paren' : character === ']' ? 'bracket' : 'brace';
-      let entry = null;
-      for (let cursor = stack.length - 1; cursor >= 0; cursor -= 1) {
-        if (stack[cursor].type === expected || (character === '}' && stack[cursor].type === 'template')) {
-          entry = stack.splice(cursor, 1)[0]; break;
-        }
+      // Valid JavaScript closes the innermost delimiter.  Searching past a mismatched top entry
+      // leaves it on the stack and lets repeated bad closers rescan the same prefix quadratically.
+      // Reject malformed nesting immediately; callers already treat a lexical failure as a
+      // fail-closed result, and every inspected stack entry is now constant work.
+      const entry = stack.at(-1);
+      if (!entry || (entry.type !== expected && !(character === '}' && entry.type === 'template'))) {
+        throw new Error('JavaScript lexical delimiter mismatch');
       }
+      stack.pop();
       if (entry?.type === 'template') { mode = entry.returnMode; canStartRegex = false; }
       else if (character === ')') canStartRegex = Boolean(entry?.control);
       else if (character === '}') canStartRegex = Boolean(entry?.block);
@@ -333,13 +352,19 @@ function completionDiagnostics(source) {
     const beforeBeforeLast = significant[significant.length - 3];
     const beforeBeforeBeforeLast = significant[significant.length - 4];
     if (last?.kind === 'word' && (completionName(last.value) || aliases.has(last.value))) {
+      const aliasReference = aliases.has(last.value) && !completionName(last.value);
       if (beforeLast?.value === '.' || beforeLast?.value === '?.') return null;
-      if (beforeLast && ['number', 'close'].includes(beforeLast.kind)) return null;
+      if (beforeLast?.kind === 'number') return null;
+      // A canonical name or alias immediately after a call/array close is not a call.  A block
+      // close, however, is a valid statement boundary for an alias reference; retaining that
+      // case is what keeps an out-of-scope alias banned by the canonical-only policy.
+      if (beforeLast?.kind === 'close'
+        && (!aliasReference || beforeLast.value !== '}')) return null;
       if (beforeLast?.kind === 'word' && !COMPLETION_PREFIX_WORDS.has(beforeLast.value)) return null;
-      return { outcome: 1, id: 0, index: last.start };
+      return { outcome: 1, id: 0, index: last.start, canonical: last.value === COMPLETION_NAME };
     }
     if (last?.kind === 'close' && last.groupName && completionName(last.groupName)) {
-      return { outcome: 1, id: 0, index: last.start };
+      return { outcome: 1, id: 0, index: last.start, canonical: false };
     }
     const calleeToken = beforeBeforeLast?.kind === 'word' && completionName(beforeBeforeLast.value)
       ? beforeBeforeLast : beforeBeforeLast?.kind === 'close' && beforeBeforeLast.groupName
@@ -347,12 +372,12 @@ function completionDiagnostics(source) {
     if (last?.kind === 'word' && (last.value === 'call' || last.value === 'apply')
       && beforeLast?.value === '.' && calleeToken
       && (!beforeBeforeBeforeLast || !['word', 'number', 'close'].includes(beforeBeforeBeforeLast.kind))) {
-      return { outcome: last.value === 'call' ? 2 : 1, id: last.value === 'call' ? 1 : 1, apply: last.value === 'apply', index: calleeToken.start };
+      return { outcome: last.value === 'call' ? 2 : 1, id: last.value === 'call' ? 1 : 1, apply: last.value === 'apply', index: calleeToken.start, canonical: false };
     }
     if (last?.kind === 'punct' && last.value === '?.'
       && ((beforeLast?.kind === 'word' && completionName(beforeLast.value))
         || (beforeLast?.kind === 'close' && completionName(beforeLast.groupName)))) {
-      return { outcome: 1, id: 0, index: beforeLast.start };
+      return { outcome: 1, id: 0, index: beforeLast.start, canonical: false };
     }
     return null;
   };
@@ -367,7 +392,7 @@ function completionDiagnostics(source) {
       : frame.kind === 'paren' && frame.call
         ? { kind: 'other' }
         : summary(frame.args[0]);
-    if (frame.call && isUnconditional(summary(frame.args[frame.call.outcome] || []), frame.call)) {
+    if (frame.call && (!frame.call.canonical || isUnconditional(summary(frame.args[frame.call.outcome] || []), frame.call))) {
       let idSummary = summary(frame.args[frame.call.id ?? 0] || []);
       if (frame.call.apply && idSummary.kind === 'array') idSummary = idSummary.values?.[0] || { kind: 'other' };
       const id = idSummary.kind === 'number' && /^(?:0|[1-9][0-9]*)$/u.test(idSummary.value)
@@ -388,6 +413,11 @@ function completionDiagnostics(source) {
     addAtom(token);
     significant.push(token);
   };
+  const rememberAssignedAlias = (equalsIndex, referenceName) => {
+    if (!referenceName || significant[equalsIndex]?.value !== '=') return;
+    const target = significant[equalsIndex - 1];
+    if (target?.kind === 'word' && target.value !== COMPLETION_NAME) aliases.add(target.value);
+  };
   for (let index = 0; index < executable.length;) {
     step();
     const character = executable[index];
@@ -399,9 +429,8 @@ function completionDiagnostics(source) {
       const token = { kind: 'word', value, start: index };
       const prior = significant.at(-1);
       const priorPrior = significant.at(-2);
-      if (prior?.value === '=' && priorPrior?.kind === 'word'
-        && (significant.at(-3)?.value === 'const' || significant.at(-3)?.value === 'let' || significant.at(-3)?.value === 'var')
-        && completionName(value)) aliases.add(priorPrior.value);
+      if (prior?.value === '=' && priorPrior?.kind === 'word' && completionName(value)
+        && executable[end] !== '(') rememberAssignedAlias(significant.length - 1, value);
       emit(token); index = end; continue;
     }
     if (/[0-9]/u.test(character)) {
@@ -411,11 +440,11 @@ function completionDiagnostics(source) {
     }
     if (character === '(') {
       const call = callInfo();
-      const frame = { kind: 'paren', argument: 0, args: [[]], call };
+      const frame = { kind: 'paren', argument: 0, args: [[]], call, openSignificantIndex: significant.length };
       stack.push(frame); significant.push({ kind: 'open', frame, start: index }); index += 1; continue;
     }
     if (character === '[' || character === '{') {
-      const frame = { kind: character === '[' ? 'array' : 'object', argument: 0, args: [[]] };
+      const frame = { kind: character === '[' ? 'array' : 'object', argument: 0, args: [[]], openSignificantIndex: significant.length };
       stack.push(frame); significant.push({ kind: 'open', frame, start: index }); index += 1; continue;
     }
     if (character === ',') {
@@ -431,6 +460,7 @@ function completionDiagnostics(source) {
       if (!frame) { emit({ kind: 'punct', value: character, start: index }); index += 1; continue; }
       const group = closeFrame(frame);
       const close = { kind: 'close', value: character, frame, groupName: group.groupName, start: index };
+      if (group.groupName) rememberAssignedAlias(frame.openSignificantIndex - 1, group.groupName);
       significant.push(close);
       addAtom(group);
       index += 1; continue;

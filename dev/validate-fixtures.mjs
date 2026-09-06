@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 399 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 409 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 371 spawn a validator child and 28 are in-process (the junction alias and direct oracles); there
+// 371 spawn a validator child and 38 are in-process (the junction alias and direct oracles); there
 // are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
 // probes (B5/B26). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -72,7 +72,7 @@ const failures = [];
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 399;
+const CONTROL_REGISTRY_TOTAL = 409;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -3864,6 +3864,70 @@ observeControls(399);
 let bounded = false;
 try { literalTrueCompletionDiagnostics('('.repeat(100_001)); } catch { bounded = true; }
 completeCurrentControlScope(399, bounded);
+
+// Controls 400-402: delimiter mismatches fail closed without a backward stack walk, and the
+// shared lexer accepts work exactly at its operation budget but rejects work above it.  These
+// controls use deterministic exception/result oracles; elapsed time is intentionally not part of
+// the assertion.
+observeControls({ start: 400, end: 402 });
+for (const [number, source, expected] of [
+  [400, '('.repeat(50_000) + ']'.repeat(50_000), /delimiter mismatch/u],
+  [401, 'x'.repeat(2_000_000), null],
+  [402, 'x'.repeat(2_000_001), /deterministic budget/u],
+]) {
+  let error = null;
+  try { literalTrueCompletionDiagnostics(source); } catch (caught) { error = caught; }
+  const passed = expected === null ? !error : Boolean(error && expected.test(error.message));
+  if (!passed) failures.push(`Control ${number}: lexical budget/mismatch probe did not match its deterministic oracle`);
+  completeCurrentControlScope(number, passed);
+}
+
+// Controls 403-404: private names are IdentifierName tokens even when their spelling is a
+// keyword.  A live division after `this.#if()` must remain visible, while a real regexp in the
+// same role must remain masked.
+observeControls({ start: 403, end: 404 });
+for (const [number, source, expectedVisible] of [
+  [403, 'class C { #if() { return 2; } m() { return this.#if() / MODULES.push({}) / 2; } }', true],
+  [404, 'class C { #if() { return 2; } m() { return /MODULES.push({})/.test(x); } }', false],
+]) {
+  const masked = maskJsNonCode(source);
+  const passed = masked.includes('MODULES.push') === expectedVisible;
+  if (!passed) failures.push(`Control ${number}: private keyword-name slash role masking mismatch`);
+  completeCurrentControlScope(number, passed);
+}
+
+// Controls 405-408: canonical-only completion enforcement must still see aliases introduced by
+// assignment or grouping, and must not let a reassignment or scope boundary make a stale alias
+// look safe.  The policy deliberately bans every executable alias reference instead of trying to
+// model JavaScript binding lifetimes.
+observeControls({ start: 405, end: 408 });
+for (const [number, source, expected] of [
+  [405, 'let done; done = completeCurrentControlScope; done(number, passed);', [null]],
+  [406, 'const grouped = (completeCurrentControlScope); grouped(number, passed);', [null]],
+  [407, 'let stale = completeCurrentControlScope; stale = other; stale(number, passed);', [null]],
+  [408, '{ const scoped = completeCurrentControlScope; } scoped(number, passed);', [null]],
+]) {
+  const actual = literalTrueCompletionViolations(source);
+  const passed = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!passed) failures.push(`Control ${number}: noncanonical completion reference diagnostics mismatch (got ${JSON.stringify(actual)})`);
+  completeCurrentControlScope(number, passed);
+}
+
+// Control 409: mutating the actual completion loop to an unconditional literal must be visible to
+// the source gate, not merely keep advancing the registry with a forged success.
+observeControls(409);
+{
+  const marker = 'completeCurrentControlScope(number, passed);';
+  const anchor = '// Controls 400-402:';
+  const start = fixtureSource.indexOf(anchor);
+  const markerIndex = start < 0 ? -1 : fixtureSource.indexOf(marker, start);
+  const mutated = markerIndex < 0 ? null : fixtureSource.slice(0, markerIndex)
+    + fixtureSource.slice(markerIndex).replace(marker, 'completeCurrentControlScope(number, true);');
+  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
+  const passed = violations.length === 1 && violations[0] === null;
+  if (!passed) failures.push(`Control 409: actual-loop literal-true mutation was not rejected (got ${JSON.stringify(violations)})`);
+  completeCurrentControlScope(409, passed);
+}
 
 for (const fixture of cases) {
   const source = fs.readFileSync(path.join(fixtureRoot, fixture.file), 'utf8');
