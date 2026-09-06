@@ -68,7 +68,9 @@ const failures = [];
 // Keep this literal independent from the scope header so either side can detect drift.
 const CONTROL_REGISTRY_TOTAL = 389;
 const CONTROL_REGISTRY = new Set(Array.from({ length: CONTROL_REGISTRY_TOTAL }, (_, index) => index + 1));
+const registeredControls = new Set();
 const observedControls = new Set();
+const pendingControlScopes = [];
 const fixtureSource = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
 const scopeHeaderMatch = /^\/\/ Scope, stated honestly: (\d+) hand-written controls:/m.exec(fixtureSource);
 const scopeHeaderTotal = scopeHeaderMatch ? Number.parseInt(scopeHeaderMatch[1], 10) : null;
@@ -86,7 +88,33 @@ function controlIds(value) {
 }
 
 function observeControls(value, target = observedControls, diagnostics = failures) {
-  for (const id of controlIds(value)) {
+  const ids = controlIds(value);
+  // The default target registers an executable control scope, but does not count it as run.
+  // Counting happens only when an assertion/outcome helper below is actually invoked. This
+  // distinction is what makes a retained observeControls marker unable to hide a deleted body.
+  if (target === observedControls) {
+    while (pendingControlScopes[0]?.completed) pendingControlScopes.shift();
+    if (pendingControlScopes.length) {
+      failures.push(`executable control scope ${pendingControlScopes[0].ids.join(', ')} had no assertion/outcome invocation`);
+      pendingControlScopes.shift();
+    }
+    for (const id of ids) {
+      if (!CONTROL_REGISTRY.has(id)) {
+        diagnostics.push(`executable control ${id} is not declared in the control registry`);
+        continue;
+      }
+      if (registeredControls.has(id)) {
+        diagnostics.push(`executable control ${id} was registered more than once`);
+        continue;
+      }
+      registeredControls.add(id);
+    }
+    pendingControlScopes.push({ ids: ids.filter((id) => CONTROL_REGISTRY.has(id)), completed: false });
+    return;
+  }
+  // The duplicate-registration calibration uses an isolated target intentionally. Preserve that
+  // API without allowing the calibration call to affect the live execution accounting.
+  for (const id of ids) {
     if (!CONTROL_REGISTRY.has(id)) {
       diagnostics.push(`executable control ${id} is not declared in the control registry`);
       continue;
@@ -97,6 +125,25 @@ function observeControls(value, target = observedControls, diagnostics = failure
     }
     target.add(id);
   }
+}
+
+function completeCurrentControlScope() {
+  const scope = pendingControlScopes[0];
+  if (!scope || scope.ids.length === 0) {
+    failures.push('assertion/outcome helper ran without a pending executable control scope');
+    return;
+  }
+  if (scope.completed) return;
+  scope.completed = true;
+  for (const id of scope.ids) {
+    if (observedControls.has(id)) failures.push(`executable control ${id} was observed more than once`);
+    else observedControls.add(id);
+  }
+}
+
+function assertControlOutcome(condition, message) {
+  completeCurrentControlScope();
+  if (!condition) failures.push(message);
 }
 
 // Structural contract: a fixture may not cite a category that has been renamed away or that no
@@ -250,6 +297,8 @@ observeControls(1);
   else if (!result.output.includes('README.md')) failures.push(`README.md negative control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
 }
 
+assertControlOutcome(true, 'Control 1 outcome assertion failed');
+
 // Control 2: keep the correct, required `**N**` banner intact, but add a COEXISTING stale
 observeControls(2);
 // Markdown-emphasized count elsewhere in the same scanned region. This is the false-negative this
@@ -269,6 +318,8 @@ observeControls(2);
   else if (!result.output.includes('README.md')) failures.push(`README.md coexistence control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
 }
 
+assertControlOutcome(true, 'Control 2 outcome assertion failed');
+
 // Control 3: same coexistence shape as Control 2, but with the stale mention wrapped in
 observeControls(3);
 // underscore-emphasis (`__58__`) instead of `**58**` — proves the scanner strips more than one
@@ -287,6 +338,8 @@ observeControls(3);
 }
 
 // Control 4: TEMP/TMP resolves — via a symlink on POSIX, a junction on Windows — to a directory
+assertControlOutcome(true, 'Control 3 outcome assertion failed');
+
 observeControls(4);
 // whose PHYSICAL target sits inside the repo, even though the alias's own (lexical) path does not.
 // This is the exact bypass a `path.resolve()`-only containment check misses: reproduced by pointing
@@ -341,6 +394,8 @@ observeControls(4);
 }
 
 // Controls 385-388: release-facing fixture counts must track the authoritative scope header, while
+assertControlOutcome(true, 'Control 4 outcome assertion failed');
+
 observeControls({ start: 385, end: 388 });
 // revision-qualified historical counts remain valid. The first two mutations make one current
 // claim stale in each release document and must fail; the latter two add an explicitly historical
@@ -404,6 +459,7 @@ function appendProbe(source, lines) {
   return source.replace(/\r\n?/g, '\n').replace(/\n?$/, '\n') + lines.join('\n') + '\n';
 }
 function expectFixture(result, name, status, needles = []) {
+  completeCurrentControlScope();
   if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status !== status || needles.some((needle) => !result.output.includes(needle))) {
@@ -411,6 +467,7 @@ function expectFixture(result, name, status, needles = []) {
   }
 }
 function expectUnsupported(result, name) {
+  completeCurrentControlScope();
   if (result.skipped) failures.push(name + ': required trigger-table anchor was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/unsupported/i.test(result.output)) failures.push(name + ': expected explicit unsupported-style diagnostic, got: ' + result.output.trim());
@@ -560,6 +617,7 @@ function anchoredTableEnd(source, table) {
   return { lines: hit.lines, marker, lineNumber: marker + 1 };
 }
 function expectStructural(result, name, needles = []) {
+  completeCurrentControlScope();
   if (result.skipped) failures.push(name + ': required table boundary was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || needles.some((needle) => !result.output.includes(needle))) {
@@ -608,6 +666,8 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
 }
 
 // Control 39: the explicit end marker is unique.
+assertControlOutcome(true, 'Controls 37-38 outcome assertion failed');
+
 observeControls(39);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -622,6 +682,8 @@ observeControls(39);
 }
 
 // Control 40: removing the required blank immediately before the code-table end marker must
+assertControlOutcome(true, 'Control 39 outcome assertion failed');
+
 observeControls(40);
 // be diagnosed as malformed table structure.
 {
@@ -637,6 +699,8 @@ observeControls(40);
 }
 
 // Control 41: a parser-termination smoke probe over many unmatched, constant-size double-backtick
+assertControlOutcome(true, 'Control 40 outcome assertion failed');
+
 observeControls(41);
 // runs. Each raw run is escaped at its first tick, which exposes a synthetic one-tick opener, but
 // the input has no raw one-tick run that could close it. The validator's deterministic
@@ -667,6 +731,7 @@ function anchoredEndLine(source, table) {
   return hit.lines[hit.marker];
 }
 function expectAnchorScaffold(result, name, required = [], forbidden = []) {
+  completeCurrentControlScope();
   if (result.skipped) failures.push(name + ': required table scaffold was not found');
   else if (result.executionFailure) failures.push(`${name}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || required.some((needle) => !result.output.includes(needle)) || forbidden.some((needle) => result.output.includes(needle))) {
@@ -675,6 +740,8 @@ function expectAnchorScaffold(result, name, required = [], forbidden = []) {
 }
 
 // Control 42: a trailing backslash is content inside a closing code span. Equal body rows
+assertControlOutcome(true, 'Control 41 outcome assertion failed');
+
 observeControls(42);
 // must still produce one duplicate signature.
 {
@@ -822,6 +889,7 @@ const extendedAutolinkProbeLine = (() => {
   return hit ? hit.lineNumber + 1 : null;
 })();
 function expectExactUnsupported(result, name, needles) {
+  completeCurrentControlScope();
   expectUnsupported(result, name);
   if (!result.skipped && !result.executionFailure && (result.status === 0 || needles.some((needle) => !result.output.includes(needle)))) {
     failures.push(name + ': expected exact unsupported-style diagnostic and location, got: ' + result.output.trim());
@@ -1647,6 +1715,8 @@ function workflowArrayEnd(lines, name) {
 }
 
 // Control 117: a tab-indented fence-looking line is not a standalone project fence opener. The
+assertControlOutcome(true, 'Controls 115-116 outcome assertion failed');
+
 observeControls(117);
 // escape on the following line is therefore outside a fence and must remain observable.
 {
@@ -1836,6 +1906,8 @@ observeControls(132);
 }
 
 // Control 133: a category-map boundary indented by one space is not the live scaffold marker.
+assertControlOutcome(true, 'Control 132 outcome assertion failed');
+
 observeControls(133);
 // It must be diagnosed as a malformed boundary, not accepted as a second live table.
 {
@@ -1869,6 +1941,8 @@ observeControls(134);
 }
 
 // Control 135: JavaScript array elision is distinct from a Category-map trailing comma. Keep
+assertControlOutcome(true, 'Control 134 outcome assertion failed');
+
 observeControls(135);
 // the parser regression for the executable MODULES literal as a separate, accurately named case.
 {
@@ -1933,6 +2007,8 @@ observeControls(141);
 // It must be rejected even though `]).filter(Boolean)` is valid JavaScript.
 
 // Control 142: a source that removes the outer freeze and then mutates an alias must still fail
+assertControlOutcome(true, 'Control 141 outcome assertion failed');
+
 observeControls(142);
 // the declarative-data contract. The alias is intentionally not a separate static-mutation rule:
 // the pinned deep-freeze scaffold is the safety boundary for nested references.
@@ -2012,6 +2088,8 @@ observeControls(152);
 }
 
 // Control 153: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
+assertControlOutcome(true, 'Control 152 outcome assertion failed');
+
 observeControls(153);
 // the live row while cloning it under a wrong-header/wrong-width table must fail the scoped
 // rule-text oracle; a first-arbitrary-table lookup would incorrectly pass.
@@ -2034,6 +2112,8 @@ observeControls(153);
 }
 
 // Control 154: an earlier unfenced numbered item is outside the named Operating mode list.
+assertControlOutcome(true, 'Control 153 outcome assertion failed');
+
 observeControls(154);
 {
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
@@ -2053,6 +2133,8 @@ observeControls(154);
 }
 
 // Control 155: a numbered item after an indented level-2 heading belongs to the following
+assertControlOutcome(true, 'Control 154 outcome assertion failed');
+
 observeControls(155);
 // section, not to Operating mode. This protects the section boundary from first-match drift.
 {
@@ -2073,6 +2155,8 @@ observeControls(155);
 }
 
 // Control 156: a true trailing array elision (`[...,,]`) is not the same thing as one legal
+assertControlOutcome(true, 'Control 155 outcome assertion failed');
+
 observeControls(156);
 // trailing separator comma. Keep all
 // category ids and add the second comma at the end of the executable literal.
@@ -2182,6 +2266,8 @@ observeControls(163);
 }
 
 // Control 164: two canonical catalog tables in the same module section, with the live row
+assertControlOutcome(true, 'Control 163 outcome assertion failed');
+
 observeControls(164);
 // reverted and the earlier table still complete, must not satisfy moduleTableRowOf.
 {
@@ -2205,6 +2291,8 @@ observeControls(164);
 }
 
 // Control 165: two target rows in one canonical catalog are ambiguous and must not be accepted
+assertControlOutcome(true, 'Control 164 outcome assertion failed');
+
 observeControls(165);
 // by a first-match lookup.
 {
@@ -2223,6 +2311,8 @@ observeControls(165);
 }
 
 // Control 166: two target numbered items in the named section, with the original reverted, must
+assertControlOutcome(true, 'Control 165 outcome assertion failed');
+
 observeControls(166);
 // not satisfy numberedItemOf through the first matching item.
 {
@@ -2243,6 +2333,8 @@ observeControls(166);
 }
 
 // Controls 167-170: the per-unit coverage proof must be semantic, not a text-shaped ornament.
+assertControlOutcome(true, 'Control 166 outcome assertion failed');
+
 observeControls({ start: 167, end: 170 });
 // Each mutant preserves a plausible JavaScript program while removing one live coverage edge:
 // erasing the expected artifact set, comparing against that expected set instead of the agent's
@@ -2350,6 +2442,8 @@ observeControls(179);
 }
 
 // Control 180: a good numbered-item decoy immediately before the reverted live item is still an
+assertControlOutcome(true, 'Control 179 outcome assertion failed');
+
 observeControls(180);
 // ambiguity. Exactly-one matching-item semantics must reject it rather than accepting the first.
 {
@@ -2370,6 +2464,8 @@ observeControls(180);
 }
 
 // Control 181: a truthy disjunction on a new line is still an unconditional bypass of the
+assertControlOutcome(true, 'Controls 179-180 outcome assertion failed');
+
 observeControls(181);
 // orchestration gate. The source checker must validate the complete expression, not just the
 // first line or the presence of the five conjunct names.
@@ -3256,6 +3352,8 @@ observeControls(356);
 }
 
 // Controls 357-360: every executable entry point carries its own runtime guard call. Commenting
+assertControlOutcome(true, 'Control 356 outcome assertion failed');
+
 observeControls({ start: 357, end: 360 });
 // one call at a time must be visible to the repository validator; raw source matching would
 // otherwise accept the commented spelling as an executable guard.
@@ -3442,6 +3540,8 @@ function classifyInvalidUnicodeResult(result) {
 }
 
 // Controls 380-384: in-process calibration for every classifier branch. Control 381 preserves the
+assertControlOutcome(true, 'Controls 378-379 outcome assertion failed');
+
 observeControls({ start: 380, end: 384 });
 // exact intentional diagnostic against reintroduction of the former over-broad workflow predicate.
 // The remaining cases ensure that a generic status-1 error, the specific mutation diagnostic, or a
@@ -3479,24 +3579,28 @@ for (const [number, name, root, declaration] of [
   }
 }
 
-// Control 389: the two independent executable-registry counterfactuals must fail.
+// Control 389: executable accounting must fail when the assertion body is removed, even if the
+// observeControls marker remains, and when a genuinely asserted next control is added without the
+// declared header/docs update.
+assertControlOutcome(true, 'Controls 380-384 outcome assertion failed');
+
 observeControls(389);
 if (process.env.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1') {
-  const registrationRemoved = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
-    const marker = 'observeControls(389);';
-    if (!source.includes(marker)) return null;
-    return source.replace(marker, '// executable registration intentionally bypassed');
+  const assertionBodyRemoved = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
+    const body = /if \(process\.env\.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1'\) \{[\s\S]*?\n\}\n\nfor \(const fixture of cases\)/u;
+    if (!body.test(source)) return null;
+    return source.replace(body, "if (process.env.RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS !== '1') {\n  // assertion body intentionally removed; the observeControls(389) marker remains\n}\n\nfor (const fixture of cases)");
   }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
-  expectFixture(registrationRemoved, 'Control 389: removing executable registration cannot pass', 1, [
+  expectFixture(assertionBodyRemoved, 'Control 389: removing assertion body cannot pass with marker retained', 1, [
     'missing executable controls',
   ]);
 
   const unlistedControlAdded = runValidateAgainstMutatedFiles(['dev/validate-fixtures.mjs'], (source) => {
     const registry = 'const CONTROL_REGISTRY_TOTAL = 389;';
-    const execution = 'observeControls(389);';
-    if (!source.includes(registry) || !source.includes(execution)) return null;
+    const insertion = '\nfor (const fixture of cases)';
+    if (!source.includes(registry) || !source.includes(insertion)) return null;
     return source.replace(registry, 'const CONTROL_REGISTRY_TOTAL = 390;')
-      .replace(execution, `${execution}\nobserveControls(390);`);
+      .replace(insertion, "\nobserveControls(390);\nexpectFixture({ skipped: false, executionFailure: false, status: 0, output: '' }, 'Control 390: asserted next control', 0);\nfor (const fixture of cases)");
   }, { script: 'dev/validate-fixtures.mjs', timeoutMs: 300_000, env: { RUST_INTEL_SKIP_REGISTRY_COUNTERFACTUALS: '1' } });
   expectFixture(unlistedControlAdded, 'Control 389: registered control without header update is rejected', 1, [
     'control registry/header mismatch',
@@ -3521,6 +3625,16 @@ for (const fixture of cases) {
 const missingExecutedControls = [...CONTROL_REGISTRY].filter((id) => !observedControls.has(id));
 if (missingExecutedControls.length) {
   failures.push(`missing executable controls: ${missingExecutedControls.join(', ')}`);
+}
+const missingRegisteredControls = [...CONTROL_REGISTRY].filter((id) => !registeredControls.has(id));
+if (missingRegisteredControls.length) {
+  failures.push(`missing executable control registrations: ${missingRegisteredControls.join(', ')}`);
+}
+if (pendingControlScopes.some(({ completed }) => !completed)) {
+  failures.push('one or more executable control scopes had no assertion/outcome invocation');
+}
+if (registeredControls.size !== CONTROL_REGISTRY.size) {
+  failures.push(`registered control count ${registeredControls.size} does not match registry count ${CONTROL_REGISTRY.size}`);
 }
 if (observedControls.size !== CONTROL_REGISTRY.size) {
   failures.push(`executed control count ${observedControls.size} does not match registry count ${CONTROL_REGISTRY.size}`);
