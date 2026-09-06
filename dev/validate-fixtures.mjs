@@ -3182,9 +3182,11 @@ for (const [number, name, root, declaration] of [
 
 // Controls 378-379: braced Unicode escapes whose numeric value is outside the Unicode scalar
 // range (above 0x10FFFF or inside the surrogate range) are not identifier spellings. They must not
-// turn the following class body into a statement boundary and therefore remain quiet in this
-// source-only scan. The controls are deliberately child-process mutations so a future parser that
-// throws, truncates, or otherwise accepts either invalid code point becomes observable.
+// turn the following class body into a statement boundary and therefore must not produce the
+// workflow diagnostic. The source-only scan currently stays quiet, but an intentional future
+// diagnostic is also accepted when it uses the exact marker below. Any other non-zero exit, child
+// execution failure, or workflow diagnostic remains a regression.
+const invalidUnicodeEscapeDiagnostic = 'invalid Unicode escape in identifier';
 for (const [number, name, root, declaration] of [
   [378, 'out-of-range braced Unicode escape', 'MODULES', 'class \\u{0000000000110000}Invalid378 {}'],
   [379, 'surrogate braced Unicode escape', 'AUDIT_UNITS', 'export default class \\u{00000000000D800}Invalid379 {}'],
@@ -3194,7 +3196,16 @@ for (const [number, name, root, declaration] of [
     root,
     `${declaration} ++${root}.length;`,
   ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) remains quiet`, 0);
+  const label = `Control ${number}: ${name} (${root})`;
+  if (result.skipped) failures.push(`${label}: mutation was not applied`);
+  else if (result.executionFailure) failures.push(`${label}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
+  else if (result.output.includes('workflow')) failures.push(`${label}: invalid escape produced the workflow diagnostic: ${result.output.trim()}`);
+  else if (result.status === 0) {
+    // Current behavior is a source-only scan that ignores the syntactically invalid identifier.
+  }
+  else if (result.status !== 1 || !result.output.includes(invalidUnicodeEscapeDiagnostic)) {
+    failures.push(`${label}: unexpected validator result (status ${result.status}, output: ${result.output.trim()})`);
+  }
 }
 
 for (const fixture of cases) {

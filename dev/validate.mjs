@@ -1004,7 +1004,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
       if (value > 0x10FFFF) return null;
     }
     if (!braced && length !== 6) return null;
-    if (value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) return null;
+    if (value >= 0xD800 && value <= 0xDFFF) return null;
     return { length, character: String.fromCodePoint(value) };
   };
   const codePointAt = (index) => {

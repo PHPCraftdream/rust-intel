@@ -43,29 +43,41 @@ Its supported Markdown surface is explicit:
 
 ## Status
 
-**v0.5.0 (2026-08-08).** Second distribution channel, a review-of-reviews pass, and the repo's first CI. Codex plugin manifest + `rust-intel-codex` installer; the evidence base moved *inside* the skill (`skill/references/sources.md`); corrected §B5 union validity and `transmute` sufficiency, §B12 zeroization, §B20 duplicate keys, §C1 `repr(transparent)`; archive safety split along the right axis — zip-slip traversal to §C2, aggregate extraction quotas to §B7; new §B26 shift-count rule; the fan-out audit now records which artifacts each unit actually opened. Numbered categories remain **58**. See [`CHANGELOG.md`](CHANGELOG.md).
-**v0.4.7 — five-audit gap cluster: crypto, FFI/unsafe, deserialization, concurrency, supply-chain (2026-07-09).** 25 findings from five dedicated gap audits (`docs/reviews/gap-audit-*.md`), each verified still-uncovered, grounded in a citable source, and independently reviewed before merge. Numbered categories unchanged (still **58**) — one new lettered sub-category §B25a is counted under §B25. **§B12/§B24 crypto & secrets:** JWT `aud`/`iss` claim validation (not just `alg`), TLS validation bypass (`danger_accept_invalid_certs` → MITM, CWE-295), KDF salt misuse + OWASP-floor Argon2/PBKDF2 params, zeroize defeated by moves/realloc, `rsa`/Marvin advisory selection; §B24 widened from `==`-timing to secret-dependent side channels (a decrypt-failure oracle collapses to one opaque error, with a §C2↔§B24 carve-out). **§B5/§B25/new §B25a FFI/unsafe:** the C library's own thread-safety contract (the §B18 per-handle-lock fix masks it — CVE-2020-26235), callback-context UAF, exported `#[no_mangle]` entry points trusting the type system, `union` field reads. **§B7/§B20 deserialization DoS:** decompression bombs (capping compressed input doesn't cap output), recursion bombs inside a parser's AST (`from_value` bypasses serde_json's depth limit), the `flatten` buffer-everything cliff, `deny_unknown_fields` on untrusted structs. **§B14/§B3a/§B13/§B17 admission-control exhaustion:** unbounded task/connection admission (`Arc<Semaphore>` before spawn), accept-error classification, insert-only unbounded caches, retry-storm jitter, `RwLock` reentrant-read deadlock. **§A1 supply-chain lifecycle:** yanked-version handling under `--locked`, network access in your own `build.rs`, unpinned `[patch]`/git overrides. **PATCH** bump (bullets/documentation + one lettered sub-category with unchanged numbered count, per the §B18a/§C1a v0.3.2 precedent). See [`CHANGELOG.md`](CHANGELOG.md).
-**v0.4.6 — §B5 padding-byte info-leak on serialize (2026-07-07).** One bullet-pair, no new categories (still **58**): the write-direction dual of §B5's read rule — turning a struct into `&[u8]` by a raw cast (`from_raw_parts(&t as *const _ as *const u8, …)`, `bytes_of`, `transmute`) copies its uninitialized inter-field padding, which is UB to read (miri flags it) *and* leaks stale memory across a trust boundary (Heartbleed-class disclosure). Fix: derive `bytemuck::NoUninit` / `zerocopy::IntoBytes` and let them reject padded types at compile time, or serialize field-by-field. Grounded in CWE-212/908 + miri-assisted LLM audits of real crates. See [`CHANGELOG.md`](CHANGELOG.md).
+**Unreleased (prepared, not tagged).** The current tree carries the post-v0.6.0 completeness, correctness, currency, validator-hardening, and release-tooling work summarized in [`CHANGELOG.md`](CHANGELOG.md). Repository tooling is set to require Node.js 24 or newer, and the next package release will carry that floor; CI covers the current Node 24 line and the exact `24.0.0` floor. The validator fixture suite currently has **379** controls. The next release is planned as **MINOR `0.7.0`**; manifests and the release banner remain `v0.6.0` until that release is cut.
 
-**v0.4.5 — substitution catalog + plugin/npm distribution (2026-06-17).** A Tier E appendix in `data-and-types.md`: a pattern → cheaper-representation lookup table (~22 rows, 4 groups — ownership/allocation, lookup/complexity, the hasher ladder, concurrent maps by access shape), every row gated by §E6 measure-first; no new categories (still **58**). Plus two clone-free install paths: the repo is now a Claude Code **plugin + marketplace** (`/plugin marketplace add PHPCraftdream/rust-intel`) and an **npm package** (`npx rust-intel-cc`), published by CI on every release tag. See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.6.0 (2026-08-19).** Added §C12/§C12a and related §A1 default-of-an-earlier-era coverage; numbered categories reached **59**. This entry backfills the release's omitted Status record. See [`CHANGELOG.md`](CHANGELOG.md).
 
-**v0.4.4 — §D1a gains the façade fitted to the test (2026-06-15).** One bullet, no new categories (still **58**). A fourth shape under §D1a oracle validity: where the *circular oracle* writes the test from the code, the *façade fitted to the test* writes the code from the test — given the goal "make this test pass," an agent emits the declaration the test probes (a config key, header, status string) without the behavior behind it; tests are green, the feature is absent. Grounded in Chacon 2026, "Grit" (Rust-Git reimplementation, 360k LOC, 99.3% tests green, "not *tested*"). See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.5.3 (2026-08-19).** Added `cargo-semver-checks` to Post-flight and corrected its scope boundary. No category change; **58** categories.
 
-**v0.4.3 — siblings of safe-looking primitives (2026-06-15).** Three bullets, no new categories (still **58**): §C2 path-traversal recipe gains a TOCTOU caveat (`canonicalize` + `starts_with` defeats the static symlink, not a racing one — CWE-367; use `openat`+`O_NOFOLLOW` / `cap-std` when the tree is attacker-mutable); §B9 gains `std::thread::scope` as the sync mirror of §B21 (auto-join on the closing brace can deadlock; child panic re-panics the parent); §B16 gains a ReDoS sibling-of-HashDoS bullet (`regex` is linear by construction; `fancy-regex`/`onig`/`pcre2` reintroduce catastrophic backtracking — CWE-1333). Plus a README recall-honesty note (per-rule grounding ≠ measured coverage). See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.5.2 (2026-08-14).** Added evidence labels and unreachable-match reporting to audit outputs, with schema and report-contract validation. No category change; **58** categories.
 
-**v0.4.2 — concurrency/hang/flaky-test patterns (2026-06-14).** Two new numbered categories + a lettered sub-section + three extensions, extracted from real fixes: §B3a (coordinator-loop livelock — release leadership and exit on persistent error), §D4 (filtered test-runner output hides hangs — `pipefail` + nextest SLOW/TIMEOUT), §D5 (Windows LNK1104 from zombie test process, defense-in-depth on top of §D4). Extensions: §B2 (DashMap `Ref` across `.await` is an invisible shard lock), §B21 (periodic task must hold `Weak`, not `Arc`), §D1 (`interval` + `start_paused` tick discipline). **56 → 58 categories.** See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.5.1 (2026-08-09).** Corrected performance-gate guidance to use deterministic counters for failures and wall-clock measurements as trends. No category change; **58** categories.
 
-**v0.4.1 — Tier F semantic conformance (2026-06-10).** Added Tier F (§F1–§F4): defects of *meaning* — code that compiles, passes tests, implements the wrong thing. Plus §D1a (oracle validity) and §D3 (test/prod divergence). **51 → 56 categories, 5 → 6 tiers (A–F).** See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.5.0 (2026-08-08).** Added the Codex distribution channel and installer, moved the evidence base inside the skill, corrected the B5/B12/B20/C1 rules, and improved fan-out artifact tracking. Numbered categories remained **58**. See [`CHANGELOG.md`](CHANGELOG.md).
 
-**v0.4.0 — fan-out audit workflow (2026-06-10).** Shipped `audit-project.workflow.js` — one agent per module, async split into two, runtime slicing of trigger tables (zero duplication), structured findings schema, synthesized `/rust-cc-audit` report. Module headers enriched with tier badges + audit semantics. `audit.md` gains fan-out-preferred note. Installers deliver the workflow. See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.4.7 (2026-07-09).** Closed a five-audit gap cluster across crypto, FFI/unsafe, deserialization, concurrency, and supply chain, including lettered B25a. Numbered categories remained **58**. See [`CHANGELOG.md`](CHANGELOG.md).
 
-**v0.3.3 — accuracy pass (2026-06-10).** Factual/dating fixes (F1–F4): `clippy::await_holding_lock` group history corrected, MSRV 1.84→1.85, §C7 resolver v1/v2 qualification, `never_type_fallback` dating 1.92→1.85. Three minor clarifications (§B2, §B9, §B12, §B15a). No category changes (still **51**). See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.4.6 (2026-07-07).** Added the B5 padding-byte information-leak rule for raw serialization. No category change; **58** categories.
 
-**v0.3.2 — four content additions (2026-06-09).** From a study of Microsoft's *Rust Patterns & Engineering How-Tos*: §C1a (`#[non_exhaustive]` producer-side semver rule, 🟡), §B18a (variance/`PhantomData` soundness in raw-pointer wrappers, 🔴), expanded §B4 (memory-vs-resource `Drop` at exit, recursive `Drop` stack overflow, drop-order shutdown deadlock), and §B5 (unsafe→safe boundary principle: value-invariant guards vs relational invariants). Still **51** categories (sub-sections counted under parent). See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.4.5 (2026-06-17).** Added the Tier E substitution catalog and Claude Code plugin/marketplace plus npm distribution. Numbered categories remained **58**.
 
-**v0.3.1 — structural repackaging (2026-05-31).** The single-file spec is now a **modular skill**: `SKILL.md` (core — protocols, enforcement tiers, the trigger table, and a category→module map) plus nine theme modules under `skill/` holding the category bodies. No rule or category changes (still **51**) — content is byte-complete vs 0.3.0. `SKILL.md` also tells the agent to run a full audit/review by **fanning out one sub-agent per module** (via a workflow) instead of holding all categories in one context. Installers ship the modules; the single-file reference is retired (kept in git history). See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.4.4 (2026-06-15).** Added the D1a "facade fitted to the test" semantic-conformance pattern. No category change; **58** categories.
 
-**v0.3.0 — content release (2026-05-29).** The first tagged release since 0.2.2 — it collapses all interim work (drafted under provisional 0.3.x / 0.4.0 labels, never tagged) into one version. The spec was reframed to cover only bugs that compile and pass tests but still break, then grown from **26 to 51 categories** across **five tiers (A–E)**: silent correctness bugs (async cancellation, `Mutex`-across-`.await`, UB, TOCTOU, crypto, FFI, lossy numeric/`as`-casts, wall-clock vs monotonic, UTF-8 boundaries, iterator/slice adapter traps), architecture/ergonomics, testing/CI gaps, and a top-level **Tier E — Systemic cost** (latency, allocation, complexity, contention; enforced 🟡/🟢, never 🔴). Includes an external multi-agent review pass — evidence-base accuracy fixes, build-time supply-chain coverage (§A1), and anti-dogmatism calibration. Slash commands unchanged. See [`CHANGELOG.md`](CHANGELOG.md) for full notes.
+**v0.4.3 (2026-06-15).** Added TOCTOU, scoped-thread, and ReDoS precision coverage plus the recall-honesty note. Numbered categories remained **58**.
+
+**v0.4.2 (2026-06-14).** Added B3a coordinator livelock and D4/D5 hang and test-runner coverage, plus related extensions. Categories grew from **56** to **58**.
+
+**v0.4.1 (2026-06-10).** Added Tier F semantic conformance, D1a oracle validity, and D3 test/production divergence. Categories grew from **51** to **56**.
+
+**v0.4.0 (2026-06-10).** Added the fan-out audit workflow, structured findings, runtime table slicing, and enriched module headers. Numbered categories remained **51**.
+
+**v0.3.3 (2026-06-10).** Accuracy pass covering lint history, MSRV, resolver qualification, and related clarifications. Numbered categories remained **51**.
+
+**v0.3.2 (2026-06-09).** Added the non-exhaustive producer rule, PhantomData variance guidance, Drop-at-exit coverage, and unsafe-to-safe boundary guidance. Numbered categories remained **51**.
+
+**v0.3.1 (2026-05-31).** Repackaged the single-file specification as a modular skill with theme modules and references, and documented the fan-out review protocol. Numbered categories remained **51**.
+
+**v0.3.0 (2026-05-29).** Reframed the specification around silent failures that compile and pass tests, expanding coverage from **26** to **51** categories across five tiers.
 
 ## Layout
 
@@ -86,7 +98,7 @@ rust-intel/
 ├── bin/install-codex.js                # Codex user-skill installer (rust-intel-codex)
 ├── bin/node-version.js                 # Shared Node.js floor guard
 ├── package.json                        # npm package manifest (published on release tags by CI)
-├── dev/                                 # Validation, mirror, release, and review utilities
+├── dev/                                # Validation, mirror, release, and review utilities
 │   ├── validate.mjs                    # Repository validator (also runs fixture controls)
 │   ├── validate-fixtures.mjs           # Fixture-control runner
 │   ├── sync-mirror.mjs                 # Canonical skill -> Codex mirror sync/check
@@ -95,7 +107,7 @@ rust-intel/
 │   ├── semver.mjs                      # Shared version parsing/comparison helpers
 │   └── review-modules.workflow.js      # Fan-out review workflow helper
 ├── .github/workflows/npm-publish.yml   # Publishes rust-intel-cc to npm on every v* tag
-├── .github/workflows/ci.yml             # Repository validation and Node floor checks
+├── .github/workflows/ci.yml            # Repository validation and Node floor checks
 ├── README.md                           # This file
 ├── CHANGELOG.md                        # Version history
 ├── .gitattributes                      # Line-ending rules (LF for source, CRLF for .ps1/.bat)
@@ -117,7 +129,7 @@ rust-intel/
 └── docs/
     ├── roadmap.md                      # Roadmap: open directions and structural notes
     ├── sources.md                      # Empirical sources and citations
-    └── reviews/                         # Review reports and the correction ledger
+    └── reviews/                        # Review reports and the correction ledger
         └── README.md
 ```
 
@@ -223,28 +235,6 @@ Start a new Codex thread after installation. Use `/skills` to confirm that `rust
 
 The document reads top-to-bottom. The minimum bar before committing any non-trivial Rust: walk the **Pre-flight checklist** (9 questions at the end of the spec) and the **Post-flight checklist** (the list of things to surface in a summary).
 
-### Maintainer release checklist
-
-The Node.js floor raise from 16.7.0 to 24.0.0 removes a previously supported runtime in the 0.x
-series, so the next release is a **MINOR `0.7.0`**, not a patch. Record that decision before starting
-the release; routine reviews must not change the version or release notes implicitly.
-
-1. Decide and record the bump level; for the Node-floor release, use `0.7.0`.
-2. Run `node dev/set-release-version.mjs <version>` and review the three manifest changes.
-3. Update the README version banner and the matching entry in **Status**.
-4. Replace `## [Unreleased]` in `CHANGELOG.md` with the versioned heading and release date.
-5. Run the repository checks: `npm run validate`, `npm pack --dry-run`, the mirror check, and the
-   release-version check (`node dev/check-release-version.mjs <version>`); confirm CI is green.
-6. Commit the release changes with a descriptive message.
-7. Create and push the release tag, for example:
-
-   ```bash
-   git tag -a v<version> -m "Release v<version>"
-   git push origin main v<version>
-   ```
-
-8. Confirm the tag-triggered validation and npm publish workflows completed successfully.
-
 ### Commands
 
 Three commands live under [`commands/rust-intel-cc/`](commands/rust-intel-cc/) and share a single source of truth — the skill itself, never a copy:
@@ -256,6 +246,37 @@ Three commands live under [`commands/rust-intel-cc/`](commands/rust-intel-cc/) a
 | [`plan`](commands/rust-intel-cc/plan.md) | `/rust-cc-plan <task>` | Run a task description through the trigger table and Pre-flight checklist before any code is written. |
 
 Details: [`commands/README.md`](commands/README.md).
+
+## Maintaining
+
+### Release checklist
+
+The Node.js floor raise from 16.7.0 to 24.0.0 removes a previously supported runtime in the 0.x
+series, so the next release is a **MINOR `0.7.0`**, not a patch. Record that decision before starting
+the release; routine reviews must not change the version or release notes implicitly.
+
+1. Decide and record the bump level; for the Node-floor release, use `0.7.0`.
+2. Run `node dev/set-release-version.mjs <version>` and review the three manifest changes.
+3. Update the README version banner, keeping the exact validator-pinned sentence `Numbered categories now **N**`, and add the release's entry to **Status**. Back-fill the missing `v0.6.0` entry before adding a later release, keep entries in reverse chronological order, and put a blank line between every entry.
+4. Replace `## [Unreleased]` in `CHANGELOG.md` with the versioned heading and release date. Re-check the fixture-control count against the header in `dev/validate-fixtures.mjs` (currently **379**) and update the changelog's count if it changed; rewrite the planned-bump sentence in past tense (for example, `This release is \`0.7.0\` (MINOR) because ...`) rather than shipping an imperative instruction.
+5. Run the repository checks: `npm run validate`, `npm pack --dry-run`, the mirror check, and the
+   release-version check (`node dev/check-release-version.mjs <version>`).
+6. Commit the release changes with a descriptive message.
+7. Push the release commit to `main` and wait for the `validate` workflow on that exact release SHA
+   to finish successfully:
+
+   ```bash
+   git push origin main
+   ```
+
+8. After `validate` is green on the release SHA, create and push the release tag:
+
+   ```bash
+   git tag -a v<version> -m "Release v<version>"
+   git push origin v<version>
+   ```
+
+9. Confirm the tag-triggered validation and npm publish workflows completed successfully.
 
 ## Spec architecture
 
