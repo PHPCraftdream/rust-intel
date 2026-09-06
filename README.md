@@ -43,7 +43,7 @@ Its supported Markdown surface is explicit:
 
 ## Status
 
-**Unreleased (prepared, not tagged).** The current tree carries the post-v0.6.0 completeness, correctness, currency, validator-hardening, and release-tooling work summarized in [`CHANGELOG.md`](CHANGELOG.md). Repository tooling is set to require Node.js 24 or newer, and the next package release will carry that floor; CI covers the current Node 24 line and the exact `24.0.0` floor. The validator fixture suite currently has **389** controls. The next release is planned as **MINOR `0.7.0`**; manifests and the release banner remain `v0.6.0` until that release is cut.
+**Unreleased (in preparation, not tagged).** The current tree carries the post-v0.6.0 completeness, correctness, currency, validator-hardening, and release-tooling work summarized in [`CHANGELOG.md`](CHANGELOG.md). Repository tooling is set to require Node.js 24 or newer, and the next package release will carry that floor; CI covers the current Node 24 line and the exact `24.0.0` floor. The validator fixture suite currently has **399** controls. The next release is planned as **MINOR `0.7.0`**; manifests and the release banner remain `v0.6.0` until that release is cut. Release readiness remains gated on closing the independent review's P2/P3 findings and completing a fresh review.
 
 **v0.6.0 (2026-08-19).** Added §C12/§C12a and related §A1 default-of-an-earlier-era coverage; numbered categories reached **59**. This entry backfills the release's omitted Status record. See [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -95,6 +95,7 @@ rust-intel/
 │                                       # Never edit by hand: run `npm run sync` (dev/sync-mirror.mjs); CI enforces byte-identity.
 ├── .codex-plugin/plugin.json           # Codex plugin manifest (points at skills/rust-intel/)
 ├── bin/install.js                      # npx installer (npm package: rust-intel-cc)
+├── bin/install-transaction.js           # Shared transactional installer engine
 ├── bin/install-codex.js                # Codex user-skill installer (rust-intel-codex)
 ├── bin/node-version.js                 # Shared Node.js floor guard
 ├── package.json                        # npm package manifest (published on release tags by CI)
@@ -103,6 +104,8 @@ rust-intel/
 │   ├── validate-fixtures.mjs           # Fixture-control runner
 │   ├── sync-mirror.mjs                 # Canonical skill -> Codex mirror sync/check
 │   ├── set-release-version.mjs         # Update package and plugin manifest versions
+│   ├── calibrate-release-version.mjs    # Crash/recovery calibration for release transactions
+│   ├── js-lexer.mjs                     # Shared bounded JavaScript lexical scanner
 │   ├── check-release-version.mjs       # Verify a release tag matches all manifests
 │   ├── semver.mjs                      # Shared version parsing/comparison helpers
 │   └── review-modules.workflow.js      # Fan-out review workflow helper
@@ -257,10 +260,12 @@ the release; routine reviews must not change the version or release notes implic
 
 1. Decide and record the bump level; for the Node-floor release, use `0.7.0`.
 2. Run `node dev/set-release-version.mjs <version>` and review the three manifest changes.
-   Run `node dev/calibrate-release-version.mjs` to exercise the bounded injected-failure rollback
-   against a temporary known-good copy before relying on the utility for a release.
-3. Update the README version banner, keeping the exact validator-pinned sentence `Numbered categories now **N**`, and add the release's entry to **Status**. When cutting the release, remove or replace the point-in-time `Unreleased (prepared, not tagged)` paragraph so it cannot remain beside the released entry. Retain and verify the existing `v0.6.0 (2026-08-19)` entry, add the new `v0.7.0` entry above it, keep entries in reverse chronological order, and put a blank line between every entry.
-4. In `CHANGELOG.md`, insert a fresh empty `## [Unreleased]` section above the release, then move the current Unreleased body under `## [0.7.0] — <release-date>` (or the selected version/date). Re-check the fixture-control count against the header in `dev/validate-fixtures.mjs` (currently **389**) and update the changelog's count if it changed; rewrite the planned-bump sentence in past tense (for example, `This release is \`0.7.0\` (MINOR) because ...`) rather than shipping an imperative instruction.
+   Run `node dev/calibrate-release-version.mjs` to exercise abrupt-exit recovery at every journal
+   and rename boundary, injected failures after replacements 1–3, and cleanup against temporary
+   known-good copies. If a release process is interrupted, `node dev/set-release-version.mjs --recover`
+   performs recovery without changing versions.
+3. Update the README version banner, keeping the exact validator-pinned sentence `Numbered categories now **N**`, and add the release's entry to **Status**. When cutting the release, remove or replace the point-in-time `Unreleased (in preparation, not tagged)` paragraph so it cannot remain beside the released entry. Retain and verify the existing `v0.6.0 (2026-08-19)` entry, add the new `v0.7.0` entry above it, keep entries in reverse chronological order, and put a blank line between every entry.
+4. In `CHANGELOG.md`, insert a fresh empty `## [Unreleased]` section above the release, then move the current Unreleased body under `## [0.7.0] — <release-date>` (or the selected version/date). Re-check the fixture-control count against the header in `dev/validate-fixtures.mjs` (currently **399**) and update the changelog's count if it changed; rewrite the planned-bump sentence in past tense (for example, `This release is \`0.7.0\` (MINOR) because ...`) rather than shipping an imperative instruction.
 5. Run the repository checks: `npm run validate`, `npm pack --dry-run`, the mirror check, and the
    release-version check (`node dev/check-release-version.mjs <version>`).
 6. Commit the release changes with a descriptive message.
