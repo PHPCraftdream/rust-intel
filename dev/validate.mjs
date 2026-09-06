@@ -934,6 +934,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
   const assignmentRe = /^(?:>>>=|\*\*=|<<=|>>=|&&=|\|\|=|\?\?=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|=)(?!=|>)/;
   const updateRe = /^(?:\+\+|--)(?![+\-])/;
   const prefixKeywords = new Set(['case', 'delete', 'new', 'return', 'throw', 'typeof', 'void', 'await', 'yield']);
+  const statementGroupKeywords = new Set([...prefixKeywords, 'else', 'do']);
   const skipWhitespace = (index) => {
     let cursor = index;
     while (cursor < source.length && /\s/u.test(source[cursor])) cursor += 1;
@@ -950,19 +951,43 @@ function workflowMutationCheck(source, names, rawSource = source) {
     const operatorStart = operatorEnd - 2;
     const beforeOperator = previousSignificant(operatorStart);
     if (beforeOperator < 0) return true;
-    if (')]}'.includes(source[beforeOperator])) return false;
+    if (')]}'.includes(source[beforeOperator])) return source[beforeOperator] === ')' && isControlHeaderClose(beforeOperator);
     if (/[A-Za-z0-9_$]/u.test(source[beforeOperator])) {
       let tokenStart = beforeOperator;
       while (tokenStart > 0 && /[A-Za-z0-9_$]/u.test(source[tokenStart - 1])) tokenStart -= 1;
-      return prefixKeywords.has(source.slice(tokenStart, beforeOperator + 1));
+      return statementGroupKeywords.has(source.slice(tokenStart, beforeOperator + 1));
     }
     return true;
+  };
+  const matchingOpeningParen = (closing) => {
+    if (source[closing] !== ')') return -1;
+    let depth = 0;
+    for (let cursor = closing; cursor >= 0; cursor -= 1) {
+      if (source[cursor] === ')') depth += 1;
+      else if (source[cursor] === '(') {
+        depth -= 1;
+        if (depth === 0) return cursor;
+      }
+    }
+    return -1;
+  };
+  const wordBefore = (index) => {
+    let cursor = previousSignificant(index);
+    if (cursor < 0 || !/[A-Za-z0-9_$]/u.test(source[cursor])) return null;
+    const end = cursor + 1;
+    while (cursor >= 0 && /[A-Za-z0-9_$]/u.test(source[cursor])) cursor -= 1;
+    return source.slice(cursor + 1, end);
+  };
+  const isControlHeaderClose = (index) => {
+    const opening = matchingOpeningParen(index);
+    if (opening < 0) return false;
+    return new Set(['if', 'while', 'for', 'with', 'catch']).has(wordBefore(opening));
   };
   const quotedBracketProperty = (opening, closing) => {
     // `source` intentionally masks string literals, so consult the offset-preserving raw source
     // only for the tiny quoted-property form.  A comment or expression inside the brackets is
     // not treated as a statically-known mutator name.
-    const content = rawSource.slice(opening + 1, closing);
+    const content = stripJsComments(rawSource.slice(opening + 1, closing));
     const match = content.match(/^\s*(['"])([A-Za-z_$][A-Za-z0-9_$]*)\1\s*$/u);
     return match ? match[2] : null;
   };
@@ -983,7 +1008,8 @@ function workflowMutationCheck(source, names, rawSource = source) {
       let tokenStart = beforeRoot;
       while (tokenStart > 0 && /[A-Za-z0-9_$]/u.test(source[tokenStart - 1])) tokenStart -= 1;
       const token = source.slice(tokenStart, beforeRoot + 1);
-      if (!prefixKeywords.has(token)) outerParens -= 1;
+      if (!((source[beforeRoot] === ')' && isControlHeaderClose(beforeRoot))
+        || statementGroupKeywords.has(token))) outerParens -= 1;
     }
     const properties = [];
     while (true) {
@@ -996,10 +1022,11 @@ function workflowMutationCheck(source, names, rawSource = source) {
         continue;
       }
       if (source[cursor] === '.') {
-        const property = source.slice(cursor + 1).match(/^[A-Za-z_$][A-Za-z0-9_$]*/u);
+        const propertyStart = skipWhitespace(cursor + 1);
+        const property = source.slice(propertyStart).match(/^[A-Za-z_$][A-Za-z0-9_$]*/u);
         if (!property) return null;
         properties.push(property[0]);
-        cursor += 1 + property[0].length;
+        cursor = propertyStart + property[0].length;
         continue;
       }
       // Parentheses enclosing the complete reference are part of the direct expression, not a

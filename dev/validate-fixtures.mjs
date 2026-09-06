@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: two hundred forty-five hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: two hundred fifty-five hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2492,6 +2492,61 @@ for (const [number, name, root, mutation] of [
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
   expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+
+// Control 246: comments surrounding a quoted bracket mutator name are still lexical trivia. The
+// property is statically known to be `push`, so the direct call must remain rejected.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'MODULES',
+    "MODULES[/* before */ 'push' /* after */]({ file: 'comment-bracket.md', categories: [] });",
+  ));
+  expectFixture(result, 'comments around quoted bracket mutator name', 1, ['workflow']);
+}
+
+// Controls 247-248: comments may occur at both property-boundary positions in a direct nested
+// chain. They must not hide either the root-to-dot transition or the property after a dot.
+for (const [number, name, mutation] of [
+  [247, 'comment between root and dot', "MODULES /* root-dot */ .categories.push('Z99');"],
+  [248, 'comment after nested dot before property', "MODULES[0]. /* dot-property */ categories.push('Z99');"],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, 'MODULES', mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+
+// Controls 249-253: statement-position mutations remain visible after control-flow headers and
+// branch keywords. Grouping after `if` and prefix updates after `while`/`for` are especially easy
+// to misclassify as call-argument or postfix contexts when the preceding `)` is inspected.
+for (const [number, name, root, mutation] of [
+  [249, 'grouped mutator after if header', 'MODULES', 'if (true) (MODULES).pop();'],
+  [250, 'prefix increment after while header', 'MODULES', 'while (false) ++MODULES;'],
+  [251, 'prefix decrement after for header', 'AUDIT_UNITS', 'for (;;) --AUDIT_UNITS;'],
+  [252, 'else-position direct mutator', 'MODULES', 'if (false) {} else MODULES.pop();'],
+  [253, 'do-position direct mutator', 'AUDIT_UNITS', 'do AUDIT_UNITS.pop(); while (false);'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, ['workflow']);
+}
+
+// Controls 254-255: roots used as call arguments are reads, even when the call result is later
+// mutated. Preserve these positive contexts so the direct-reference scanner does not reject every
+// occurrence of MODULES/AUDIT_UNITS merely because it is adjacent to parentheses or `.push()`.
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'MODULES',
+    "factory(MODULES).push({ file: 'factory-result.md', categories: [] });",
+  ));
+  expectFixture(result, 'factory call result mutator remains accepted', 0);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'AUDIT_UNITS',
+    'consume(MODULES); invoke(AUDIT_UNITS);',
+  ));
+  expectFixture(result, 'function call argument contexts remain accepted', 0);
 }
 
 for (const fixture of cases) {
