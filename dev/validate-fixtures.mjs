@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: two hundred seventy-three hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: two hundred seventy-seven hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2585,29 +2585,30 @@ for (const [number, name, property] of [
 // Controls 262-269: ECMAScript treats U+2028/U+2029 as line terminators.  They must therefore
 // terminate a line comment and close a multiline block comment before a prefix update; neither
 // Unicode separator may hide a write to either immutable root.  Keep the full 2x2x2 matrix so
-// each separator, comment form, and immutable root is independently pinned.
+// each separator, comment form, and immutable root is independently pinned.  The block-comment
+// probes follow a completed call so the update is causally a new expression, not a continuation
+// of the preceding bare comment.
 for (const [number, name, root, mutation] of [
   [262, 'U+2028 line-comment boundary before MODULES update', 'MODULES', '// boundary\u2028++MODULES.length;'],
   [263, 'U+2028 line-comment boundary before AUDIT_UNITS update', 'AUDIT_UNITS', '// boundary\u2028++AUDIT_UNITS.length;'],
   [264, 'U+2029 line-comment boundary before MODULES update', 'MODULES', '// boundary\u2029++MODULES.length;'],
   [265, 'U+2029 line-comment boundary before AUDIT_UNITS update', 'AUDIT_UNITS', '// boundary\u2029++AUDIT_UNITS.length;'],
-  [266, 'U+2028 block-comment terminator before MODULES update', 'MODULES', '/* boundary\u2028*/ ++MODULES.length;'],
-  [267, 'U+2028 block-comment terminator before AUDIT_UNITS update', 'AUDIT_UNITS', '/* boundary\u2028*/ ++AUDIT_UNITS.length;'],
-  [268, 'U+2029 block-comment terminator before MODULES update', 'MODULES', '/* boundary\u2029*/ ++MODULES.length;'],
-  [269, 'U+2029 block-comment terminator before AUDIT_UNITS update', 'AUDIT_UNITS', '/* boundary\u2029*/ ++AUDIT_UNITS.length;'],
+  [266, 'U+2028 block-comment terminator before MODULES update', 'MODULES', 'doSomething() /* boundary\u2028 */ ++MODULES.length;'],
+  [267, 'U+2028 block-comment terminator before AUDIT_UNITS update', 'AUDIT_UNITS', 'doSomething() /* boundary\u2028 */ ++AUDIT_UNITS.length;'],
+  [268, 'U+2029 block-comment terminator before MODULES update', 'MODULES', 'doSomething() /* boundary\u2029 */ ++MODULES.length;'],
+  [269, 'U+2029 block-comment terminator before AUDIT_UNITS update', 'AUDIT_UNITS', 'doSomething() /* boundary\u2029 */ ++AUDIT_UNITS.length;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
   expectFixture(result, `Control ${number}: ${name}`, 1, ['workflow']);
 }
 
 // Controls 270-272: a closing brace ends a statement/block context, so a prefix update on the
-// following line is still a new write statement.  Cover control-flow, try/finally, and a bare
-// block separately; a scanner must not treat a preceding `}` as a continuation that hides the
-// update.
+// same line is still a new write statement.  Cover control-flow, try/finally, and a bare block
+// separately; a scanner must not treat a preceding `}` as a continuation that hides the update.
 for (const [number, name, root, mutation] of [
-  [270, 'prefix update after if block close', 'MODULES', 'if (false) { void 0; }\n++MODULES.length;'],
-  [271, 'prefix update after try/finally close', 'AUDIT_UNITS', 'try { void 0; } finally { void 0; }\n++AUDIT_UNITS.length;'],
-  [272, 'prefix update after bare block close', 'MODULES', '{ void 0; }\n++MODULES.length;'],
+  [270, 'prefix update after if block close', 'MODULES', 'if (false) { void 0; } ++MODULES.length;'],
+  [271, 'prefix update after try/finally close', 'AUDIT_UNITS', 'try { void 0; } finally { void 0; } ++AUDIT_UNITS.length;'],
+  [272, 'prefix update after bare block close', 'MODULES', '{ void 0; } ++MODULES.length;'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, mutation));
   expectFixture(result, `Control ${number}: ${name}`, 1, ['workflow']);
@@ -2623,6 +2624,43 @@ for (const [number, name, root, mutation] of [
     'const objectExpression = ({ count: 1 });\nconst objectFactory = () => ({});\nvoid objectExpression;\nvoid objectFactory;\nvoid MODULES.length;',
   ));
   expectFixture(result, 'Control 273: object-literal expression close remains accepted', 0);
+}
+
+// Controls 274-275: a class declaration's closing brace also ends the preceding statement or
+// declaration on the same line.  Keep both immutable roots covered so a brace-specific context
+// heuristic cannot hide a same-line prefix update after a class body.
+for (const [number, name, root] of [
+  [274, 'prefix update after same-line class close', 'MODULES'],
+  [275, 'prefix update after same-line class close', 'AUDIT_UNITS'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `class Example${number} {} ++${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 276-277: private methods whose names are reserved words are still callable
+// expressions.  Their call results are immediately invoked with a root expression on the next
+// line, so MODULES remains a call argument and must stay accepted rather than being mistaken for
+// a statement-position mutator after a keyword-named property.  Keep both #if and #while bounded
+// to the same class-method shape.
+for (const [number, name, privateName] of [
+  [276, 'private #if method call-result context', '#if'],
+  [277, 'private #while method call-result context', '#while'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'MODULES',
+    `const PrivateContext${number} = class {\n` +
+      `  ${privateName}(value) { return () => []; }\n` +
+      `  run() { return this.${privateName}(true)\n` +
+      `    (MODULES).pop(); }\n` +
+      `};\n` +
+      `void PrivateContext${number};`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
 }
 
 for (const fixture of cases) {

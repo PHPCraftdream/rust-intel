@@ -960,6 +960,56 @@ function workflowMutationCheck(source, names, rawSource = source) {
   // preserving their newlines, so this also handles a multiline comment between the operands.
   const hasLineTerminator = (start, end) => source.slice(start, end).split('').some(isJsLineTerminator);
   const statementBlockKeywords = new Set(['catch', 'do', 'else', 'finally', 'try']);
+  const classHeaderInfo = (opening) => {
+    const headerPrefix = source.slice(0, opening);
+    const classMatches = [...headerPrefix.matchAll(/\bclass\b/gu)];
+    const classMatch = classMatches.at(-1);
+    if (!classMatch) return null;
+    const classStart = classMatch.index;
+    const header = source.slice(classStart, opening);
+    if (!/^class(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?(?:\s+extends\b[\s\S]*)?\s*$/u.test(header)) return null;
+    return { classStart, header };
+  };
+  const isClassDeclarationBody = (opening) => {
+    // A class declaration's body is a statement block for ASI purposes, but a class expression
+    // is not.  Looking only at the byte before `{` would classify `const C = class C {}` as a
+    // statement boundary, so first identify the class header and then require declaration
+    // context before the `class` keyword.
+    const info = classHeaderInfo(opening);
+    if (!info) return false;
+    const { classStart, header } = info;
+
+    const previousWordAt = (index) => {
+      let cursor = previousSignificant(index);
+      if (cursor < 0 || !/[A-Za-z0-9_$]/u.test(source[cursor])) return null;
+      const end = cursor + 1;
+      while (cursor >= 0 && /[A-Za-z0-9_$]/u.test(source[cursor])) cursor -= 1;
+      return { value: source.slice(cursor + 1, end), start: cursor + 1 };
+    };
+    const beforeClass = previousSignificant(classStart);
+    if (beforeClass >= 0 && (source[beforeClass] === '.' || source[beforeClass] === '#')) return false;
+    const modifier = previousWordAt(classStart);
+    if (modifier && (modifier.value === 'export' || modifier.value === 'default')) {
+      // `export class C {}` and `export default class C {}` are declarations.  A bare `default
+      // class` is invalid JavaScript, but treating it as a declaration here keeps this small
+      // structural check conservative if it is supplied by a parser fixture.
+      const beforeModifier = previousSignificant(modifier.start);
+      if (beforeModifier >= 0 && !';{}'.includes(source[beforeModifier])
+        && !hasLineTerminator(beforeModifier + 1, modifier.start)) return false;
+      return true;
+    }
+
+    // Anonymous classes are expressions except for `export default class {}`; named classes can
+    // be declarations at the beginning of a statement.  The header regex above intentionally
+    // permits the anonymous form, so reject it unless the `default` modifier was handled above.
+    const hasName = /^class\s+[A-Za-z_$][A-Za-z0-9_$]*/u.test(header);
+    if (!hasName) return false;
+    if (beforeClass < 0 || ';{}'.includes(source[beforeClass])) return true;
+    // A line break can terminate the preceding expression before a declaration.  Operators and
+    // member/continuation punctuation still bind the class as an expression (`x =\nclass C {}`).
+    return hasLineTerminator(beforeClass + 1, classStart)
+      && !'=,+-*/%&|^!?<>.:([['.includes(source[beforeClass]);
+  };
   const isStatementBlockClose = (index) => {
     if (source[index] !== '}') return false;
     let depth = 0;
@@ -976,10 +1026,15 @@ function workflowMutationCheck(source, names, rawSource = source) {
     }
     if (opening < 0) return false;
     const beforeOpening = previousSignificant(opening);
+    // Resolve class bodies before the generic line-break rule below.  A multiline class
+    // expression (`const C = class\nC {}`) must remain an expression boundary, while a class
+    // declaration can legitimately end a statement on the same line as the next update.
+    if (classHeaderInfo(opening)) return isClassDeclarationBody(opening);
     if (beforeOpening < 0 || hasLineTerminator(beforeOpening + 1, opening)) return true;
     if (source[beforeOpening] === ')') return true;
     if (source[beforeOpening] === '}' || source[beforeOpening] === ';') return true;
     if (beforeOpening > 0 && source[beforeOpening - 1] === '=' && source[beforeOpening] === '>') return true;
+    if (isClassDeclarationBody(opening)) return true;
     if (!/[A-Za-z0-9_$]/u.test(source[beforeOpening])) return false;
     let tokenStart = beforeOpening;
     while (tokenStart > 0 && /[A-Za-z0-9_$]/u.test(source[tokenStart - 1])) tokenStart -= 1;
@@ -1035,7 +1090,9 @@ function workflowMutationCheck(source, names, rawSource = source) {
     let cursor = previousSignificant(opening);
     while (cursor >= 0 && /[A-Za-z0-9_$]/u.test(source[cursor])) cursor -= 1;
     const beforeKeyword = previousSignificant(cursor + 1);
-    return beforeKeyword < 0 || !'.'.includes(source[beforeKeyword]);
+    // Property/private names can legally be keywords (`obj.if()`, `obj?.if()`, `this.#if()`).
+    // None of these calls is a control header, even though the final word before `(` is `if`.
+    return beforeKeyword < 0 || !'.#?'.includes(source[beforeKeyword]);
   };
   const quotedBracketProperty = (opening, closing) => {
     // `source` intentionally masks string literals, so consult the offset-preserving raw source
