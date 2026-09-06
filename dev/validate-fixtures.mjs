@@ -150,7 +150,7 @@ function observeControls(value) {
   controlRegistry.register(value);
 }
 
-function completeCurrentControlScope(controlId, outcome = true) {
+function completeCurrentControlScope(controlId, outcome) {
   controlRegistry.complete(controlId, outcome);
 }
 
@@ -292,7 +292,6 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 
 // Control 1: mutate the banner's required count to a wrong number outright.
 observeControls(1);
-const control1FailureBaseline = failures.length;
 {
   const result = runValidateAgainstMutatedCopy((original) => {
     const m = original.match(/Numbered categories now \*\*(\d+)\*\*/);
@@ -304,12 +303,11 @@ const control1FailureBaseline = failures.length;
   else if (result.executionFailure) failures.push(`README.md negative control: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0) failures.push("README.md negative control: dev/validate.mjs still passed after README.md's stated category count was mutated to a wrong number");
   else if (!result.output.includes('README.md')) failures.push(`README.md negative control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
-  completeCurrentControlScope(1, failures.length === control1FailureBaseline);
+  completeCurrentControlScope(1, !result.skipped && !result.executionFailure && result.status !== 0 && result.output.includes('README.md'));
 }
 
 // Control 2: keep the correct, required `**N**` banner intact, but add a COEXISTING stale
 observeControls(2);
-const control2FailureBaseline = failures.length;
 // Markdown-emphasized count elsewhere in the same scanned region. This is the false-negative this
 // fixture previously could not have caught: the stale-count scanner's digit pattern requires
 // whitespace immediately after the digits, which `**58**` (digit, then `**`, then space) does not
@@ -325,12 +323,11 @@ const control2FailureBaseline = failures.length;
   else if (result.executionFailure) failures.push(`README.md coexistence control: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0) failures.push('README.md coexistence control: dev/validate.mjs still passed with a correct **N** banner alongside a coexisting stale **N-1** categories mention (Markdown-emphasis false negative)');
   else if (!result.output.includes('README.md')) failures.push(`README.md coexistence control: dev/validate.mjs failed but its output did not mention README.md — got: ${result.output.trim()}`);
-  completeCurrentControlScope(2, failures.length === control2FailureBaseline);
+  completeCurrentControlScope(2, !result.skipped && !result.executionFailure && result.status !== 0 && result.output.includes('README.md'));
 }
 
 // Control 3: same coexistence shape as Control 2, but with the stale mention wrapped in
 observeControls(3);
-const control3FailureBaseline = failures.length;
 // underscore-emphasis (`__58__`) instead of `**58**` — proves the scanner strips more than one
 // Markdown wrapper form, not just the one form Control 2 happens to use.
 {
@@ -350,7 +347,6 @@ const control3FailureBaseline = failures.length;
 // Control 4: TEMP/TMP resolves — via a symlink on POSIX, a junction on Windows — to a directory
 
 observeControls(4);
-const control4FailureBaseline = failures.length;
 // whose PHYSICAL target sits inside the repo, even though the alias's own (lexical) path does not.
 // This is the exact bypass a `path.resolve()`-only containment check misses: reproduced by pointing
 // `TEMP` at a junction whose real target is `root/.rust-intel-validate-junction-target-*`, which
@@ -366,8 +362,9 @@ const control4FailureBaseline = failures.length;
   const prevTemp = process.env.TEMP;
   const prevTmp = process.env.TMP;
   let tmpRootFromAlias = null;
+  let control4Passed = false;
+  let aliasCreated = false;
   try {
-    let aliasCreated = false;
     try {
       fs.symlinkSync(physicalTarget, aliasPath, 'junction'); // 'junction' type is Windows-only, ignored (plain symlink) elsewhere
       aliasCreated = true;
@@ -378,6 +375,7 @@ const control4FailureBaseline = failures.length;
       // link creation is skip-worthy; any later exception is a real regression in this control's
       // own logic and must surface as a test failure, not an environmental skip.
       console.log(`(skipped junction/symlink alias control: could not create the alias — ${e.message})`);
+      control4Passed = true;
     }
     if (aliasCreated) {
       try {
@@ -388,7 +386,7 @@ const control4FailureBaseline = failures.length;
         const resolvedRoot = resolvePhysical(root);
         if (isInside(resolvedTmpRoot, resolvedRoot)) {
           failures.push(`junction/symlink alias control: makeTempRootOutside returned ${tmpRootFromAlias} (physically ${resolvedTmpRoot}), which is still inside the repo (${resolvedRoot}) despite the alias's own lexical path pointing outside it`);
-        }
+        } else control4Passed = true;
       } catch (e) {
         failures.push(`junction/symlink alias control: failed after the alias was created — a regression in the containment logic, not an environment limitation: ${e.message}`);
       } finally {
@@ -401,7 +399,7 @@ const control4FailureBaseline = failures.length;
     fs.rmSync(aliasPath, { recursive: true, force: true });
     fs.rmSync(physicalTarget, { recursive: true, force: true });
   }
-  completeCurrentControlScope(4, failures.length === control4FailureBaseline);
+  completeCurrentControlScope(4, control4Passed);
 }
 
 // Controls 385-388: release-facing fixture counts must track the authoritative scope header, while
@@ -673,7 +671,6 @@ for (const [table, label, width] of [['phrase', 'phrase', 3], ['code', 'code-pat
 
 // Controls 37-38: each canonical header anchor is unique. A duplicate must be diagnosed as
 observeControls({ start: 37, end: 38 });
-const control37FailureBaseline = failures.length;
 // an anchor-integrity error, rather than allowing the duplicate to redefine the scan range.
 for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -682,15 +679,15 @@ for (const [table, label] of [['phrase', 'phrase'], ['code', 'code-pattern']]) {
     hit.lines.splice(hit.target + 1, 0, hit.lines[hit.target]);
     return hit.lines.join('\n');
   });
+  const passed = !result.skipped && !result.executionFailure && result.status !== 0 && /duplicate|unique|exactly/i.test(result.output);
   if (result.skipped) failures.push('duplicate ' + label + ' anchor: required table anchor was not found');
   else if (result.executionFailure) failures.push(`duplicate ${label} anchor: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/duplicate|unique|exactly/i.test(result.output)) failures.push('duplicate ' + label + ' anchor: expected anchor uniqueness diagnostic, got: ' + result.output.trim());
-  completeCurrentControlScope(table === 'phrase' ? 37 : 38, failures.length === control37FailureBaseline);
+  completeCurrentControlScope(table === 'phrase' ? 37 : 38, passed);
 }
 
 // Control 39: the explicit end marker is unique.
 observeControls(39);
-const control39FailureBaseline = failures.length;
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
     const hit = anchoredTableEnd(source, 'code');
@@ -698,15 +695,15 @@ const control39FailureBaseline = failures.length;
     hit.lines.splice(hit.marker + 1, 0, hit.lines[hit.marker]);
     return hit.lines.join('\n');
   });
+  const passed = !result.skipped && !result.executionFailure && result.status !== 0 && /duplicate|unique|exactly/i.test(result.output);
   if (result.skipped) failures.push('duplicate code-pattern end marker: required end marker was not found');
   else if (result.executionFailure) failures.push(`duplicate code-pattern end marker: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/duplicate|unique|exactly/i.test(result.output)) failures.push('duplicate code-pattern end marker: expected end-marker uniqueness diagnostic, got: ' + result.output.trim());
-  completeCurrentControlScope(39, failures.length === control39FailureBaseline);
+  completeCurrentControlScope(39, passed);
 }
 
 // Control 40: removing the required blank immediately before the code-table end marker must
 observeControls(40);
-const control40FailureBaseline = failures.length;
 // be diagnosed as malformed table structure.
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
@@ -715,15 +712,15 @@ const control40FailureBaseline = failures.length;
     hit.lines.splice(hit.marker - 1, 1);
     return hit.lines.join('\n');
   });
+  const passed = !result.skipped && !result.executionFailure && result.status !== 0 && /blank|end marker|table/i.test(result.output);
   if (result.skipped) failures.push('missing end-marker blank: required blank/end marker was not found');
   else if (result.executionFailure) failures.push(`missing end-marker blank: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/blank|end marker|table/i.test(result.output)) failures.push('missing end-marker blank: expected required-blank structural diagnostic, got: ' + result.output.trim());
-  completeCurrentControlScope(40, failures.length === control40FailureBaseline);
+  completeCurrentControlScope(40, passed);
 }
 
 // Control 41: a parser-termination smoke probe over many unmatched, constant-size double-backtick
 observeControls(41);
-const control41FailureBaseline = failures.length;
 // runs. Each raw run is escaped at its first tick, which exposes a synthetic one-tick opener, but
 // the input has no raw one-tick run that could close it. The validator's deterministic
 // linear-operation budget is the primary oracle (a budget diagnostic is a failure); the generous
@@ -733,11 +730,12 @@ const control41FailureBaseline = failures.length;
   const runs = Array.from({ length: 96 }, () => '\\' + fixtureTick.repeat(2) + 'synthetic').join(' token ');
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) =>
     insertCodeRows(source, ['| ' + runs + ' | termination smoke |']), { timeoutMs: 30_000 });
+  const passed = !result.skipped && !result.executionFailure && result.status === 0 && !/linear operation budget/i.test(result.output);
   if (result.skipped || result.executionFailure || result.status !== 0 || /linear operation budget/i.test(result.output)) {
     const detail = result.error || result.output?.trim() || (result.skipped ? 'mutation was skipped' : 'unknown failure');
     failures.push('unmatched-backtick termination smoke control: validator failed its deterministic operation-budget oracle: ' + detail);
   }
-  completeCurrentControlScope(41, failures.length === control41FailureBaseline);
+  completeCurrentControlScope(41, passed);
 }
 
 
@@ -1687,10 +1685,10 @@ for (const [index, [value, status, needles, name]] of [
 
 // Controls 115-116: rule-text extraction must ignore signatures placed inside supported fenced
 observeControls({ start: 115, end: 116 });
-const control115FailureBaseline = failures.length;
 // code. Removing the live signature while adding the same text as a fenced decoy must fail both
 // section-scoped and row-scoped rule controls.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('B14 JoinSet admission-gated drain'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -1705,11 +1703,13 @@ const control115FailureBaseline = failures.length;
     for (let i = start; i < end; i += 1) lines[i] = lines[i].replaceAll('poll_join_next', 'removed_join_next');
     lines.splice(start + 1, 0, fixtureTick.repeat(3) + 'text', 'poll_join_next', fixtureTick.repeat(3));
     const scoped = sectionOf(lines.join('\n'), control.section);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('fenced section rule-text decoy unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('fenced section rule-text decoy unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(115, failures.length === control115FailureBaseline);
+  completeCurrentControlScope(115, passed);
 }
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('B13 pure-reader exemption'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -1720,9 +1720,10 @@ const control115FailureBaseline = failures.length;
     lines[at] = lines[at].replace('need not hold the same guard', 'must hold a guard');
     lines.splice(0, 0, fixtureTick.repeat(3) + 'text', 'pure reader that makes no check-then-act decision — need not hold the same guard', fixtureTick.repeat(3), '');
     const scoped = rowOf(lines.join('\n'), control.rowAnchor);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('fenced row rule-text decoy unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('fenced row rule-text decoy unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(116, failures.length === control115FailureBaseline);
+  completeCurrentControlScope(116, passed);
 }
 
 const workflowFiles = ['skill/audit-project.workflow.js', 'skills/rust-intel/audit-project.workflow.js'];
@@ -1916,7 +1917,6 @@ observeControls({ start: 121, end: 131 });
 
 // Control 132: the runtime merger must reject an audit result whose module disagrees with the
 observeControls(132);
-const control132FailureBaseline = failures.length;
 // assigned unit, even when its label is valid. This is a source-presence contract: changing the
 // module comparison to another field must make the validator fail the workflow check.
 {
@@ -1924,10 +1924,11 @@ const control132FailureBaseline = failures.length;
     if (!source.includes('result.module')) return null;
     return source.replaceAll('result.module', 'result.label');
   });
+  const passed = !result.skipped && !result.executionFailure && result.status !== 0 && /module|result/i.test(result.output);
   if (result.skipped) failures.push('runtime result.module mismatch control: workflow source has no module identity check');
   else if (result.executionFailure) failures.push(`runtime result.module mismatch control: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (result.status === 0 || !/module|result/i.test(result.output)) failures.push('runtime result.module mismatch control: replacing result.module checks did not fail the workflow contract: ' + result.output.trim());
-  completeCurrentControlScope(132, failures.length === control132FailureBaseline);
+  completeCurrentControlScope(132, passed);
 }
 
 // Control 133: a category-map boundary indented by one space is not the live scaffold marker.
@@ -1946,10 +1947,10 @@ observeControls(133);
 
 // Control 134: a fenced prose decoy containing a required row must not satisfy the rule-text
 observeControls(134);
-const control134FailureBaseline = failures.length;
 // oracle when the live row is reverted. The same text outside a fence is only a decoy if it is
 // outside both anchored trigger-table body ranges.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('B13 pure-reader exemption'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -1960,9 +1961,10 @@ const control134FailureBaseline = failures.length;
     lines[at] = lines[at].replace('need not hold the same guard', 'must hold a guard');
     lines.push('', 'prose decoy: pure reader that makes no check-then-act decision — need not hold the same guard');
     const scoped = rowOf(lines.join('\n'), control.rowAnchor);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('unfenced prose row decoy unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('unfenced prose row decoy unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(134, failures.length === control134FailureBaseline);
+  completeCurrentControlScope(134, passed);
 }
 
 // Control 135: JavaScript array elision is distinct from a Category-map trailing comma. Keep
@@ -2108,10 +2110,10 @@ observeControls(152);
 
 // Control 153: a complete earlier table-shaped decoy is not the named C12 catalog. Reverting
 observeControls(153);
-const control153FailureBaseline = failures.length;
 // the live row while cloning it under a wrong-header/wrong-width table must fail the scoped
 // rule-text oracle; a first-arbitrary-table lookup would incorrectly pass.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -2125,15 +2127,16 @@ const control153FailureBaseline = failures.length;
     lines[live] = lines[live].replace('either drop', 'drop one');
     lines.splice(header, 0, '| Task | Decoy |', '|---|---|', decoy);
     const scoped = moduleTableRowOf(lines.join('\n'), control.moduleRowAnchor, control.section);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('earlier unfenced module-table decoy unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('earlier unfenced module-table decoy unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(153, failures.length === control153FailureBaseline);
+  completeCurrentControlScope(153, passed);
 }
 
 // Control 154: an earlier unfenced numbered item is outside the named Operating mode list.
 observeControls(154);
-const control154FailureBaseline = failures.length;
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -2146,16 +2149,17 @@ const control154FailureBaseline = failures.length;
     lines[live] = lines[live].replace('fn remember', 'fn preserve');
     lines.splice(section, 0, decoy);
     const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('earlier unfenced numbered-list decoy unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('earlier unfenced numbered-list decoy unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(154, failures.length === control154FailureBaseline);
+  completeCurrentControlScope(154, passed);
 }
 
 // Control 155: a numbered item after an indented level-2 heading belongs to the following
 observeControls(155);
-const control155FailureBaseline = failures.length;
 // section, not to Operating mode. This protects the section boundary from first-match drift.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -2168,9 +2172,10 @@ const control155FailureBaseline = failures.length;
     lines[live] = lines[live].replace('fn remember', 'fn preserve');
     lines.splice(live + 1, 0, '  ## Following section boundary', decoy);
     const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('indented following heading decoy unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('indented following heading decoy unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(155, failures.length === control155FailureBaseline);
+  completeCurrentControlScope(155, passed);
 }
 
 // Control 156: a true trailing array elision (`[...,,]`) is not the same thing as one legal
@@ -2284,9 +2289,9 @@ observeControls(163);
 
 // Control 164: two canonical catalog tables in the same module section, with the live row
 observeControls(164);
-const control164FailureBaseline = failures.length;
 // reverted and the earlier table still complete, must not satisfy moduleTableRowOf.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -2302,16 +2307,17 @@ const control164FailureBaseline = failures.length;
       '| Task | Hand-rolled shape | Input where it is silently wrong | Crate (downloads) |',
       '|---|---|---|---|', decoy);
     const scoped = moduleTableRowOf(lines.join('\n'), control.moduleRowAnchor, control.section);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate canonical module-table decoy unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('duplicate canonical module-table decoy unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(164, failures.length === control164FailureBaseline);
+  completeCurrentControlScope(164, passed);
 }
 
 // Control 165: two target rows in one canonical catalog are ambiguous and must not be accepted
 observeControls(165);
-const control165FailureBaseline = failures.length;
 // by a first-match lookup.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('C12 either-defense catalog row'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -2322,16 +2328,17 @@ const control165FailureBaseline = failures.length;
   } else {
     lines.splice(live + 1, 0, lines[live]);
     const scoped = moduleTableRowOf(lines.join('\n'), control.moduleRowAnchor, control.section);
-    if (scoped) failures.push('duplicate target module-table row unexpectedly returned a row');
+    passed = !scoped;
+    if (!passed) failures.push('duplicate target module-table row unexpectedly returned a row');
   }
-  completeCurrentControlScope(165, failures.length === control165FailureBaseline);
+  completeCurrentControlScope(165, passed);
 }
 
 // Control 166: two target numbered items in the named section, with the original reverted, must
 observeControls(166);
-const control166FailureBaseline = failures.length;
 // not satisfy numberedItemOf through the first matching item.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -2344,9 +2351,10 @@ const control166FailureBaseline = failures.length;
     lines[live] = lines[live].replace('fn remember', 'fn preserve');
     lines.splice(live + 1, 0, decoy);
     const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate target numbered item unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('duplicate target numbered item unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(166, failures.length === control166FailureBaseline);
+  completeCurrentControlScope(166, passed);
 }
 
 // Controls 167-170: the per-unit coverage proof must be semantic, not a text-shaped ornament.
@@ -2437,10 +2445,10 @@ for (const [index, [name, mutation]] of [
 
 // Control 179: numberedItemOf requires one unambiguous live Operating mode section. Revert the
 observeControls(179);
-const control179FailureBaseline = failures.length;
 // real item and place a complete decoy in a second same-named section; a global first-match scan
 // would incorrectly satisfy the rule-text oracle.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -2453,16 +2461,17 @@ const control179FailureBaseline = failures.length;
     lines[live] = lines[live].replace('fn remember', 'fn preserve');
     lines.splice(section, 0, '## Operating mode', decoy, '');
     const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate Operating mode section unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('duplicate Operating mode section unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(179, failures.length === control179FailureBaseline);
+  completeCurrentControlScope(179, passed);
 }
 
 // Control 180: a good numbered-item decoy immediately before the reverted live item is still an
 observeControls(180);
-const control180FailureBaseline = failures.length;
 // ambiguity. Exactly-one matching-item semantics must reject it rather than accepting the first.
 {
+  let passed = false;
   const control = ruleTextControls.find(({ name }) => name.startsWith('B1a out-parameter cache witness'));
   const original = fs.readFileSync(path.join(root, control.file), 'utf8');
   const lines = splitFixtureLines(original);
@@ -2475,9 +2484,10 @@ const control180FailureBaseline = failures.length;
     lines[live] = lines[live].replace('fn remember', 'fn preserve');
     lines.splice(live, 0, decoy);
     const scoped = numberedItemOf(lines.join('\n'), control.listItemAnchor, control.section);
-    if (control.require.every((token) => scoped.includes(token))) failures.push('duplicate target-before-live numbered item unexpectedly satisfied the live rule');
+    passed = !control.require.every((token) => scoped.includes(token));
+    if (!passed) failures.push('duplicate target-before-live numbered item unexpectedly satisfied the live rule');
   }
-  completeCurrentControlScope(180, failures.length === control180FailureBaseline);
+  completeCurrentControlScope(180, passed);
 }
 
 // Control 181: a truthy disjunction on a new line is still an unconditional bypass of the
@@ -3350,12 +3360,14 @@ observeControls(355);
 
 // Control 356: direct boundary oracle for the shared predicate. This is intentionally not a
 observeControls(356);
-const control356FailureBaseline = failures.length;
 // mutation of validate.mjs: it catches a helper that has the right spelling and exports but gets
 // the 23.x/24.0.0 boundary wrong. 24.0.0 prereleases remain below the stable floor.
 {
   const require = createRequire(import.meta.url);
   const helper = require('../bin/node-version.js');
+  let checked = 0;
+  let passed = false;
+  let mismatch = false;
   for (const [version, expected] of [
     ['23.11.1', false],
     ['24.0.0-rc.1', false],
@@ -3363,9 +3375,14 @@ const control356FailureBaseline = failures.length;
     ['24.0.1', true],
     ['25.0.0', true],
   ]) {
-    if (helper.isSupportedNodeVersion(version) !== expected) failures.push(`Control 356: shared Node predicate boundary mismatch for ${version}`);
+    checked += 1;
+    if (helper.isSupportedNodeVersion(version) !== expected) {
+      mismatch = true;
+      failures.push(`Control 356: shared Node predicate boundary mismatch for ${version}`);
+    }
   }
-  completeCurrentControlScope(356, failures.length === control356FailureBaseline);
+  passed = checked === 5 && !mismatch;
+  completeCurrentControlScope(356, passed);
 }
 
 // Controls 357-360: every executable entry point carries its own runtime guard call. Commenting
@@ -3601,38 +3618,82 @@ function declaredRegistryTotal(source) {
   const matches = [...source.matchAll(/^const CONTROL_REGISTRY_TOTAL = (\d+);$/gmu)];
   return matches.length === 1 ? Number.parseInt(matches[0][1], 10) : null;
 }
+let control389CaseCount = 0;
+let control389CaseFailures = 0;
 function expectRegistryCase(name, run, expectedDiagnostics) {
+  control389CaseCount += 1;
   const diagnostics = run();
-  if (!expectedDiagnostics.length && diagnostics.length) failures.push(`Control 389: ${name} unexpectedly failed: ${diagnostics.join('; ')}`);
-  for (const expected of expectedDiagnostics) {
-    if (!diagnostics.includes(expected)) failures.push(`Control 389: ${name} expected diagnostic ${expected}, got ${diagnostics.join('; ')}`);
+  if (JSON.stringify(diagnostics) !== JSON.stringify(expectedDiagnostics)) {
+    control389CaseFailures += 1;
+    failures.push(`Control 389: ${name} diagnostics mismatch: expected ${JSON.stringify(expectedDiagnostics)}, got ${JSON.stringify(diagnostics)}`);
   }
 }
+expectRegistryCase('retained child completion', () => {
+  const registry = createControlRegistry(1);
+  registry.register(1);
+  const childResult = { status: 0 };
+  registry.complete(1, childResult.status === 0);
+  return registry.finalize();
+}, []);
+expectRegistryCase('retained in-process completion', () => {
+  const registry = createControlRegistry(1);
+  registry.register(1);
+  const semanticObservation = ['expected'];
+  registry.complete(1, semanticObservation.length === 1);
+  return registry.finalize();
+}, []);
 expectRegistryCase('missing semantic outcome', () => {
   const registry = createControlRegistry(3);
   registry.register({ start: 1, end: 3 });
   registry.complete(1, true);
   registry.complete(3, true);
   return registry.finalize();
-}, ['missing executable controls: 2']);
+}, [
+  'executable controls missing assertion/outcome invocation: 2',
+  'missing executable controls: 2',
+]);
 expectRegistryCase('Control 1 semantic body removed while registration remains', () => {
-  const registry = createControlRegistry(3);
+  const registry = createControlRegistry(1);
   registry.register(1);
   return registry.finalize();
-}, ['missing executable controls: 1']);
+}, [
+  'executable controls missing assertion/outcome invocation: 1',
+  'missing executable controls: 1',
+]);
+expectRegistryCase('in-process body removed outcome is false', () => {
+  const registry = createControlRegistry(1);
+  registry.register(1);
+  let passed;
+  registry.complete(1, passed);
+  return registry.finalize();
+}, ['control 1 completed with a false outcome predicate']);
 expectRegistryCase('duplicate explicit outcome', () => {
   const registry = createControlRegistry(3);
   registry.register(1);
   registry.complete(1, true);
   registry.complete(1, true);
   return registry.finalize();
-}, ['executable control 1 was observed more than once']);
+}, [
+  'executable control 1 was observed more than once',
+  'missing executable control registration: 2',
+  'missing executable controls: 2',
+  'missing executable control registration: 3',
+  'missing executable controls: 3',
+]);
 expectRegistryCase('foreign explicit outcome', () => {
-  const registry = createControlRegistry(389);
-  registry.register(389);
-  registry.complete(390, true);
+  const registry = createControlRegistry(3);
+  registry.register(3);
+  registry.complete(4, true);
   return registry.finalize();
-}, ['assertion/outcome helper claimed control 390, outside current executable scope 389']);
+}, [
+  'assertion/outcome helper claimed control 4, outside current executable scope 3',
+  'executable controls missing assertion/outcome invocation: 3',
+  'missing executable control registration: 1',
+  'missing executable controls: 1',
+  'missing executable control registration: 2',
+  'missing executable controls: 2',
+  'missing executable controls: 3',
+]);
 expectRegistryCase('omitted middle plus neighboring duplicate', () => {
   const registry = createControlRegistry(3);
   registry.register({ start: 1, end: 3 });
@@ -3640,12 +3701,20 @@ expectRegistryCase('omitted middle plus neighboring duplicate', () => {
   registry.complete(1, true);
   registry.complete(3, true);
   return registry.finalize();
-}, ['executable control 1 was observed more than once', 'missing executable controls: 2']);
+}, [
+  'executable control 1 was observed more than once',
+  'executable controls missing assertion/outcome invocation: 2',
+  'missing executable controls: 2',
+]);
 expectRegistryCase('header total drift', () => {
-  const registry = createControlRegistry(389);
-  registry.checkHeader(388);
+  const registry = createControlRegistry(3);
+  registry.register({ start: 1, end: 3 });
+  registry.complete(1, true);
+  registry.complete(2, true);
+  registry.complete(3, true);
+  registry.checkHeader(2);
   return registry.finalize();
-}, ['control registry/header mismatch: executable registry declares 389, scope header declares 388']);
+}, ['control registry/header mismatch: executable registry declares 3, scope header declares 2']);
 expectRegistryCase('declaration decoys do not replace live declaration', () => {
   const source = '// const CONTROL_REGISTRY_TOTAL = 777;\nconst text = `const CONTROL_REGISTRY_TOTAL = 888;`;\nconst CONTROL_REGISTRY_TOTAL = 389;';
   return declaredRegistryTotal(source) === 389 ? [] : ['live executable registry declaration'];
@@ -3656,9 +3725,13 @@ expectRegistryCase('registry source has no accounting-only marker patterns', () 
   const violations = [];
   if (fixtureSource.includes(forbiddenScopeHelper)) violations.push('control scope helper pattern');
   if (fixtureSource.includes(forbiddenTrueAssertion)) violations.push('unconditional assertion marker pattern');
+  const forbiddenCounterPattern = ['Failure', 'Baseline'].join('');
+  if (fixtureSource.includes(forbiddenCounterPattern)) violations.push('failure-baseline completion pattern');
+  const forbiddenDefaultOutcome = ['function completeCurrentControlScope(controlId, outcome = ', 'true)'].join('');
+  if (fixtureSource.includes(forbiddenDefaultOutcome)) violations.push('default-true completion outcome');
   return violations;
 }, []);
-const control389Passed = !failures.some((failure) => failure.startsWith('Control 389:'));
+const control389Passed = control389CaseCount === 11 && control389CaseFailures === 0;
 completeCurrentControlScope(389, control389Passed);
 
 for (const fixture of cases) {
