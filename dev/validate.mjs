@@ -1130,7 +1130,13 @@ function workflowMutationCheck(source, names, rawSource = source) {
             ternaryDepth = 0;
             continue;
           }
-          if (character === '?' && source[cursor + 1] !== '.' && source[cursor + 1] !== '?') {
+          const nextCharacter = source[cursor + 1];
+          // `?.5` is tokenized as a conditional `?` followed by the decimal `.5`, not as
+          // optional chaining.  Only treat `?.` as chaining when the character after the dot
+          // is not a decimal digit; otherwise its `:` must close the ternary expression.
+          const optionalChain = nextCharacter === '.'
+            && !/[0-9]/u.test(source[cursor + 2] ?? '');
+          if (character === '?' && nextCharacter !== '?' && !optionalChain) {
             ternaryDepth += 1;
             continue;
           }

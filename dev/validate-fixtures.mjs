@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: three hundred thirty-nine hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: three hundred forty-three hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2902,6 +2902,38 @@ for (const [number, name, root, property] of [
     `const methodKeyword${number} = { ${property}() { return ${root}.length; } }; void methodKeyword${number}.${property}();`,
   ));
   expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
+}
+
+// Controls 340-341: `flag?.5:0` is a decimal/consequent conditional expression, not optional
+// chaining.  The decimal immediately after `?.` changes tokenization, so its first colon belongs
+// to the ternary and the second colon terminates the switch case.  Keep the class declaration and
+// direct root update on the reached case path; a scanner that treats the first colon as the label
+// boundary will lose the mutation and incorrectly accept both immutable roots.
+for (const [number, root] of [
+  [340, 'MODULES'],
+  [341, 'AUDIT_UNITS'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `switch (value) { case flag?.5:0: class DecimalConsequentClass${number} {} ++${root}.length; }`,
+  ));
+  expectFixture(result, `Control ${number}: decimal/consequent ternary switch case (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 342-343: genuine optional chaining in a switch-case expression is not a ternary and
+// must not over-report a harmless root read.  The member property is deliberately followed by
+// the case label colon, pinning the distinction from the decimal spelling above for both roots.
+for (const [number, root] of [
+  [342, 'MODULES'],
+  [343, 'AUDIT_UNITS'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `switch (value) { case optionalTarget?.property: void ${root}.length; }`,
+  ));
+  expectFixture(result, `Control ${number}: genuine optional-chaining switch case read (${root}) remains accepted`, 0);
 }
 
 for (const fixture of cases) {
