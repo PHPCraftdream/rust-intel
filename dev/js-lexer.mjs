@@ -48,6 +48,8 @@ function scanLexical(source) {
   let canStartRegex = true;
   let previousWord = '';
   let previousWasDot = false;
+  let previousWasProperty = false;
+  let pendingClassDeclaration = false;
   let previousToken = '';
   let operations = 0;
   let index = 0;
@@ -95,12 +97,14 @@ function scanLexical(source) {
     canStartRegex = false;
     previousWord = '';
     previousWasDot = false;
+    previousWasProperty = false;
   };
   const leaveTemplate = () => {
     mode = modeStack.pop() || 'code';
     canStartRegex = false;
     previousWord = '';
     previousWasDot = false;
+    previousWasProperty = false;
   };
 
   while (index < source.length) {
@@ -145,7 +149,7 @@ function scanLexical(source) {
     if (character === "'" || character === '"') {
       blank(index);
       index += 1;
-      skipQuoted(character); canStartRegex = false; previousWord = ''; previousWasDot = false; previousToken = 'literal'; continue;
+      skipQuoted(character); canStartRegex = false; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = 'literal'; continue;
     }
     if (character === '`') { blank(index); index += 1; enterTemplate(); previousToken = 'literal'; continue; }
 
@@ -158,7 +162,9 @@ function scanLexical(source) {
       const word = source.slice(start, index);
       const propertyName = previousWasDot;
       previousWasDot = false;
+      previousWasProperty = propertyName;
       previousWord = word;
+      if (word === 'class' && !propertyName) pendingClassDeclaration = true;
       canStartRegex = !propertyName && isExpressionPrefixKeyword(word);
       previousToken = 'word';
       continue;
@@ -166,7 +172,7 @@ function scanLexical(source) {
     if (/[0-9]/u.test(character) || (character === '.' && /[0-9]/u.test(next))) {
       index += 1;
       while (index < source.length && /[A-Za-z0-9._]/u.test(source[index])) { index += 1; step(); }
-      canStartRegex = false; previousWord = ''; previousWasDot = false; previousToken = 'number'; continue;
+      canStartRegex = false; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = 'number'; continue;
     }
 
     if (character === '/' && canStartRegex) {
@@ -178,18 +184,18 @@ function scanLexical(source) {
     }
 
     if (character === '(') {
-      push({ type: 'paren', control: !previousWasDot && isControlKeyword(previousWord) });
-      canStartRegex = true; previousWord = ''; previousWasDot = false; previousToken = '('; index += 1; continue;
+      push({ type: 'paren', control: !previousWasProperty && isControlKeyword(previousWord) });
+      canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '('; index += 1; continue;
     }
     if (character === '[') {
-      push({ type: 'bracket' }); canStartRegex = true; previousWord = ''; previousWasDot = false; previousToken = '['; index += 1; continue;
+      push({ type: 'bracket' }); canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '['; index += 1; continue;
     }
     if (character === '{') {
       const block = previousWord === 'else' || previousWord === 'do' || previousWord === 'try'
-        || previousWord === 'finally' || previousWord === 'class' || previousToken === ')'
-        || previousToken === '}' || previousToken === ';' || previousToken === '=>'
+        || previousWord === 'catch' || previousWord === 'finally' || pendingClassDeclaration || previousToken === ')'
+        || previousToken === '}' || previousToken === ';' || previousToken === ':' || previousToken === '=>'
         || (previousToken === '' && stack.length === 0);
-      push({ type: 'brace', block }); canStartRegex = true; previousWord = ''; previousWasDot = false; previousToken = '{'; index += 1; continue;
+      push({ type: 'brace', block }); pendingClassDeclaration = false; canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '{'; index += 1; continue;
     }
     if (character === ')' || character === ']' || character === '}') {
       const expected = character === ')' ? 'paren' : character === ']' ? 'bracket' : 'brace';
@@ -203,18 +209,20 @@ function scanLexical(source) {
       else if (character === ')') canStartRegex = Boolean(entry?.control);
       else if (character === '}') canStartRegex = Boolean(entry?.block);
       else canStartRegex = false;
-      previousWord = ''; previousWasDot = false; previousToken = character; index += 1; continue;
+      previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = character; index += 1; continue;
     }
 
     const two = source.slice(index, index + 2);
-    if (two === '++' || two === '--') { index += 2; canStartRegex = false; previousWord = ''; previousWasDot = false; previousToken = two; continue; }
-    if (character === '.') { index += 1; canStartRegex = false; previousWord = ''; previousWasDot = true; previousToken = '.'; continue; }
+    if (two === '++' || two === '--') { index += 2; canStartRegex = false; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = two; continue; }
+    if (two === '?.') { index += 2; canStartRegex = false; previousWasDot = true; previousWasProperty = false; previousToken = two; continue; }
+    if (character === '.') { index += 1; canStartRegex = false; previousWord = ''; previousWasDot = true; previousWasProperty = false; previousToken = '.'; continue; }
     // Operators and statement separators permit an expression next. Keeping this decision here
     // means `/` after division is recognized as a regexp without inspecting an ever-growing prefix.
     canStartRegex = true;
     previousWord = '';
     previousWasDot = false;
-    previousToken = two;
+    previousWasProperty = false;
+    previousToken = character === ';' || character === ':' ? character : two;
     index += ['=>', '&&', '||', '??', '**', '==', '!=', '<=', '>=', '<<', '>>', '?.'].includes(two) ? 2 : 1;
   }
   const result = { regexStarts, masked: masked.join(''), lineCommentRanges };
@@ -236,64 +244,204 @@ export function maskJsNonCode(source, { preserveLineComments = false } = {}) {
   return output.join('');
 }
 
-function matchingParentheses(masked) {
-  const openings = [];
-  const matching = new Map();
-  for (let index = 0; index < masked.length; index += 1) {
-    if (masked[index] === '(') openings.push(index);
-    else if (masked[index] === ')' && openings.length) {
-      const opening = openings.pop();
-      matching.set(opening, index);
+function decodeIdentifier(raw) {
+  let decoded = '';
+  for (let index = 0; index < raw.length;) {
+    if (raw[index] !== '\\') { decoded += raw[index]; index += 1; continue; }
+    if (raw[index + 1] !== 'u') return null;
+    let end = index + 2;
+    let digits = '';
+    if (raw[end] === '{') {
+      end += 1;
+      const start = end;
+      while (end < raw.length && /[0-9A-Fa-f]/u.test(raw[end])) end += 1;
+      if (end === start || raw[end] !== '}') return null;
+      digits = raw.slice(start, end); end += 1;
+    } else {
+      digits = raw.slice(end, end + 4);
+      if (digits.length !== 4 || !/^[0-9A-Fa-f]{4}$/u.test(digits)) return null;
+      end += 4;
     }
+    const codePoint = Number.parseInt(digits, 16);
+    if (codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return null;
+    decoded += String.fromCodePoint(codePoint);
+    index = end;
   }
-  return matching;
+  return decoded;
 }
 
-function splitArguments(masked, start, end) {
-  const ranges = [];
-  let argumentStart = start;
-  let parenDepth = 0; let bracketDepth = 0; let braceDepth = 0;
-  for (let index = start; index < end; index += 1) {
-    const character = masked[index];
-    if (character === '(') parenDepth += 1;
-    else if (character === ')') parenDepth -= 1;
-    else if (character === '[') bracketDepth += 1;
-    else if (character === ']') bracketDepth -= 1;
-    else if (character === '{') braceDepth += 1;
-    else if (character === '}') braceDepth -= 1;
-    else if (character === ',' && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
-      ranges.push([argumentStart, index]); argumentStart = index + 1;
-    }
-  }
-  ranges.push([argumentStart, end]);
-  return ranges;
-}
-
-function stripBalancedParens(masked, start, end, matching) {
-  while (true) {
-    while (start < end && /\s/u.test(masked[start])) start += 1;
-    while (end > start && /\s/u.test(masked[end - 1])) end -= 1;
-    if (masked[start] !== '(' || matching.get(start) !== end - 1) return masked.slice(start, end).trim();
-    start += 1; end -= 1;
-  }
+const COMPLETION_NAME = 'completeCurrentControlScope';
+const COMPLETION_PREFIX_WORDS = new Set([
+  'return', 'throw', 'case', 'delete', 'typeof', 'void', 'new', 'in', 'instanceof',
+  'yield', 'await', 'else', 'do', 'break', 'continue',
+]);
+function completionName(raw) {
+  return decodeIdentifier(raw) === COMPLETION_NAME;
 }
 
 function completionDiagnostics(source) {
   const executable = maskJsNonCode(source);
-  const matching = matchingParentheses(executable);
+  // This is deliberately one forward pass.  Delimiter matching, argument splitting, candidate
+  // discovery, and candidate inspection all charge the same budget; an adversarial run of
+  // unmatched delimiters therefore fails closed instead of retrying a growing prefix.
+  const operationLimit = 256 + source.length * 64;
+  let operations = 0;
+  const step = (count = 1) => {
+    operations += count;
+    if (operations > operationLimit) throw new Error('completion lexical scan exceeded its deterministic budget');
+  };
+  const stack = [];
+  const significant = [];
+  const aliases = new Set();
   const diagnostics = [];
-  const candidate = /(?:\(\s*)*(?:completeCurrentControlScope|completeCurrentControlSc\\u(?:\{0*6[fF]\}|0*6[fF])pe)\s*(?:\)\s*)*(?:\?\.\s*)?\(/gu;
-  for (const match of executable.matchAll(candidate)) {
-    const start = match.index;
-    if (executable[start - 1] === '.' || /[A-Za-z0-9_$]/u.test(executable[start - 1] || '')) continue;
-    const openIndex = executable.indexOf('(', start + match[0].length - 1);
-    const closeIndex = matching.get(openIndex) ?? -1;
-    if (closeIndex < 0) continue;
-    const ranges = splitArguments(executable, openIndex + 1, closeIndex);
-    if (ranges.length < 2 || stripBalancedParens(executable, ranges[1][0], ranges[1][1], matching) !== 'true') continue;
-    const first = stripBalancedParens(executable, ranges[0][0], ranges[0][1], matching);
-    const idMatch = /^(?:0|[1-9][0-9]*)$/u.exec(first);
-    diagnostics.push({ index: start, id: idMatch && Number.isSafeInteger(Number(idMatch[0])) ? Number(idMatch[0]) : null });
+  const previous = () => significant[significant.length - 1];
+  const isWord = (character) => character !== undefined && /[A-Za-z_$\p{ID_Start}]/u.test(character);
+  const isWordContinue = (character) => character !== undefined
+    && /[A-Za-z0-9_$\u200C\u200D\p{ID_Continue}]/u.test(character);
+  const isEscapeStart = (index) => executable[index] === '\\' && executable[index + 1] === 'u';
+  const readWord = (start) => {
+    let index = start;
+    while (index < executable.length) {
+      if (isWordContinue(executable[index])) { index += 1; continue; }
+      if (!isEscapeStart(index)) break;
+      if (executable[index + 2] === '{') {
+        let close = index + 3;
+        while (close < executable.length && /[0-9A-Fa-f]/u.test(executable[close])) { step(); close += 1; }
+        if (close === index + 3 || executable[close] !== '}') break;
+        index = close + 1;
+      } else if (/^[0-9A-Fa-f]{4}$/u.test(executable.slice(index + 2, index + 6))) index += 6;
+      else break;
+    }
+    return index;
+  };
+  const addAtom = (atom) => {
+    const frame = stack.at(-1);
+    if (frame) frame.args[frame.argument].push(atom);
+  };
+  const summary = (atoms) => {
+    if (atoms.length !== 1) return { kind: 'other' };
+    const atom = atoms[0];
+    if (atom.kind === 'word' && atom.value === 'true') return { kind: 'true' };
+    if (atom.kind === 'number') return { kind: 'number', value: atom.value };
+    if (atom.kind === 'group') return atom.summary;
+    if (atom.kind === 'array') return atom;
+    return { kind: 'other' };
+  };
+  const callInfo = () => {
+    const last = previous();
+    const beforeLast = significant[significant.length - 2];
+    const beforeBeforeLast = significant[significant.length - 3];
+    const beforeBeforeBeforeLast = significant[significant.length - 4];
+    if (last?.kind === 'word' && (completionName(last.value) || aliases.has(last.value))) {
+      if (beforeLast?.value === '.' || beforeLast?.value === '?.') return null;
+      if (beforeLast && ['number', 'close'].includes(beforeLast.kind)) return null;
+      if (beforeLast?.kind === 'word' && !COMPLETION_PREFIX_WORDS.has(beforeLast.value)) return null;
+      return { outcome: 1, id: 0, index: last.start };
+    }
+    if (last?.kind === 'close' && last.groupName && completionName(last.groupName)) {
+      return { outcome: 1, id: 0, index: last.start };
+    }
+    const calleeToken = beforeBeforeLast?.kind === 'word' && completionName(beforeBeforeLast.value)
+      ? beforeBeforeLast : beforeBeforeLast?.kind === 'close' && beforeBeforeLast.groupName
+        && completionName(beforeBeforeLast.groupName) ? beforeBeforeLast : null;
+    if (last?.kind === 'word' && (last.value === 'call' || last.value === 'apply')
+      && beforeLast?.value === '.' && calleeToken
+      && (!beforeBeforeBeforeLast || !['word', 'number', 'close'].includes(beforeBeforeBeforeLast.kind))) {
+      return { outcome: last.value === 'call' ? 2 : 1, id: last.value === 'call' ? 1 : 1, apply: last.value === 'apply', index: calleeToken.start };
+    }
+    if (last?.kind === 'punct' && last.value === '?.'
+      && ((beforeLast?.kind === 'word' && completionName(beforeLast.value))
+        || (beforeLast?.kind === 'close' && completionName(beforeLast.groupName)))) {
+      return { outcome: 1, id: 0, index: beforeLast.start };
+    }
+    return null;
+  };
+  const isUnconditional = (value, info) => {
+    if (value.kind === 'true') return true;
+    if (info.apply && value.kind === 'array') return value.values?.[1]?.kind === 'true';
+    return false;
+  };
+  const closeFrame = (frame) => {
+    const value = frame.kind === 'array'
+      ? { kind: 'array', values: frame.args.map(summary) }
+      : frame.kind === 'paren' && frame.call
+        ? { kind: 'other' }
+        : summary(frame.args[0]);
+    if (frame.call && isUnconditional(summary(frame.args[frame.call.outcome] || []), frame.call)) {
+      let idSummary = summary(frame.args[frame.call.id ?? 0] || []);
+      if (frame.call.apply && idSummary.kind === 'array') idSummary = idSummary.values?.[0] || { kind: 'other' };
+      const id = idSummary.kind === 'number' && /^(?:0|[1-9][0-9]*)$/u.test(idSummary.value)
+        && Number.isSafeInteger(Number(idSummary.value)) ? Number(idSummary.value) : null;
+      diagnostics.push({ index: frame.call.index, id });
+    }
+    if (frame.kind === 'paren' && !frame.call) {
+      const atoms = frame.args[0] || [];
+      const groupName = atoms.length === 1
+        && ((atoms[0].kind === 'word' && completionName(atoms[0].value)) ? atoms[0].value : atoms[0].groupName);
+      return groupName
+        ? { kind: 'group', summary: { kind: 'other' }, groupName }
+        : { kind: 'group', summary: value };
+    }
+    return frame.kind === 'array' ? value : { kind: 'group', summary: value };
+  };
+  const emit = (token) => {
+    addAtom(token);
+    significant.push(token);
+  };
+  for (let index = 0; index < executable.length;) {
+    step();
+    const character = executable[index];
+    if (/\s/u.test(character)) { index += 1; continue; }
+    if (isWord(character) || isEscapeStart(index)) {
+      const end = readWord(index);
+      step(end - index);
+      const value = executable.slice(index, end);
+      const token = { kind: 'word', value, start: index };
+      const prior = significant.at(-1);
+      const priorPrior = significant.at(-2);
+      if (prior?.value === '=' && priorPrior?.kind === 'word'
+        && (significant.at(-3)?.value === 'const' || significant.at(-3)?.value === 'let' || significant.at(-3)?.value === 'var')
+        && completionName(value)) aliases.add(priorPrior.value);
+      emit(token); index = end; continue;
+    }
+    if (/[0-9]/u.test(character)) {
+      let end = index + 1;
+      while (end < executable.length && /[A-Za-z0-9._]/u.test(executable[end])) end += 1;
+      step(end - index); emit({ kind: 'number', value: executable.slice(index, end), start: index }); index = end; continue;
+    }
+    if (character === '(') {
+      const call = callInfo();
+      const frame = { kind: 'paren', argument: 0, args: [[]], call };
+      stack.push(frame); significant.push({ kind: 'open', frame, start: index }); index += 1; continue;
+    }
+    if (character === '[' || character === '{') {
+      const frame = { kind: character === '[' ? 'array' : 'object', argument: 0, args: [[]] };
+      stack.push(frame); significant.push({ kind: 'open', frame, start: index }); index += 1; continue;
+    }
+    if (character === ',') {
+      const frame = stack.at(-1);
+      if (frame?.kind === 'paren' || frame?.kind === 'array') { frame.argument += 1; frame.args.push([]); }
+      else emit({ kind: 'punct', value: ',', start: index });
+      index += 1; continue;
+    }
+    if (character === ')' || character === ']' || character === '}') {
+      const expected = character === ')' ? 'paren' : character === ']' ? 'array' : 'object';
+      let frame = stack.pop();
+      while (frame && frame.kind !== expected) frame = stack.pop();
+      if (!frame) { emit({ kind: 'punct', value: character, start: index }); index += 1; continue; }
+      const group = closeFrame(frame);
+      const close = { kind: 'close', value: character, frame, groupName: group.groupName, start: index };
+      significant.push(close);
+      addAtom(group);
+      index += 1; continue;
+    }
+    if (character === '.' && executable[index + 1] === '?') {
+      emit({ kind: 'punct', value: '?.', start: index }); index += 2; continue;
+    }
+    if (character === '?' && executable[index + 1] === '.') {
+      emit({ kind: 'punct', value: '?.', start: index }); index += 2; continue;
+    }
+    emit({ kind: 'punct', value: character, start: index }); index += 1;
   }
   return diagnostics;
 }
@@ -303,5 +451,5 @@ export function literalTrueCompletionDiagnostics(source) {
 }
 
 export function literalTrueCompletionViolations(source) {
-  return completionDiagnostics(source).map(({ id }) => id).filter((id) => id !== null);
+  return completionDiagnostics(source).map(({ id }) => id);
 }

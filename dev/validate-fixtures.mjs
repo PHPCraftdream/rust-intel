@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 389 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 399 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 371 spawn a validator child and 18 are in-process (the junction alias and direct oracles); there
+// 371 spawn a validator child and 28 are in-process (the junction alias and direct oracles); there
 // are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
 // probes (B5/B26). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -72,7 +72,7 @@ const failures = [];
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 389;
+const CONTROL_REGISTRY_TOTAL = 399;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -3769,8 +3769,8 @@ expectRegistryCase('header total drift', () => {
   return registry.finalize();
 }, ['control registry/header mismatch: executable registry declares 3, scope header declares 2']);
 expectRegistryCase('declaration decoys do not replace live declaration', () => {
-  const source = '// const CONTROL_REGISTRY_TOTAL = 777;\nconst text = `const CONTROL_REGISTRY_TOTAL = 888;`;\nconst CONTROL_REGISTRY_TOTAL = 389;';
-  return declaredRegistryTotal(source) === 389 ? [] : ['live executable registry declaration'];
+  const source = '// const CONTROL_REGISTRY_TOTAL = 777;\nconst text = `const CONTROL_REGISTRY_TOTAL = 888;`;\nconst CONTROL_REGISTRY_TOTAL = 399;';
+  return declaredRegistryTotal(source) === 399 ? [] : ['live executable registry declaration'];
 }, []);
 expectRegistryCase('shared lexical helper detects literal true without masking live code', () => {
   const decoys = [
@@ -3824,6 +3824,46 @@ expectRegistryCase('registry source has no accounting-only marker patterns', () 
 }, []);
 const control389Passed = control389CaseCount === 12 && control389CaseFailures === 0;
 completeCurrentControlScope(389, control389Passed);
+
+// Controls 390-393: token roles must preserve keyword-named members and statement boundaries
+// when deciding whether a slash starts a regexp.  The first case is executable division and
+// must stay visible; the remaining cases are valid regexp statements and must be masked.
+observeControls({ start: 390, end: 393 });
+for (const [number, source, expectedVisible] of [
+  [390, 'obj.if() / MODULES.push({}) / 2;', 'MODULES.push'],
+  [391, 'class X {} /MODULES.push({})/.test(x);', 'MODULES.push'],
+  [392, 'try {} catch {} /MODULES.push({})/.test(x);', 'MODULES.push'],
+  [393, 'label: {} /completeCurrentControlScope(11, true)/.test(x);', 'completeCurrentControlScope'],
+]) {
+  const masked = maskJsNonCode(source);
+  const passed = number === 390 ? masked.includes(expectedVisible) : !masked.includes(expectedVisible.trim());
+  if (!passed) failures.push(`Control ${number}: JavaScript token-role boundary masking mismatch`);
+  completeCurrentControlScope(number, passed);
+}
+
+// Controls 394-398: every executable unconditional completion spelling is visible to the live
+// gate, including a nonliteral ID, escaped/optional/parenthesized callees, aliases, and indirect
+// call/apply forms.  Foreign properties remain intentionally outside this contract.
+observeControls({ start: 394, end: 398 });
+for (const [number, source, expected] of [
+  [394, 'completeCurrentControlScope(number, true);', [null]],
+  [395, 'completeCurrentControlSc\\u006fpe(1, true);', [1]],
+  [396, 'const done = completeCurrentControlScope; done(2, true);', [2]],
+  [397, 'completeCurrentControlScope.call(null, 3, true);', [3]],
+  [398, 'completeCurrentControlScope.apply(null, [4, true]);', [4]],
+]) {
+  const actual = literalTrueCompletionViolations(source);
+  const passed = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!passed) failures.push(`Control ${number}: unconditional completion diagnostic mismatch (got ${JSON.stringify(actual)})`);
+  completeCurrentControlScope(number, passed);
+}
+
+// Control 399: deeply unmatched delimiters must fail closed under the shared lexical depth/
+// operation budget instead of allowing completion candidate discovery to grow without bound.
+observeControls(399);
+let bounded = false;
+try { literalTrueCompletionDiagnostics('('.repeat(100_001)); } catch { bounded = true; }
+completeCurrentControlScope(399, bounded);
 
 for (const fixture of cases) {
   const source = fs.readFileSync(path.join(fixtureRoot, fixture.file), 'utf8');
