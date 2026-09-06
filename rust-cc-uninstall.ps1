@@ -109,11 +109,16 @@ foreach ($destination in $owned | Select-Object -Unique) {
 $journalPath = Join-Path $txDir 'journal.json'
 Write-TransactionJournal $journalPath 'prepared' $records
 try {
+    $backupCount = 0
     foreach ($record in $records) {
         if (-not $record.originalPresent) { continue }
         $record.status = 'backing-up'; Write-TransactionJournal $journalPath 'active' $records
         Move-Item -LiteralPath $record.destination -Destination $record.backup
         $record.status = 'backed-up'; Write-TransactionJournal $journalPath 'active' $records
+        $backupCount++
+        if ($env:RUST_INTEL_INSTALL_FAIL_AFTER -and $backupCount -eq [int]$env:RUST_INTEL_INSTALL_FAIL_AFTER) {
+            throw "Injected uninstall failure after backup $backupCount."
+        }
     }
     $removedAny = [bool]($records | Where-Object { $_.originalPresent })
     Write-TransactionJournal $journalPath 'committed' $records

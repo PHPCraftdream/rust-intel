@@ -52,6 +52,7 @@ jobs:
           node --check dev/check-release-version.mjs
           node --check dev/semver.mjs
           node --check dev/sync-mirror.mjs
+          node --check dev/snapshot-install.mjs
           node --check skill/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
@@ -62,18 +63,24 @@ jobs:
           root="$(mktemp -d)"
           trap 'rm -rf "$root"' EXIT
           target="$root/target with spaces"
-          CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh
-          test -f "$target/skills/rust-intel/SKILL.md"
+          mkdir -p "$target/skills/rust-intel" "$target/commands/rust-intel-cc"
+          printf 'old-skill\n' > "$target/skills/rust-intel/SKILL.md"
+          for path in rust-cc-audit.md rust-cc-fix.md rust-cc-plan.md; do printf 'old-%s\n' "$path" > "$target/commands/$path"; done
+          printf 'old-namespace\n' > "$target/commands/rust-intel-cc/audit.md"
+          for path in rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do printf 'old-%s\n' "$path" > "$target/commands/$path"; done
           printf 'unrelated\n' > "$target/commands/keep.md"
-          cp -a "$target/skills/rust-intel" "$root/known-good"
+          node "$GITHUB_WORKSPACE/dev/snapshot-install.mjs" "$target" > "$root/before.json"
           if RUST_INTEL_INSTALL_FAIL_AFTER=2 CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh; then
             echo 'injected POSIX install failure was accepted' >&2; exit 1
           fi
-          diff -ru "$root/known-good" "$target/skills/rust-intel"
-          test "$(cat "$target/commands/keep.md")" = unrelated
+          node "$GITHUB_WORKSPACE/dev/snapshot-install.mjs" "$target" > "$root/after.json"
+          cmp "$root/before.json" "$root/after.json"
+          CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh
+          node "$GITHUB_WORKSPACE/dev/snapshot-install.mjs" "$target" > "$root/installed.json"
           CLAUDE_CONFIG_DIR="$target" ./rust-cc-uninstall.sh
-          test ! -e "$target/skills/rust-intel"
-          test -f "$target/commands/keep.md"
+          test ! -e "$target/skills/rust-intel" && test ! -e "$target/commands/rust-intel-cc"
+          for path in rust-cc-audit.md rust-cc-fix.md rust-cc-plan.md rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do test ! -e "$target/commands/$path"; done
+          test "$(cat "$target/commands/keep.md")" = unrelated
       - name: Smoke-test npm migration and rollback
         shell: bash
         run: |
@@ -90,11 +97,34 @@ jobs:
           test ! -e "$target/commands/rust-intel-cc"
           for path in rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do test ! -e "$target/commands/$path"; done
           test "$(cat "$target/commands/keep.md")" = keep
-          cp -a "$target/skills/rust-intel" "$root/known-good"
+          node "$GITHUB_WORKSPACE/dev/snapshot-install.mjs" "$target" > "$root/known-good.json"
           if RUST_INTEL_INSTALL_FAIL_AFTER=2 CLAUDE_CONFIG_DIR="$target" node bin/install.js --user; then
             echo 'injected npm install failure was accepted' >&2; exit 1
           fi
-          diff -ru "$root/known-good" "$target/skills/rust-intel"
+          node "$GITHUB_WORKSPACE/dev/snapshot-install.mjs" "$target" > "$root/after.json"
+          cmp "$root/known-good.json" "$root/after.json"
+          CLAUDE_CONFIG_DIR="$target" node bin/install.js --user --uninstall
+          test ! -e "$target/skills/rust-intel" && test ! -e "$target/commands/rust-intel-cc"
+          for path in rust-cc-audit.md rust-cc-fix.md rust-cc-plan.md rust-audit.md rust-fix.md rust-plan.md rust-intel.md; do test ! -e "$target/commands/$path"; done
+          test "$(cat "$target/commands/keep.md")" = keep
+          mkdir -p "$root/dash-work"
+          (cd "$root/dash-work" && CLAUDE_CONFIG_DIR=-dash-leading bash "$GITHUB_WORKSPACE/rust-cc-install.sh")
+          test -f "$root/dash-work/-dash-leading/skills/rust-intel/SKILL.md"
+      - name: Smoke-test Codex upgrade, rollback, and uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"; trap 'rm -rf "$root"' EXIT
+          target="$root/codex-skills"; mkdir -p "$target/rust-intel" "$target/other"
+          printf 'old-codex\n' > "$target/rust-intel/SKILL.md"
+          printf 'keep\n' > "$target/other/sibling.md"
+          node dev/snapshot-install.mjs "$target" > "$root/before.json"
+          node bin/install-codex.js --user-dir "$target"
+          node dev/snapshot-install.mjs "$target" > "$root/known-good.json"
+          if RUST_INTEL_INSTALL_FAIL_AFTER=1 node bin/install-codex.js --user-dir "$target"; then echo 'injected Codex failure accepted' >&2; exit 1; fi
+          node dev/snapshot-install.mjs "$target" > "$root/after.json"; cmp "$root/known-good.json" "$root/after.json"
+          node bin/install-codex.js --user-dir "$target" --uninstall
+          test ! -e "$target/rust-intel"; test "$(cat "$target/other/sibling.md")" = keep
       - name: Installer overlap-guard execution tests
         shell: bash
         run: |
@@ -212,11 +242,68 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-      - name: Smoke-test PowerShell installer with literal paths
+      - name: Smoke-test PowerShell transactions, literal source paths, and uninstall
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'rust-intel install [literal]'
-          $env:CLAUDE_CONFIG_DIR = Join-Path $root 'target with spaces'
-          & ./rust-cc-install.ps1
-          if (-not (Test-Path -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'skills\rust-intel\SKILL.md'))) { throw 'PowerShell install failed' }
-          if (-not (Test-Path -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR 'commands\rust-cc-audit.md'))) { throw 'PowerShell command install failed' }
+          $source = Join-Path $root 'source [brackets]'
+          $target = Join-Path $root 'target [brackets]'
+          Copy-Item -LiteralPath $env:GITHUB_WORKSPACE -Destination $source -Recurse
+          $script = Join-Path $source 'rust-cc-install.ps1'
+          $uninstall = Join-Path $source 'rust-cc-uninstall.ps1'
+          $env:CLAUDE_CONFIG_DIR = $target
+          New-Item -ItemType Directory -Force -Path (Join-Path $target 'skills\rust-intel'), (Join-Path $target 'commands\rust-intel-cc') | Out-Null
+          Set-Content -LiteralPath (Join-Path $target 'skills\rust-intel\SKILL.md') -Value 'old-skill'
+          foreach ($name in 'rust-cc-audit.md','rust-cc-fix.md','rust-cc-plan.md') { Set-Content -LiteralPath (Join-Path $target "commands\$name") -Value "old-$name" }
+          Set-Content -LiteralPath (Join-Path $target 'commands\rust-intel-cc\audit.md') -Value 'old-namespace'
+          foreach ($name in 'rust-audit.md','rust-fix.md','rust-plan.md','rust-intel.md') { Set-Content -LiteralPath (Join-Path $target "commands\$name") -Value "old-$name" }
+          Set-Content -LiteralPath (Join-Path $target 'commands\keep.md') -Value 'unrelated'
+          $before = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
+          $failed = $false
+          $env:RUST_INTEL_INSTALL_FAIL_AFTER = '2'
+          try { & $script } catch { $failed = $true }
+          if (-not $failed) { throw 'injected PowerShell backup failure was accepted' }
+          $after = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
+          if ($before -ne $after) { throw 'PowerShell backup failure changed the complete inventory' }
+          Remove-Item Env:RUST_INTEL_INSTALL_FAIL_AFTER
+          & $script
+          $knownGood = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
+          $lock = [IO.File]::Open((Join-Path $target 'commands\rust-cc-audit.md'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+          try {
+            $failed = $false
+            try { & $script } catch { $failed = $true }
+            if (-not $failed) { throw 'locked PowerShell backup was accepted' }
+          } finally { $lock.Dispose() }
+          $after = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
+          if ($knownGood -ne $after) { throw 'PowerShell locked-backup rollback changed the complete inventory' }
+          $env:RUST_INTEL_INSTALL_FAIL_AFTER = '2'
+          $failed = $false
+          try { & $uninstall } catch { $failed = $true }
+          if (-not $failed) { throw 'injected PowerShell uninstall failure was accepted' }
+          $after = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
+          if ($knownGood -ne $after) { throw 'PowerShell uninstall rollback changed the complete inventory' }
+          Remove-Item Env:RUST_INTEL_INSTALL_FAIL_AFTER
+          & $uninstall
+          if (Test-Path -LiteralPath (Join-Path $target 'skills\rust-intel')) { throw 'PowerShell uninstall left skill files' }
+          if (-not (Test-Path -LiteralPath (Join-Path $target 'commands\keep.md'))) { throw 'PowerShell uninstall removed unrelated sibling' }
+
+  bash-floor:
+    name: Bash 3.2 installer floor
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Verify and execute the oldest advertised Bash
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash --version | head -n 1
+          bash -n rust-cc-install.sh rust-cc-uninstall.sh
+          root="$(mktemp -d)"; trap 'rm -rf "$root"' EXIT
+          target="$root/target with spaces"
+          CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh
+          node dev/snapshot-install.mjs "$target" > "$root/installed.json"
+          CLAUDE_CONFIG_DIR="$target" ./rust-cc-uninstall.sh
+          test ! -e "$target/skills/rust-intel"
