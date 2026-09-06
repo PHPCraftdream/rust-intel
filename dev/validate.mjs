@@ -960,15 +960,96 @@ function workflowMutationCheck(source, names, rawSource = source) {
   // preserving their newlines, so this also handles a multiline comment between the operands.
   const hasLineTerminator = (start, end) => source.slice(start, end).split('').some(isJsLineTerminator);
   const statementBlockKeywords = new Set(['catch', 'do', 'else', 'finally', 'try']);
+  const identifierStartRe = /[$_\p{ID_Start}]/u;
+  const identifierContinueRe = /[$_\u200C\u200D\p{ID_Continue}]/u;
+  const isHexDigit = (character) => /[0-9A-Fa-f]/u.test(character || '');
+  const identifierEscape = (index) => {
+    if (source[index] !== '\\' || source[index + 1] !== 'u') return null;
+    let length;
+    if (source[index + 2] === '{') {
+      let cursor = index + 3;
+      while (cursor < source.length && isHexDigit(source[cursor]) && cursor - (index + 3) < 6) cursor += 1;
+      if (cursor <= index + 3 || source[cursor] !== '}') return null;
+      length = cursor - index + 1;
+    } else {
+      if (!Array.from({ length: 4 }, (_, offset) => source[index + 2 + offset]).every(isHexDigit)) return null;
+      length = 6;
+    }
+    const value = Number.parseInt(source.slice(index + (length === 6 ? 2 : 3), index + (length === 6 ? 6 : length - 1)), 16);
+    if (value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) return null;
+    return { length, character: String.fromCodePoint(value) };
+  };
+  const codePointAt = (index) => {
+    if (index < 0 || index >= source.length) return null;
+    const value = source.codePointAt(index);
+    return value === undefined ? null : String.fromCodePoint(value);
+  };
+  const identifierPartAt = (index) => {
+    const character = codePointAt(index);
+    return character !== null && identifierContinueRe.test(character);
+  };
+  const identifierPartBefore = (index) => {
+    if (index <= 0) return false;
+    const previousCodeUnit = source.charCodeAt(index - 1);
+    const start = previousCodeUnit >= 0xDC00 && previousCodeUnit <= 0xDFFF ? index - 2 : index - 1;
+    return identifierPartAt(start);
+  };
+  const readIdentifierToken = (start) => {
+    let cursor = start;
+    const firstEscape = identifierEscape(cursor);
+    if (firstEscape) {
+      if (!identifierStartRe.test(firstEscape.character)) return null;
+      cursor += firstEscape.length;
+    }
+    else {
+      const first = codePointAt(cursor);
+      if (first === null || !identifierStartRe.test(first)) return null;
+      cursor += first.length;
+    }
+    while (cursor < source.length) {
+      const escape = identifierEscape(cursor);
+      if (escape) {
+        if (!identifierContinueRe.test(escape.character)) return null;
+        cursor += escape.length;
+        continue;
+      }
+      const character = codePointAt(cursor);
+      if (character === null || !identifierContinueRe.test(character)) break;
+      cursor += character.length;
+    }
+    return { start, end: cursor };
+  };
+  const keywordAt = (index, keyword) => source.startsWith(keyword, index)
+    && !identifierPartBefore(index)
+    && !identifierPartAt(index + keyword.length);
   const classHeaderInfo = (opening) => {
     const headerPrefix = source.slice(0, opening);
-    const classMatches = [...headerPrefix.matchAll(/\bclass\b/gu)];
-    const classMatch = classMatches.at(-1);
-    if (!classMatch) return null;
-    const classStart = classMatch.index;
-    const header = source.slice(classStart, opening);
-    if (!/^class(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?(?:\s+extends\b[\s\S]*)?\s*$/u.test(header)) return null;
-    return { classStart, header };
+    for (let candidate = headerPrefix.lastIndexOf('class'); candidate >= 0;
+      candidate = headerPrefix.lastIndexOf('class', candidate - 1)) {
+      if (identifierPartBefore(candidate) || identifierPartAt(candidate + 5)) continue;
+      const afterClass = candidate + 5;
+      if (afterClass < opening && !/\s/u.test(source[afterClass]) && source[afterClass] !== '{') continue;
+      let cursor = skipWhitespace(afterClass);
+      let hasName = false;
+      if (source[cursor] !== '{') {
+        const first = readIdentifierToken(cursor);
+        if (!first) continue;
+        const token = source.slice(first.start, first.end);
+        cursor = skipWhitespace(first.end);
+        if (token !== 'extends') {
+          hasName = true;
+          if (source[cursor] !== '{' && !keywordAt(cursor, 'extends')) continue;
+        }
+        if (token === 'extends' || keywordAt(cursor, 'extends')) {
+          if (token === 'extends') cursor = first.end;
+          else cursor += 'extends'.length;
+          if (source.slice(cursor, opening).trim() === '') continue;
+          cursor = opening;
+        }
+      }
+      if (cursor === opening) return { classStart: candidate, hasName };
+    }
+    return null;
   };
   const isClassDeclarationBody = (opening) => {
     // A class declaration's body is a statement block for ASI purposes, but a class expression
@@ -977,7 +1058,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
     // context before the `class` keyword.
     const info = classHeaderInfo(opening);
     if (!info) return false;
-    const { classStart, header } = info;
+    const { classStart, hasName } = info;
 
     const previousWordAt = (index) => {
       let cursor = previousSignificant(index);
@@ -986,29 +1067,24 @@ function workflowMutationCheck(source, names, rawSource = source) {
       while (cursor >= 0 && /[A-Za-z0-9_$]/u.test(source[cursor])) cursor -= 1;
       return { value: source.slice(cursor + 1, end), start: cursor + 1 };
     };
+    const statementBoundaryBefore = (index) => {
+      const previous = previousSignificant(index);
+      if (previous < 0 || ';{}'.includes(source[previous])) return true;
+      return hasLineTerminator(previous + 1, index)
+        && !'=,+-*/%&|^!?<>.:([['.includes(source[previous]);
+    };
     const beforeClass = previousSignificant(classStart);
     if (beforeClass >= 0 && (source[beforeClass] === '.' || source[beforeClass] === '#')) return false;
     const modifier = previousWordAt(classStart);
-    if (modifier && (modifier.value === 'export' || modifier.value === 'default')) {
-      // `export class C {}` and `export default class C {}` are declarations.  A bare `default
-      // class` is invalid JavaScript, but treating it as a declaration here keeps this small
-      // structural check conservative if it is supplied by a parser fixture.
-      const beforeModifier = previousSignificant(modifier.start);
-      if (beforeModifier >= 0 && !';{}'.includes(source[beforeModifier])
-        && !hasLineTerminator(beforeModifier + 1, modifier.start)) return false;
-      return true;
+    if (modifier?.value === 'export') return statementBoundaryBefore(modifier.start);
+    if (modifier?.value === 'default') {
+      const exportModifier = previousWordAt(modifier.start);
+      if (exportModifier?.value === 'export') return statementBoundaryBefore(exportModifier.start);
     }
-
-    // Anonymous classes are expressions except for `export default class {}`; named classes can
-    // be declarations at the beginning of a statement.  The header regex above intentionally
-    // permits the anonymous form, so reject it unless the `default` modifier was handled above.
-    const hasName = /^class\s+[A-Za-z_$][A-Za-z0-9_$]*/u.test(header);
-    if (!hasName) return false;
-    if (beforeClass < 0 || ';{}'.includes(source[beforeClass])) return true;
-    // A line break can terminate the preceding expression before a declaration.  Operators and
-    // member/continuation punctuation still bind the class as an expression (`x =\nclass C {}`).
-    return hasLineTerminator(beforeClass + 1, classStart)
-      && !'=,+-*/%&|^!?<>.:([['.includes(source[beforeClass]);
+    // Anonymous classes are expressions except for the module-only `export default class {}`.
+    // Named classes can be declarations at a statement boundary, including Unicode and escaped
+    // bindings recognized by classHeaderInfo's bounded identifier scanner.
+    return hasName && statementBoundaryBefore(classStart);
   };
   const isStatementBlockClose = (index) => {
     if (source[index] !== '}') return false;

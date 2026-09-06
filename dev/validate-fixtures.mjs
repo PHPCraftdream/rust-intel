@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: two hundred seventy-seven hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: two hundred eighty-nine hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2661,6 +2661,59 @@ for (const [number, name, privateName] of [
       `void PrivateContext${number};`,
   ));
   expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+}
+
+// Controls 278-281: an export-default class declaration has a statement-level closing brace,
+// including both the named and anonymous forms.  Keep both immutable roots covered: a context
+// heuristic that only recognizes `class Name {}` or only recognizes declaration names would let
+// the same-line prefix update escape.
+for (const [number, name, root, declaration] of [
+  [278, 'named export-default class declaration', 'MODULES', 'export default class ExportedClass278 {}'],
+  [279, 'anonymous export-default class declaration', 'MODULES', 'export default class {}'],
+  [280, 'named export-default class declaration', 'AUDIT_UNITS', 'export default class ExportedClass280 {}'],
+  [281, 'anonymous export-default class declaration', 'AUDIT_UNITS', 'export default class {}'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `${declaration} ++${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 282-285: ECMAScript class declarations may use Unicode identifier names, including
+// Unicode escapes in IdentifierName position.  Both spellings must still classify an
+// export-default class body as a statement boundary for the following root update.
+for (const [number, name, root, className] of [
+  [282, 'Unicode-named export-default class declaration', 'MODULES', 'Δelta282'],
+  [283, 'escaped-Unicode export-default class declaration', 'MODULES', '\\u0394elta283'],
+  [284, 'Unicode-named export-default class declaration', 'AUDIT_UNITS', 'Δelta284'],
+  [285, 'escaped-Unicode export-default class declaration', 'AUDIT_UNITS', '\\u0394elta285'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `export default class ${className} {} ++${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 286-289: Unicode class syntax in expression/object positions is not itself a
+// statement boundary.  These are positive reads, one class-expression and one object-literal
+// context per immutable root, guarding the declaration fix from becoming an over-broad class
+// or brace rejection.
+for (const [number, name, root, expression] of [
+  [286, 'Unicode class expression read context', 'MODULES',
+    `const UnicodeClassExpression286 = class Δelta286 { read() { return ${'MODULES'}.length; } }; void UnicodeClassExpression286;`],
+  [287, 'Unicode class in object-literal context', 'MODULES',
+    `const UnicodeObjectContext287 = { value: class Δelta287 {}, size: ${'MODULES'}.length }; void UnicodeObjectContext287;`],
+  [288, 'Unicode class expression read context', 'AUDIT_UNITS',
+    `const UnicodeClassExpression288 = class Δelta288 { read() { return ${'AUDIT_UNITS'}.length; } }; void UnicodeClassExpression288;`],
+  [289, 'Unicode class in object-literal context', 'AUDIT_UNITS',
+    `const UnicodeObjectContext289 = { value: class Δelta289 {}, size: ${'AUDIT_UNITS'}.length }; void UnicodeObjectContext289;`],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
 }
 
 for (const fixture of cases) {
