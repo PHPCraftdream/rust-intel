@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: three hundred thirteen hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: three hundred twenty-five hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2716,15 +2716,16 @@ for (const [number, name, root, expression] of [
   expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
 }
 
-// Controls 290-293: braced Unicode escapes in class names must not make the following update
-// disappear at a class-boundary.  Keep both a short invalid escape and a short valid escape, in
-// both bare and export-default class declarations, so the boundary recognizer cannot rely on a
-// four-hex-digit escape or silently treat an invalid identifier as a safe expression.
+// Controls 290-293: valid braced Unicode escapes in class names must not make the following
+// update disappear at a class-boundary.  Keep both a dollar-sign escape and a letter escape,
+// each with a trailing literal identifier part, in both bare and export-default declarations.
+// The trailing part is important: a fallback scanner must not mistake the escaped closing `}`
+// for a class block while treating the malformed/partial name as a safe expression.
 for (const [number, name, root, declaration] of [
-  [290, 'short braced Unicode escape in bare class declaration', 'MODULES', 'class \\u{A} {}'],
-  [291, 'short braced Unicode escape in bare class declaration', 'MODULES', 'class \\u{41} {}'],
-  [292, 'short braced Unicode escape in export-default class declaration', 'AUDIT_UNITS', 'export default class \\u{A} {}'],
-  [293, 'short braced Unicode escape in export-default class declaration', 'AUDIT_UNITS', 'export default class \\u{41} {}'],
+  [290, 'dollar braced Unicode escape in bare class declaration', 'MODULES', 'class \\u{24}Name290 {}'],
+  [291, 'letter braced Unicode escape in bare class declaration', 'MODULES', 'class \\u{41}Name291 {}'],
+  [292, 'dollar braced Unicode escape in export-default class declaration', 'AUDIT_UNITS', 'export default class \\u{24}Name292 {}'],
+  [293, 'letter braced Unicode escape in export-default class declaration', 'AUDIT_UNITS', 'export default class \\u{41}Name293 {}'],
 ]) {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
     source,
@@ -2751,6 +2752,25 @@ for (const [number, name, root, label, operator] of [
   expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
 }
 
+// Controls 314-319: a switch case expression may contain an object literal, a class expression,
+// or an arrow body before its label colon.  None of those colons is a statement boundary, but the
+// class declaration after the label is one; the following root update must therefore be rejected.
+for (const [number, name, root, caseExpression] of [
+  [314, 'object-literal switch case expression', 'MODULES', '({ key: 1 })'],
+  [315, 'class-expression switch case expression', 'MODULES', '(class {})'],
+  [316, 'arrow-body switch case expression', 'MODULES', '(() => ({ key: 1 }))'],
+  [317, 'object-literal switch case expression', 'AUDIT_UNITS', '({ key: 1 })'],
+  [318, 'class-expression switch case expression', 'AUDIT_UNITS', '(class {})'],
+  [319, 'arrow-body switch case expression', 'AUDIT_UNITS', '(() => ({ key: 1 }))'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `switch (value) { case ${caseExpression}: class SwitchExpressionClass${number} {} ++${root}.length; }`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
 // Controls 298-301: a completed postfix update before a line break does not turn the following
 // class declaration into an expression continuation.  Pin both update directions and both roots
 // because the previous statement's postfix operator is an easy context leak for boundary scans.
@@ -2766,6 +2786,34 @@ for (const [number, name, root, operator] of [
     `const value${number} = 0; value${number}++\nclass FollowingClass${number} {} ${operator}${root}.length;`,
   ));
   expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 320-321: an astral IdentifierStart variable can be updated before a line break just
+// like an ASCII local.  The following class declaration must remain a statement boundary, so the
+// root update after it is rejected for both protected roots.
+for (const [number, name, root] of [
+  [320, 'astral IdentifierStart postfix update', 'MODULES'],
+  [321, 'astral IdentifierStart postfix update', 'AUDIT_UNITS'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `const 𐐀 = 0; 𐐀++\nclass FollowingAstralClass${number} {} ++${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 322-325: object-literal and ternary colons outside a switch are expression syntax, not
+// labels.  Keep these positive reads beside the switch-label negatives so a broad colon heuristic
+// cannot turn ordinary object/conditional expressions into false positives.
+for (const [number, name, root, expression] of [
+  [322, 'object-literal colon outside switch', 'MODULES', 'const objectColon322 = { branch: ({ value: 1 }) }; void MODULES.length;'],
+  [323, 'ternary colon outside switch', 'MODULES', 'const ternaryColon323 = flag ? ({ value: 1 }) : ({ value: 2 }); void MODULES.length;'],
+  [324, 'object-literal colon outside switch', 'AUDIT_UNITS', 'const objectColon324 = { branch: ({ value: 1 }) }; void AUDIT_UNITS.length;'],
+  [325, 'ternary colon outside switch', 'AUDIT_UNITS', 'const ternaryColon325 = flag ? ({ value: 1 }) : ({ value: 2 }); void AUDIT_UNITS.length;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
 }
 
 // Controls 302-305: class expressions in object-property and ternary-colon positions are not

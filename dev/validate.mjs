@@ -1114,11 +1114,56 @@ function workflowMutationCheck(source, names, rawSource = source) {
       if (opening === undefined || !isSwitchBody(opening)) return false;
       // Only a label in the switch statement list qualifies.  In particular, `default:`
       // in an object literal and a ternary colon must not create an ASI boundary.
-      let segmentStart = opening + 1;
+      // Keep all three expression delimiters on a stack.  A case expression may contain an
+      // object literal, class body, arrow body, or parenthesized/bracketed expression; those
+      // braces and colons are not part of the switch statement list and must not reset the case
+      // token.  `?`/`:` pairs at statement-list depth are tracked separately for a conditional
+      // expression such as `case flag ? left : right:`.
+      const groupStack = [];
+      let labelStart = -1;
+      let ternaryDepth = 0;
+      let canStartLabel = true;
       for (let cursor = opening + 1; cursor < colon; cursor += 1) {
-        if (';{}'.includes(source[cursor])) segmentStart = cursor + 1;
+        const character = source[cursor];
+        if (groupStack.length === 0) {
+          if (character === ';') {
+            labelStart = -1;
+            ternaryDepth = 0;
+            canStartLabel = true;
+            continue;
+          }
+          if (character === '?' && source[cursor + 1] !== '.' && source[cursor + 1] !== '?') {
+            ternaryDepth += 1;
+            canStartLabel = false;
+            continue;
+          }
+          if (character === ':') {
+            if (ternaryDepth > 0) {
+              ternaryDepth -= 1;
+              canStartLabel = false;
+            } else {
+              labelStart = -1;
+              canStartLabel = true;
+            }
+            continue;
+          }
+          if (canStartLabel && (keywordAt(cursor, 'case') || keywordAt(cursor, 'default'))) {
+            labelStart = cursor;
+            canStartLabel = false;
+            continue;
+          }
+          if (!/\s/u.test(character)) canStartLabel = false;
+        }
+        if ('([{'.includes(character)) {
+          groupStack.push(character);
+        } else if (')]}'.includes(character)) {
+          const expected = { ')': '(', ']': '[', '}': '{' }[character];
+          if (groupStack.at(-1) === expected) groupStack.pop();
+          if (groupStack.length === 0 && character === '}') canStartLabel = true;
+        }
       }
-      const segment = source.slice(segmentStart, colon).trim();
+      if (labelStart < 0) return false;
+      const segment = source.slice(labelStart, colon).trim();
       return /^default$/u.test(segment) || /^case\b[\s\S]*\S/u.test(segment);
     };
     const isCompletedPostfixUpdate = (operatorStart) => {
@@ -1126,7 +1171,7 @@ function workflowMutationCheck(source, names, rawSource = source) {
       if (operator !== '++' && operator !== '--') return false;
       const operand = previousSignificant(operatorStart);
       if (operand < 0 || hasLineTerminator(operand + 1, operatorStart)) return false;
-      return identifierPartAt(operand) || ')]}'.includes(source[operand]);
+      return identifierPartBefore(operand + 1) || ')]}'.includes(source[operand]);
     };
     const statementBoundaryBefore = (index) => {
       const previous = previousSignificant(index);
