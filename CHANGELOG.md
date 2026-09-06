@@ -12,12 +12,24 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 **The planned next release is `0.7.0` (MINOR).** Raising the runtime/install floor makes previously working installs on older Node lines fail, so it is classified by the compatibility rule above even though the numbered spec categories and BANNED/REQUIRED shapes are unchanged.
 
-**Release tooling hardening.** The manifest updater now records a durable, recoverable transaction:
-POSIX file and parent-directory syncs, same-volume Windows rename discipline, a recovery-only entry
-point, and calibration of abrupt exits at every journal/rename boundary plus failures after each
-replacement. The calibration verifies old-or-new manifest agreement, bytes, modes, and complete
-temporary/backup/journal cleanup. The round-33 fixing disposition is recorded in the review ledger;
-no version bump, tag, CI, push, or publication is implied by this unreleased entry.
+**Release tooling hardening.** The manifest updater now records a recoverable transaction: POSIX
+file and parent-directory syncs, same-volume Windows rename discipline, a recovery-only entry
+point, and calibration of abrupt process exits at every journal/rename boundary plus failures after
+each replacement. POSIX parent-directory fsync is the durable rename barrier. On Windows, the
+calibration establishes process-interruption recovery using Node's synchronous filesystem calls;
+it does **not** claim recovery after sudden power loss because this implementation has no
+write-through directory-metadata primitive. The calibration verifies old-or-new manifest agreement,
+bytes, modes, and recursive temporary/backup/journal cleanup, including a negative nested-artifact
+case. The round-33 and round-34 fixing dispositions are recorded in the review ledger; no version
+bump, tag, CI, push, or publication is implied by this unreleased entry.
+
+**Installer and recovery net state.** Node, Bash, and PowerShell installers stage complete
+inventories and provide caught-error rollback, while the recovery journals and interruption probes
+make remaining pre-live and restart boundaries explicit instead of silently deleting or guessing at
+owned paths. `dev/snapshot-install.mjs` supplies the byte-aware inventory used by those checks.
+Installer interruption recovery, oldest-Bash coverage, and sparse-inventory binding remain release
+gate items under the current review; this summary records the implemented safeguards, not a claim
+that the `0.7.0` gate is closed.
 
 > Every `docs/reviews/*.md` citation below points to a file tracked in this **repository** (stable via a commit-pinned link, e.g. `https://github.com/PHPCraftdream/rust-intel/tree/1591d39/docs/reviews`) — not to a file included in the **npm package**: `docs/reviews/` is not in `package.json`'s `files` allowlist, so clone or browse the repository for the underlying reports. The package also explicitly lists the two license files, while npm includes package metadata, README, and applicable license files under its standard package rules.
 

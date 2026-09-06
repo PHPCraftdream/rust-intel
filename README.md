@@ -43,7 +43,7 @@ Its supported Markdown surface is explicit:
 
 ## Status
 
-**Unreleased (in preparation, not tagged).** The current tree carries the post-v0.6.0 completeness, correctness, currency, validator-hardening, and release-tooling work summarized in [`CHANGELOG.md`](CHANGELOG.md). Repository tooling is set to require Node.js 24 or newer, and the next package release will carry that floor; CI covers the current Node 24 line and the exact `24.0.0` floor. The validator fixture suite currently has **399** controls. The next release is planned as **MINOR `0.7.0`**; manifests and the release banner remain `v0.6.0` until that release is cut. Release readiness remains gated on closing the independent review's P2/P3 findings and completing a fresh review.
+**Unreleased (in preparation, not tagged).** The current tree carries the post-v0.6.0 completeness, correctness, currency, validator-hardening, installer, and release-tooling work summarized in [`CHANGELOG.md`](CHANGELOG.md). Repository tooling is set to require Node.js 24 or newer, and the next package release will carry that floor; CI covers the current Node 24 line and the exact `24.0.0` floor. The validator fixture suite currently has **399** controls. The next release is planned as **MINOR `0.7.0`**; manifests and the release banner remain `v0.6.0` until that release is cut. Release-version recovery is durable through POSIX parent-directory fsync; on Windows it is calibrated for process interruption, with sudden-power-loss durability explicitly outside this contract. Release readiness remains gated on closing the independent review's P2/P3 findings and completing a fresh review.
 
 **v0.6.0 (2026-08-19).** Added §C12/§C12a and related §A1 default-of-an-earlier-era coverage; numbered categories reached **59**. This entry backfills the release's omitted Status record. See [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -80,6 +80,9 @@ Its supported Markdown surface is explicit:
 **v0.3.0 (2026-05-29).** Reframed the specification around silent failures that compile and pass tests, expanding coverage from **26** to **51** categories across five tiers.
 
 ## Layout
+
+The `dev/` utilities include `snapshot-install.mjs`, a byte-aware installer inventory used by
+rollback and recovery checks.
 
 ```
 rust-intel/

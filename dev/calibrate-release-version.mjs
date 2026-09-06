@@ -3,6 +3,10 @@
 // Each case uses a fresh temporary copy. The child is deliberately terminated at every
 // journal/rename boundary, then the recovery-only entry point must leave either one complete
 // old manifest set or one complete new set, with original modes and no transaction debris.
+// POSIX parent-directory fsync is the durable rename barrier. On Windows, this calibration
+// establishes recovery after process interruption using Node's synchronous filesystem calls;
+// it does not claim recovery after sudden power loss, for which Node exposes no write-through
+// directory-metadata primitive here.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -77,11 +81,32 @@ function assertOldOrNew(actual, oldState, newState, label) {
 }
 
 function assertNoArtifacts(caseRoot, label) {
-  const names = fs.readdirSync(caseRoot);
-  const artifacts = names.filter((name) => name === '.release-version-transaction.json'
-    || name === '.release-version-transaction.json.prev'
-    || name.startsWith('.release-version-transaction.json.tmp-')
-    || manifestFiles.some((file) => name.startsWith(`${path.basename(file)}.tmp-`) || name.startsWith(`${path.basename(file)}.bak-`)));
+  const artifacts = [];
+  const manifestParents = manifestFiles.map((file) => path.resolve(caseRoot, path.dirname(file)));
+  const inspect = (directory, relative) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const child = path.join(directory, entry.name);
+      const childRelative = path.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        inspect(child, childRelative);
+        continue;
+      }
+      if (entry.name === '.release-version-transaction.json'
+        || entry.name === '.release-version-transaction.json.prev'
+        || entry.name.startsWith('.release-version-transaction.json.tmp-')
+        || manifestFiles.some((file) => {
+          const manifestName = path.basename(file);
+          const parent = manifestParents[manifestFiles.indexOf(file)];
+          const relativeToParent = path.relative(parent, path.dirname(child));
+          const insideParent = relativeToParent === ''
+            || (!relativeToParent.startsWith(`..${path.sep}`) && relativeToParent !== '..' && !path.isAbsolute(relativeToParent));
+          return insideParent && (entry.name.startsWith(`${manifestName}.tmp-`) || entry.name.startsWith(`${manifestName}.bak-`));
+        })) {
+        artifacts.push(childRelative);
+      }
+    }
+  };
+  inspect(caseRoot, '');
   if (artifacts.length) throw new Error(`${label}: transaction artifacts remain: ${artifacts.join(', ')}`);
 }
 
@@ -139,4 +164,23 @@ for (const replacements of [1, 2, 3]) {
   }
 }
 
-console.log(`release-version durability calibration passed (${abortBoundaries.length} abrupt boundaries; failure-after 1, 2, and 3; old-or-new manifests, modes, and cleanup verified).`);
+const nestedArtifactRoot = freshCase();
+try {
+  const nestedBackup = path.join(nestedArtifactRoot, '.claude-plugin', 'plugin.json.bak-calibration');
+  fs.writeFileSync(nestedBackup, 'deliberate negative calibration artifact\n');
+  let rejected = false;
+  try {
+    assertNoArtifacts(nestedArtifactRoot, 'nested-artifact negative calibration');
+  } catch (error) {
+    rejected = true;
+    if (!error.message.includes('.claude-plugin')) throw error;
+  }
+  if (!rejected) throw new Error('nested-artifact negative calibration unexpectedly passed');
+} finally {
+  fs.rmSync(nestedArtifactRoot, { recursive: true, force: true });
+}
+
+const platformContract = process.platform === 'win32'
+  ? 'Windows process-interruption recovery (sudden power loss is out of scope)'
+  : 'POSIX parent-directory fsync durability';
+console.log(`release-version ${platformContract} calibration passed (${abortBoundaries.length} abrupt boundaries; failure-after 1, 2, and 3; old-or-new manifests, modes, recursive cleanup, and nested-artifact negative case verified).`);

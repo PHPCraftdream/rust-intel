@@ -9,9 +9,12 @@
 // The three-manifest update is a small transaction. Every input is parsed and validated before
 // any destination is touched; replacements are made from fsynced sibling files and old files
 // are retained as siblings until the commit point. A deterministic journal lets the next run
-// restore an interrupted transaction. RUST_INTEL_RELEASE_FAIL_AFTER=1..3 is a bounded calibration
-// hook: it injects a failure after that many replacements, proving rollback without touching the
-// caller's real manifests when used against a temporary copy.
+// restore an interrupted transaction. On POSIX, parent-directory fsync makes the rename sequence
+// durable after each entry change. On Windows, Node does not expose a write-through directory-
+// metadata primitive here, so the contract is calibrated process-interruption recovery only;
+// sudden power-loss durability is explicitly out of scope. RUST_INTEL_RELEASE_FAIL_AFTER=1..3
+// is a bounded calibration hook: it injects a failure after that many replacements, proving
+// rollback without touching the caller's real manifests when used against a temporary copy.
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -44,7 +47,8 @@ function writeDurably(file, data, mode) {
 
 function syncDirectory(directory) {
   // POSIX needs the containing directory synced after an entry change. Node has no portable
-  // Windows directory-fsync API; same-volume renames plus the journal provide recovery there.
+  // Windows write-through directory-metadata API; the Windows contract is process-interruption
+  // recovery, not a sudden-power-loss durability guarantee.
   if (process.platform === 'win32') return;
   const fd = fs.openSync(directory, 'r');
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
