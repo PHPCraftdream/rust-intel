@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // rust-intel installer for npx — mirrors rust-cc-install.sh / .ps1.
-// Zero dependencies; Node >= 16.
+// Zero dependencies; Node >= 24.0.0.
 //
 //   npx rust-intel-cc            install into ./.claude   (project-local)
 //   npx rust-intel-cc --user     install into ~/.claude   (global; honors CLAUDE_CONFIG_DIR)
@@ -12,6 +12,9 @@
 //   /plugin install rust-intel@rust-intel
 
 'use strict';
+
+const { assertSupportedNodeVersion } = require('./node-version.js');
+assertSupportedNodeVersion();
 
 const fs = require('fs');
 const path = require('path');

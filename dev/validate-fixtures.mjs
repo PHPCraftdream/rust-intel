@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
-// Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
+// Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: three hundred forty-seven hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: three hundred seventy-five hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -13,11 +13,15 @@
 // rewrite into a red build and freezes whichever phrasing shipped first.
 
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+const require = createRequire(import.meta.url);
+const { assertSupportedNodeVersion } = require('../bin/node-version.js');
+assertSupportedNodeVersion();
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureRoot = path.join(root, 'examples', 'fixtures');
 const cases = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'cases.json'), 'utf8'));
@@ -128,6 +132,8 @@ const validateInputs = [
   '.claude-plugin',
   '.codex-plugin',
   'bin',
+  '.github/workflows',
+  'bin/node-version.js',
   'commands',
   'dev/validate.mjs',
   'dev/semver.mjs',
@@ -2954,6 +2960,206 @@ for (const [number, name, root, previousClause] of [
     `switch (value) { case 1: ${previousClause}\ncase 2: class SwitchNullishAsiClass${number} {} ++${root}.length; }`,
   ));
   expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Control 348: the package manifest's exact Node.js floor is part of the live contract. A stale
+// lower floor must fail with the dedicated engine diagnostic rather than being accepted silently.
+{
+  const result = runValidateAgainstMutatedFiles(['package.json'], (source) => {
+    if (!source.includes('"node": ">=24.0.0"')) return null;
+    return source.replace('"node": ">=24.0.0"', '"node": ">=16.7.0"');
+  });
+  expectFixture(result, 'package engine floor is exact', 1, ['package.json engine floor must be exactly >=24.0.0']);
+}
+
+// Controls 349-354: the package manifest and both published workflows must keep the same Node 24
+// contract. Each mutation is deliberately isolated: a validator that only checks one workflow,
+// or only checks that a setup-node step exists, must not make these controls pass.
+{
+  const result = runValidateAgainstMutatedFiles(['package.json'], (source) => {
+    const block = '  "engines": {\n    "node": ">=24.0.0"\n  },';
+    if (!source.includes(block)) return null;
+    return source.replace(block, '  "engines": {},');
+  });
+  expectFixture(result, 'package engine declaration cannot be removed', 1, ['package.json engine floor must be exactly >=24.0.0']);
+}
+
+for (const [number, name, replacement, needles] of [
+  [350, 'CI Node 24 rollback', 'node-version: 23', ['job repository-checks must use exactly one actions/setup-node']],
+  [351, 'CI Node version removal', null, ['ci.yml', 'node-version']],
+  [352, 'CI latest alias rollback', 'node-version: latest', ['job repository-checks must use exactly one actions/setup-node']],
+  [353, 'npm-publish Node 24 rollback', 'node-version: 23', ['job publish must use exactly one actions/setup-node']],
+  [354, 'npm-publish Node version removal', null, ['npm-publish.yml', 'node-version']],
+]) {
+  const workflow = number <= 352 ? '.github/workflows/ci.yml' : '.github/workflows/npm-publish.yml';
+  const result = runValidateAgainstMutatedFiles([workflow], (source) => {
+    const marker = /^(\s*)node-version:\s*24(?:\.0\.0)?\s*$/m.exec(source);
+    if (!marker) return null;
+    if (replacement === null) return source.slice(0, marker.index) + source.slice(marker.index + marker[0].length + 1);
+    return source.slice(0, marker.index) + marker[1] + replacement + source.slice(marker.index + marker[0].length);
+  });
+  expectFixture(result, `Control ${number}: ${name} is rejected`, 1, needles);
+}
+
+// Control 355: the shared helper's declared floor is itself part of the contract. Pinning only
+// package.json would leave a stale executable guard able to accept a runtime the package rejects.
+{
+  const result = runValidateAgainstMutatedFiles(['bin/node-version.js'], (source) => {
+    const marker = "const MIN_NODE_VERSION = '24.0.0';";
+    if (!source.includes(marker)) return null;
+    return source.replace(marker, "const MIN_NODE_VERSION = '16.7.0';");
+  });
+  expectFixture(result, 'shared Node helper floor is exact', 1, ['node-version.js', '24.0.0']);
+}
+
+// Control 356: direct boundary oracle for the shared predicate. This is intentionally not a
+// mutation of validate.mjs: it catches a helper that has the right spelling and exports but gets
+// the 23.x/24.0.0 boundary wrong. 24.0.0 prereleases remain below the stable floor.
+{
+  const require = createRequire(import.meta.url);
+  const helper = require('../bin/node-version.js');
+  for (const [version, expected] of [
+    ['23.11.1', false],
+    ['24.0.0-rc.1', false],
+    ['24.0.0', true],
+    ['24.0.1', true],
+    ['25.0.0', true],
+  ]) {
+    if (helper.isSupportedNodeVersion(version) !== expected) failures.push(`Control 356: shared Node predicate boundary mismatch for ${version}`);
+  }
+}
+
+// Controls 357-360: every executable entry point carries its own runtime guard call. Commenting
+// one call at a time must be visible to the repository validator; raw source matching would
+// otherwise accept the commented spelling as an executable guard.
+for (const [number, file] of [
+  [357, 'bin/install.js'],
+  [358, 'bin/install-codex.js'],
+  [359, 'dev/validate.mjs'],
+  [360, 'dev/validate-fixtures.mjs'],
+]) {
+  const result = runValidateAgainstMutatedFiles([file], (source) => {
+    const marker = 'assertSupportedNodeVersion();';
+    if (!source.includes(marker)) return null;
+    return source.replace(marker, `// ${marker}`);
+  });
+  expectFixture(result, `Control ${number}: ${file} runtime guard call is required`, 1, [file, 'assertSupportedNodeVersion']);
+}
+
+// Controls 361-364: the four entry points' maintainer-facing declarations must describe the same
+// supported runtime. This catches a validator that enforces executable calls but lets stale
+// Node-16 comments remain in the shipped scripts.
+for (const [number, file, marker] of [
+  [361, 'bin/install.js', '// Zero dependencies; Node >= 24.0.0.'],
+  [362, 'bin/install-codex.js', '// Zero dependencies; Node >= 24.0.0.'],
+  [363, 'dev/validate.mjs', '// Repository-level regression checks. Zero dependencies; run with Node >= 24.0.0.'],
+  [364, 'dev/validate-fixtures.mjs', '// Zero dependencies; run with Node >= 24.0.0.'],
+]) {
+  const result = runValidateAgainstMutatedFiles([file], (source) => {
+    if (!source.includes(marker)) return null;
+    return source.replace(marker, marker.replace('24.0.0', '16.7.0'));
+  });
+  expectFixture(result, `Control ${number}: ${file} Node floor declaration is current`, 1, [file, '24.0.0']);
+}
+
+// Controls 365-366: the installers must declare the shared helper dependency as well as calling
+// it. A guard call copied inline could otherwise drift away from the one audited predicate.
+for (const [number, file] of [
+  [365, 'bin/install.js'],
+  [366, 'bin/install-codex.js'],
+]) {
+  const result = runValidateAgainstMutatedFiles([file], (source) => {
+    const marker = "const { assertSupportedNodeVersion } = require('./node-version.js');";
+    if (!source.includes(marker)) return null;
+    return source.replace(marker, '/* shared Node helper declaration removed by fixture */');
+  });
+  expectFixture(result, `Control ${number}: ${file} shared Node helper declaration is required`, 1, [file, 'node-version.js']);
+}
+
+// Control 367: the helper's public guard export is a structural contract, not an implementation
+// detail. Removing it must fail validation even though the floor constant remains present.
+{
+  const result = runValidateAgainstMutatedFiles(['bin/node-version.js'], (source) => {
+    const marker = ', assertSupportedNodeVersion';
+    if (!source.includes(marker)) return null;
+    return source.replace(marker, '');
+  });
+  expectFixture(result, 'shared Node helper guard export is required', 1);
+}
+
+// Control 368: latest Node 24 coverage does not substitute for the exact supported floor.
+{
+  const result = runValidateAgainstMutatedFiles(['.github/workflows/ci.yml'], (source) => {
+    if (!source.includes('node-version: 24.0.0')) return null;
+    return source.replace('node-version: 24.0.0', 'node-version: 24.1.0');
+  });
+  expectFixture(result, 'exact Node 24.0.0 CI floor is required', 1, ['job node-floor must use exactly one actions/setup-node']);
+}
+
+// Controls 369-371: each workflow's named job must carry its own setup-node value. A valid decoy
+// job elsewhere in the same file must not satisfy a stale value in the real repository-checks,
+// node-floor, or publish job.
+function mutateNamedWorkflowNodeVersion(source, jobName, expected, replacement, decoyJobName) {
+  const normalized = source.replace(/\r\n?/g, '\n');
+  const startMarker = `  ${jobName}:\n`;
+  const start = normalized.indexOf(startMarker);
+  if (start < 0) return null;
+  const nextJob = /^  [A-Za-z0-9_-]+:\s*(?:#.*)?$/gm;
+  nextJob.lastIndex = start + startMarker.length;
+  const next = nextJob.exec(normalized);
+  const end = next ? next.index : normalized.length;
+  const section = normalized.slice(start, end);
+  const marker = `          node-version: ${expected}`;
+  if (section.indexOf(marker) < 0) return null;
+  const changed = section.replace(marker, `          node-version: ${replacement}`);
+  const decoy = [
+    '',
+    `  ${decoyJobName}:`,
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    '      - uses: actions/setup-node@v7',
+    '        with:',
+    `          node-version: ${expected}`,
+  ].join('\n');
+  return normalized.slice(0, start) + changed + normalized.slice(end).replace(/\n?$/, '\n') + decoy + '\n';
+}
+
+for (const [number, file, job, expected, replacement, decoy, label] of [
+  [369, '.github/workflows/ci.yml', 'repository-checks', '24', '23.11.1', 'decoy-repository-checks', 'CI repository-checks'],
+  [370, '.github/workflows/ci.yml', 'node-floor', '24.0.0', '23.11.1', 'decoy-node-floor', 'CI node-floor'],
+  [371, '.github/workflows/npm-publish.yml', 'publish', '24', '23.11.1', 'decoy-publish', 'npm-publish publish'],
+]) {
+  const result = runValidateAgainstMutatedFiles([file], (source) => mutateNamedWorkflowNodeVersion(source, job, expected, replacement, decoy));
+  expectFixture(result, `Control ${number}: ${label} node-version is job-scoped`, 1, [`job ${job} must use exactly one actions/setup-node`]);
+}
+
+// Control 372: the exported runtime guard must execute, not merely exist as a named function. A
+// no-op replacement must make the validator's pure child probe observe the unsupported 23.x input.
+{
+  const result = runValidateAgainstMutatedFiles(['bin/node-version.js'], (source) => {
+    const mutated = source.replace(/function assertSupportedNodeVersion\([\s\S]*?\n}\n\nmodule\.exports/, 'function assertSupportedNodeVersion() {}\n\nmodule.exports');
+    return mutated === source ? null : mutated;
+  });
+  expectFixture(result, 'Control 372: runtime guard implementation is causal', 1, ['Node runtime guard probe 23.11.1 expected status 1']);
+}
+
+// Controls 373-375: an unversioned second setup-node step inside the protected job can replace
+// the pinned runtime. Count setup steps independently from their node-version values.
+for (const [number, file, job] of [
+  [373, '.github/workflows/ci.yml', 'repository-checks'],
+  [374, '.github/workflows/ci.yml', 'node-floor'],
+  [375, '.github/workflows/npm-publish.yml', 'publish'],
+]) {
+  const result = runValidateAgainstMutatedFiles([file], (source) => {
+    const startMarker = `  ${job}:\n`;
+    const start = source.indexOf(startMarker);
+    if (start < 0) return null;
+    const steps = source.indexOf('    steps:\n', start);
+    if (steps < 0) return null;
+    const insertion = '      - uses: actions/setup-node@v7\n';
+    return source.slice(0, steps + '    steps:\n'.length) + insertion + source.slice(steps + '    steps:\n'.length);
+  });
+  expectFixture(result, `Control ${number}: ${job} rejects a second unversioned setup-node step`, 1, [`job ${job} must use exactly one actions/setup-node`]);
 }
 
 for (const fixture of cases) {

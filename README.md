@@ -24,6 +24,11 @@ The premise: Rust's compiler catches a large class of LLM mistakes (a known empi
 
 The exact category count is given in the spec itself; the count is allowed to evolve.
 
+Repository tooling and the published npm package require Node.js 24 or newer. Both JavaScript
+installers and both validator entry points enforce this floor at process startup; the
+`package.json` `engines` entry is package metadata, while the startup check is the hard runtime
+guard. CI tests both the current Node 24 line and the exact `24.0.0` floor.
+
 ## Validator contract
 
 `dev/validate.mjs` is deliberately a repository validator, not a general CommonMark/GFM parser.

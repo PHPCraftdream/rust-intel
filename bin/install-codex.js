@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // Install the rust-intel skill into Codex's user skill directory.
+// Zero dependencies; Node >= 24.0.0.
 // Usage: node bin/install-codex.js [--user-dir <path>] [--uninstall] [--help]
 
 'use strict';
+
+const { assertSupportedNodeVersion } = require('./node-version.js');
+assertSupportedNodeVersion();
 
 const fs = require('fs');
 const path = require('path');

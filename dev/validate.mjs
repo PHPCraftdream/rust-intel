@@ -1,13 +1,17 @@
 #!/usr/bin/env node
-// Repository-level regression checks. Zero dependencies; run with Node >= 16.7.0 (dev/validate-fixtures.mjs uses fs.cpSync).
+// Repository-level regression checks. Zero dependencies; run with Node >= 24.0.0.
 
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isValidSemver } from './semver.mjs';
 
+const require = createRequire(import.meta.url);
+const { MIN_NODE_VERSION, isSupportedNodeVersion, assertSupportedNodeVersion } = require('../bin/node-version.js');
+assertSupportedNodeVersion();
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const required = [
   'skill/SKILL.md',
@@ -16,6 +20,9 @@ const required = [
   'skills/rust-intel/SKILL.md',
   '.codex-plugin/plugin.json',
   'bin/install-codex.js',
+  'bin/node-version.js',
+  '.github/workflows/ci.yml',
+  '.github/workflows/npm-publish.yml',
   'dev/set-release-version.mjs',
   'dev/check-release-version.mjs',
   'dev/semver.mjs',
@@ -2014,9 +2021,104 @@ const semverBad = ['01.2.3', '1.02.3', '1.2.3-alpha.01', '1.2.3-alpha..1', '1.2.
 for (const v of semverGood) if (!isValidSemver(v)) errors.push(`semver self-check: "${v}" should be valid but isValidSemver rejected it`);
 for (const v of semverBad) if (isValidSemver(v)) errors.push(`semver self-check: "${v}" should be invalid but isValidSemver accepted it`);
 
+// The runtime guard is deliberately a tiny CommonJS helper so npm's executable bins and the
+// ESM development entry points cannot drift into different Node support ranges. Keep boundary
+// cases executable here: a major-only comparison must reject malformed pre-floor versions while
+// accepting every stable 24.x and newer release.
+for (const [version, expected] of [
+  ['23.99', false],
+  ['23.99.0', false],
+  ['24.0.0', true],
+  ['24.1.0', true],
+  ['24.99.99', true],
+  ['25.0.0', true],
+  ['24.0.0-0', false],
+]) {
+  if (isSupportedNodeVersion(version) !== expected) {
+    errors.push(`Node runtime self-check: ${version} should be ${expected ? 'supported' : 'rejected'} for >=${MIN_NODE_VERSION}`);
+  }
+}
+
+const runtimeGuardContracts = [
+  ['bin/install.js', "require('./node-version.js')", 'const fs = require('],
+  ['bin/install-codex.js', "require('./node-version.js')", 'const fs = require('],
+  ['dev/validate.mjs', "require('../bin/node-version.js')", 'const root ='],
+  ['dev/validate-fixtures.mjs', "require('../bin/node-version.js')", 'const root ='],
+];
+for (const [relative, importToken, workToken] of runtimeGuardContracts) {
+  const source = fs.readFileSync(path.join(root, relative), 'utf8');
+  const uncommentedSource = stripJsComments(source);
+  const executableSource = maskJsNonCode(source);
+  const importIndex = uncommentedSource.indexOf(importToken);
+  const guardIndex = executableSource.search(/assertSupportedNodeVersion\s*\(\s*\)\s*;/);
+  const workIndex = executableSource.indexOf(workToken);
+  if (importIndex < 0 || guardIndex < importIndex || workIndex < 0 || guardIndex > workIndex) {
+    errors.push(`${relative} must call assertSupportedNodeVersion from bin/node-version.js before doing work`);
+  }
+  if (!source.split('\n').slice(0, 5).join('\n').includes('Node >= 24.0.0')) errors.push(`${relative} must declare Node >= 24.0.0 in its entrypoint header`);
+}
+
 const plugin = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const claudePlugin = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
+if (packageJson.engines?.node !== '>=24.0.0') errors.push('package.json engine floor must be exactly >=24.0.0');
+if (MIN_NODE_VERSION !== '24.0.0') errors.push('bin/node-version.js runtime floor must be exactly 24.0.0');
+const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+const publishWorkflow = fs.readFileSync(path.join(root, '.github/workflows/npm-publish.yml'), 'utf8');
+// Read only the bounded YAML section for a named job, then only the `with` block belonging to an
+// actions/setup-node step. A repository-wide node-version regex would let an unrelated job or a
+// decoy comment mask a stale runtime on the job that actually executes the checks.
+function yamlJobSection(source, jobName) {
+  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+  const jobsIndex = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+  if (jobsIndex < 0) return null;
+  const escapedName = jobName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const jobRe = new RegExp(`^  ${escapedName}:\\s*(?:#.*)?$`);
+  const start = lines.findIndex((line, index) => index > jobsIndex && jobRe.test(line));
+  if (start < 0) return null;
+  const nextJobRe = /^  [A-Za-z0-9_-]+:\s*(?:#.*)?$/;
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (nextJobRe.test(lines[index])) { end = index; break; }
+  }
+  return lines.slice(start, end);
+}
+
+function setupNodeConfigInJob(source, jobName) {
+  const lines = yamlJobSection(source, jobName);
+  if (!lines) return null;
+  const setupNodeRe = /^ {6}-\s+uses:\s*actions\/setup-node@[^\s#]+(?:\s+#.*)?$/;
+  const stepRe = /^ {6}-\s+/;
+  const versions = [];
+  let stepCount = 0;
+  for (let start = 0; start < lines.length; start += 1) {
+    if (!setupNodeRe.test(lines[start])) continue;
+    stepCount += 1;
+    let end = lines.length;
+    for (let index = start + 1; index < lines.length; index += 1) {
+      if (stepRe.test(lines[index])) { end = index; break; }
+    }
+    const withIndex = lines.findIndex((line, index) => index > start && index < end && /^ {8}with:\s*$/.test(line));
+    if (withIndex < 0) continue;
+    for (let index = withIndex + 1; index < end; index += 1) {
+      const match = /^ {10}node-version:\s*([^\s#]+)\s*$/.exec(lines[index]);
+      if (match) versions.push(match[1].replace(/^['"]|['"]$/g, ''));
+    }
+  }
+  return { stepCount, versions };
+}
+
+for (const [file, source, job, expected] of [
+  ['.github/workflows/ci.yml', ciWorkflow, 'repository-checks', '24'],
+  ['.github/workflows/ci.yml', ciWorkflow, 'node-floor', '24.0.0'],
+  ['.github/workflows/npm-publish.yml', publishWorkflow, 'publish', '24'],
+]) {
+  const actual = setupNodeConfigInJob(source, job);
+  if (!actual || actual.stepCount !== 1 || actual.versions.length !== 1 || actual.versions[0] !== expected) {
+    const found = actual ? `${actual.stepCount} setup step(s), versions [${actual.versions.join(', ')}]` : 'job missing';
+    errors.push(`${file} job ${job} must use exactly one actions/setup-node with node-version: ${expected} (found ${found})`);
+  }
+}
 const allowedPluginFields = new Set(['id', 'name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'skills', 'apps', 'mcpServers', 'hooks', 'interface']);
 for (const field of Object.keys(plugin)) if (!allowedPluginFields.has(field)) errors.push(`unsupported Codex plugin field: ${field}`);
 for (const field of ['name', 'version', 'description']) if (typeof plugin[field] !== 'string' || !plugin[field].trim()) errors.push(`Codex plugin field ${field} must be a non-empty string`);
@@ -2179,6 +2281,22 @@ function assertProbeCompleted(label, probe) {
     return false;
   }
   return true;
+}
+
+// Exercise the exported guard through a child process as well as the pure predicate above. The
+// unsupported case must fail causally with the public diagnostic; a no-op replacement of the guard
+// must therefore be observable instead of leaving only a structural import check behind.
+const nodeVersionModule = JSON.stringify(path.join(root, 'bin/node-version.js'));
+for (const [version, expectedStatus, expectedText] of [
+  ['23.11.1', 1, 'requires Node.js >=24.0.0'],
+  ['24.0.0', 0, null],
+  ['25.0.0', 0, null],
+]) {
+  const probe = runNodeProbe(['-e', `const { assertSupportedNodeVersion } = require(${nodeVersionModule}); assertSupportedNodeVersion(${JSON.stringify(version)});`], 10_000);
+  if (!assertProbeCompleted(`Node runtime guard probe ${version}`, probe)) continue;
+  if (probe.status !== expectedStatus || (expectedText && !probe.output.includes(expectedText))) {
+    errors.push(`Node runtime guard probe ${version} expected status ${expectedStatus}${expectedText ? ` and diagnostic ${expectedText}` : ''}: ${probeDiagnostic(probe)}`);
+  }
 }
 
 function positiveIntegerEnv(name, fallback) {
