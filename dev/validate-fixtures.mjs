@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 16.7.0 (uses fs.cpSync).
 //
-// Scope, stated honestly: three hundred twenty-five hand-written controls (README count wrong-value + two coexistence
+// Scope, stated honestly: three hundred thirty-nine hand-written controls (README count wrong-value + two coexistence
 // variants, a temp-path junction/symlink alias, the two anchored trigger-table conventions,
 // bounded code-pattern duplicate/signature probes, explicit unsupported-style controls, project
 // fence-state probes, and table-boundary integrity/stress probes), thirteen rule-text presence controls (see ruleTextControls below), and two
@@ -2752,25 +2752,6 @@ for (const [number, name, root, label, operator] of [
   expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
 }
 
-// Controls 314-319: a switch case expression may contain an object literal, a class expression,
-// or an arrow body before its label colon.  None of those colons is a statement boundary, but the
-// class declaration after the label is one; the following root update must therefore be rejected.
-for (const [number, name, root, caseExpression] of [
-  [314, 'object-literal switch case expression', 'MODULES', '({ key: 1 })'],
-  [315, 'class-expression switch case expression', 'MODULES', '(class {})'],
-  [316, 'arrow-body switch case expression', 'MODULES', '(() => ({ key: 1 }))'],
-  [317, 'object-literal switch case expression', 'AUDIT_UNITS', '({ key: 1 })'],
-  [318, 'class-expression switch case expression', 'AUDIT_UNITS', '(class {})'],
-  [319, 'arrow-body switch case expression', 'AUDIT_UNITS', '(() => ({ key: 1 }))'],
-]) {
-  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
-    source,
-    root,
-    `switch (value) { case ${caseExpression}: class SwitchExpressionClass${number} {} ++${root}.length; }`,
-  ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
-}
-
 // Controls 298-301: a completed postfix update before a line break does not turn the following
 // class declaration into an expression continuation.  Pin both update directions and both roots
 // because the previous statement's postfix operator is an easy context leak for boundary scans.
@@ -2786,34 +2767,6 @@ for (const [number, name, root, operator] of [
     `const value${number} = 0; value${number}++\nclass FollowingClass${number} {} ${operator}${root}.length;`,
   ));
   expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
-}
-
-// Controls 320-321: an astral IdentifierStart variable can be updated before a line break just
-// like an ASCII local.  The following class declaration must remain a statement boundary, so the
-// root update after it is rejected for both protected roots.
-for (const [number, name, root] of [
-  [320, 'astral IdentifierStart postfix update', 'MODULES'],
-  [321, 'astral IdentifierStart postfix update', 'AUDIT_UNITS'],
-]) {
-  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
-    source,
-    root,
-    `const 𐐀 = 0; 𐐀++\nclass FollowingAstralClass${number} {} ++${root}.length;`,
-  ));
-  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
-}
-
-// Controls 322-325: object-literal and ternary colons outside a switch are expression syntax, not
-// labels.  Keep these positive reads beside the switch-label negatives so a broad colon heuristic
-// cannot turn ordinary object/conditional expressions into false positives.
-for (const [number, name, root, expression] of [
-  [322, 'object-literal colon outside switch', 'MODULES', 'const objectColon322 = { branch: ({ value: 1 }) }; void MODULES.length;'],
-  [323, 'ternary colon outside switch', 'MODULES', 'const ternaryColon323 = flag ? ({ value: 1 }) : ({ value: 2 }); void MODULES.length;'],
-  [324, 'object-literal colon outside switch', 'AUDIT_UNITS', 'const objectColon324 = { branch: ({ value: 1 }) }; void AUDIT_UNITS.length;'],
-  [325, 'ternary colon outside switch', 'AUDIT_UNITS', 'const ternaryColon325 = flag ? ({ value: 1 }) : ({ value: 2 }); void AUDIT_UNITS.length;'],
-]) {
-  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
-  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
 }
 
 // Controls 302-305: class expressions in object-property and ternary-colon positions are not
@@ -2849,6 +2802,106 @@ for (const [number, name, identifier] of [
     `const ${identifier} = []; ${identifier}.push(${number});`,
   ));
   expectFixture(result, `Control ${number}: ${name} remains accepted`, 0);
+}
+
+// Controls 314-319: a switch case expression may contain an object literal, a class expression,
+// or an arrow body before its label colon. None of those colons is a statement boundary, but the
+// class declaration after the label is one; the following root update must therefore be rejected.
+for (const [number, name, root, caseExpression] of [
+  [314, 'object-literal switch case expression', 'MODULES', '({ key: 1 })'],
+  [315, 'class-expression switch case expression', 'MODULES', '(class {})'],
+  [316, 'arrow-body switch case expression', 'MODULES', '(() => ({ key: 1 }))'],
+  [317, 'object-literal switch case expression', 'AUDIT_UNITS', '({ key: 1 })'],
+  [318, 'class-expression switch case expression', 'AUDIT_UNITS', '(class {})'],
+  [319, 'arrow-body switch case expression', 'AUDIT_UNITS', '(() => ({ key: 1 }))'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `switch (value) { case ${caseExpression}: class SwitchExpressionClass${number} {} ++${root}.length; }`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 320-321: an astral IdentifierStart variable can be updated before a line break just
+// like an ASCII local. The following class declaration must remain a statement boundary, so the
+// root update after it is rejected for both protected roots.
+for (const [number, name, root] of [
+  [320, 'astral IdentifierStart postfix update', 'MODULES'],
+  [321, 'astral IdentifierStart postfix update', 'AUDIT_UNITS'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `const 𐐀 = 0; 𐐀++\nclass FollowingAstralClass${number} {} ++${root}.length;`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 322-325: object-literal and ternary colons outside a switch are expression syntax, not
+// labels. Keep these positive reads beside the switch-label negatives so a broad colon heuristic
+// cannot turn ordinary object/conditional expressions into false positives.
+for (const [number, name, root, expression] of [
+  [322, 'object-literal colon outside switch', 'MODULES', 'const objectColon322 = { branch: ({ value: 1 }) }; void MODULES.length;'],
+  [323, 'ternary colon outside switch', 'MODULES', 'const ternaryColon323 = flag ? ({ value: 1 }) : ({ value: 2 }); void MODULES.length;'],
+  [324, 'object-literal colon outside switch', 'AUDIT_UNITS', 'const objectColon324 = { branch: ({ value: 1 }) }; void AUDIT_UNITS.length;'],
+  [325, 'ternary colon outside switch', 'AUDIT_UNITS', 'const ternaryColon325 = flag ? ({ value: 1 }) : ({ value: 2 }); void AUDIT_UNITS.length;'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(source, root, expression));
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
+}
+
+// Controls 326-329: the colon that terminates a switch case may be preceded by one or more
+// conditional-expression colons. These are expression syntax, not statement labels; after the
+// case is selected, the class declaration and root update are still reached and must be rejected.
+for (const [number, name, root, caseExpression] of [
+  [326, 'simple ternary switch case', 'MODULES', 'flag ? one : two'],
+  [327, 'simple ternary switch case', 'AUDIT_UNITS', 'flag ? one : two'],
+  [328, 'nested ternary switch case', 'MODULES', 'outer ? (inner ? one : two) : three'],
+  [329, 'nested ternary switch case', 'AUDIT_UNITS', 'outer ? (inner ? one : two) : three'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `switch (value) { case ${caseExpression}: class SwitchTernaryClass${number} {} ++${root}.length; }`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 330-335: each first clause ends at a case label after an automatic-semicolon-insertion
+// boundary. The next clause contains a class declaration followed by the protected-root update.
+// Cover a call, an array literal, and an object literal for both immutable roots so case-label
+// scanning cannot lose the statement boundary at the preceding clause.
+for (const [number, name, root, previousClause] of [
+  [330, 'call before next case', 'MODULES', 'produceValue()'],
+  [331, 'call before next case', 'AUDIT_UNITS', 'produceValue()'],
+  [332, 'array literal before next case', 'MODULES', '[one, two]'],
+  [333, 'array literal before next case', 'AUDIT_UNITS', '[one, two]'],
+  [334, 'object literal before next case', 'MODULES', '({ one: 1 })'],
+  [335, 'object literal before next case', 'AUDIT_UNITS', '({ one: 1 })'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `switch (value) { case 1: ${previousClause}\ncase 2: class SwitchAsiClass${number} {} ++${root}.length; }`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) is rejected`, 1, ['workflow']);
+}
+
+// Controls 336-339: object methods named like switch clauses are ordinary property definitions,
+// not case/default labels. Their body reads of each immutable root must remain accepted.
+for (const [number, name, root, property] of [
+  [336, 'property method named case', 'MODULES', 'case'],
+  [337, 'property method named default', 'MODULES', 'default'],
+  [338, 'property method named case', 'AUDIT_UNITS', 'case'],
+  [339, 'property method named default', 'AUDIT_UNITS', 'default'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    root,
+    `const methodKeyword${number} = { ${property}() { return ${root}.length; } }; void methodKeyword${number}.${property}();`,
+  ));
+  expectFixture(result, `Control ${number}: ${name} (${root}) remains accepted`, 0);
 }
 
 for (const fixture of cases) {

@@ -1122,44 +1122,48 @@ function workflowMutationCheck(source, names, rawSource = source) {
       const groupStack = [];
       let labelStart = -1;
       let ternaryDepth = 0;
-      let canStartLabel = true;
       for (let cursor = opening + 1; cursor < colon; cursor += 1) {
         const character = source[cursor];
         if (groupStack.length === 0) {
           if (character === ';') {
             labelStart = -1;
             ternaryDepth = 0;
-            canStartLabel = true;
             continue;
           }
           if (character === '?' && source[cursor + 1] !== '.' && source[cursor + 1] !== '?') {
             ternaryDepth += 1;
-            canStartLabel = false;
             continue;
           }
           if (character === ':') {
             if (ternaryDepth > 0) {
               ternaryDepth -= 1;
-              canStartLabel = false;
             } else {
+              // A completed label (or any other statement-level colon) ends the candidate
+              // segment.  The next case/default token is therefore considered on its own,
+              // regardless of whether the previous clause ended with `foo`, `call()`, `[x]`,
+              // or a literal and relied on ASI.
               labelStart = -1;
-              canStartLabel = true;
             }
             continue;
           }
-          if (canStartLabel && (keywordAt(cursor, 'case') || keywordAt(cursor, 'default'))) {
+          // Case/default is a statement-list label whenever it is at depth zero in the
+          // containing switch body.  Do not require a separator before it: JavaScript permits
+          // ASI between the previous clause's final expression and the next label.  A member
+          // property such as `object.default:` is not a label, even though its token is at the
+          // same delimiter depth.
+          const beforeKeyword = previousSignificant(cursor);
+          const isMemberProperty = beforeKeyword >= 0
+            && (source[beforeKeyword] === '.' || source[beforeKeyword] === '#');
+          if (!isMemberProperty && (keywordAt(cursor, 'case') || keywordAt(cursor, 'default'))) {
             labelStart = cursor;
-            canStartLabel = false;
             continue;
           }
-          if (!/\s/u.test(character)) canStartLabel = false;
         }
         if ('([{'.includes(character)) {
           groupStack.push(character);
         } else if (')]}'.includes(character)) {
           const expected = { ')': '(', ']': '[', '}': '{' }[character];
           if (groupStack.at(-1) === expected) groupStack.pop();
-          if (groupStack.length === 0 && character === '}') canStartLabel = true;
         }
       }
       if (labelStart < 0) return false;
