@@ -68,29 +68,86 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
     exit 1
 fi
 
+OWNED=("$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
+    "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md")
+
 TX_PARENT="$(dirname "$CLAUDE_DIR")"
 mkdir -p "$TX_PARENT"
-TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-uninstall.XXXXXX")"
+recover_transaction() {
+    local tx="$1" journal="$1/journal" kind index status original destination backup
+    [[ -f "$journal" ]] || { echo "Error: unfinished uninstall transaction has no journal; recover manually from $tx." >&2; return 1; }
+    local phase="$(awk '$1 == "phase" { print $2; exit }' "$journal")"
+    if [[ "$phase" == committed || "$phase" == rolled-back ]]; then rm -rf -- "$tx"; return; fi
+    while read -r kind index status original; do
+        [[ "$kind" != phase ]] || continue
+        [[ "$kind" == record ]] || continue
+        destination="${OWNED[$index]}"
+        backup="$tx/backup/$index"
+        if [[ -e "$backup" || -L "$backup" ]]; then
+            if [[ ! -e "$destination" && ! -L "$destination" ]]; then
+                mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || return 1
+            else
+                echo "Error: unfinished uninstall has both destination and backup: $destination (recover from $tx)." >&2
+                return 1
+            fi
+        elif [[ "$status" == backing-up ]]; then
+            echo "Error: unfinished uninstall backup is incomplete: $destination (recover from $tx)." >&2
+            return 1
+        fi
+    done < "$journal"
+    rm -rf -- "$tx"
+}
+for pending in "$TX_PARENT"/.rust-intel-bash-uninstall.*; do
+    [[ -d "$pending" ]] || continue
+    recover_transaction "$pending"
+done
+
+TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-bash-uninstall.XXXXXX")"
 ROLLBACK_NEEDED=1
 BACKUP_COUNT=0
 BACKUP_DESTS=()
 BACKUP_PATHS=()
+RECORD_STATUS=()
+RECORD_ORIGINAL=()
+for index in ${!OWNED[@]}; do
+    RECORD_STATUS[$index]=pending
+    if [[ -e "${OWNED[$index]}" || -L "${OWNED[$index]}" ]]; then RECORD_ORIGINAL[$index]=1; else RECORD_ORIGINAL[$index]=0; fi
+done
+JOURNAL="$TX_DIR/journal"
+write_journal() {
+    local phase="$1" temporary="$JOURNAL.tmp"
+    {
+        printf 'version 1\nphase %s\n' "$phase"
+        local index
+        for index in ${!OWNED[@]}; do printf 'record %s %s %s\n' "$index" "${RECORD_STATUS[$index]}" "${RECORD_ORIGINAL[$index]}"; done
+    } > "$temporary"
+    mv -- "$temporary" "$JOURNAL"
+}
+write_journal prepared
 
 rollback_uninstall() {
     local status=$?
     set +e
+    local rollback_failure=0
     if [[ "$ROLLBACK_NEEDED" -eq 1 ]]; then
         local index destination
         index=$((BACKUP_COUNT - 1))
         while [[ "$index" -ge 0 ]]; do
             destination="${BACKUP_DESTS[$index]}"
-            if [[ -e "$destination" || -L "$destination" ]]; then rm -rf "$destination"; fi
-            mkdir -p "$(dirname "$destination")"
-            mv "${BACKUP_PATHS[$index]}" "$destination"
+            if [[ -e "$destination" || -L "$destination" ]]; then
+                rollback_failure=1
+            elif [[ -e "${BACKUP_PATHS[$index]}" || -L "${BACKUP_PATHS[$index]}" ]]; then
+                mkdir -p -- "$(dirname "$destination")" && mv -- "${BACKUP_PATHS[$index]}" "$destination" || rollback_failure=1
+            fi
             index=$((index - 1))
         done
     fi
-    rm -rf "$TX_DIR"
+    if [[ "$rollback_failure" -ne 0 ]]; then
+        echo "Uninstall rollback incomplete; transaction retained for recovery: $TX_DIR" >&2
+    else
+        write_journal rolled-back || true
+        rm -rf -- "$TX_DIR"
+    fi
     trap - EXIT
     exit "$status"
 }
@@ -103,14 +160,19 @@ backup_owned() {
     if [[ -e "$destination" || -L "$destination" ]]; then
         BACKUP_DESTS[$BACKUP_COUNT]="$destination"
         BACKUP_PATHS[$BACKUP_COUNT]="$BACKUP_ROOT/$BACKUP_COUNT"
-        mv "$destination" "${BACKUP_PATHS[$BACKUP_COUNT]}"
+        local index="$BACKUP_COUNT" owned_index
+        for owned_index in ${!OWNED[@]}; do [[ "${OWNED[$owned_index]}" == "$destination" ]] && break; done
+        RECORD_STATUS[$owned_index]=backing-up
+        write_journal active
+        mv -- "$destination" "${BACKUP_PATHS[$BACKUP_COUNT]}"
+        RECORD_STATUS[$owned_index]=backed-up
+        write_journal active
         BACKUP_COUNT=$((BACKUP_COUNT + 1))
     fi
 }
 
-for owned in "$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
-    "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md"; do
-    backup_owned "$owned"
+for index in ${!OWNED[@]}; do
+    backup_owned "${OWNED[$index]}"
 done
 
 if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$BACKUP_COUNT" -ge "$RUST_INTEL_INSTALL_FAIL_AFTER" ]]; then
@@ -120,7 +182,8 @@ fi
 
 removed_any=0
 if [[ "$BACKUP_COUNT" -gt 0 ]]; then removed_any=1; fi
-rm -rf "$TX_DIR"
+write_journal committed
+rm -rf -- "$TX_DIR"
 ROLLBACK_NEEDED=0
 trap - EXIT
 

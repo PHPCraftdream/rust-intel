@@ -55,39 +55,85 @@ $NsDir       = Join-Path $CommandsDir 'rust-intel-cc'
 
 Write-Output "Uninstalling rust-intel from $ClaudeDir ..."
 
-$removedAny = $false
-
-if (Test-Path -LiteralPath $SkillDir) {
-    Remove-Item -LiteralPath $SkillDir -Recurse -Force
-    Write-Output "  removed    $SkillDir"
-    $removedAny = $true
+function Write-TransactionJournal {
+    param([string]$Path, [string]$Phase, [object[]]$Records, [string[]]$Failures = @())
+    $payload = [ordered]@{ version = 1; phase = $Phase; records = @($Records) }
+    if ($Failures.Count -gt 0) { $payload.rollbackFailures = @($Failures) }
+    $temporary = "$Path.tmp-$PID"
+    $json = $payload | ConvertTo-Json -Depth 8
+    $stream = New-Object IO.FileStream($temporary, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($json + "`n")
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally { $stream.Dispose() }
+    Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
-# v0.2.1+ flat-with-prefix:
-foreach ($cur in 'rust-cc-audit.md', 'rust-cc-fix.md', 'rust-cc-plan.md') {
-    $curPath = Join-Path $CommandsDir $cur
-    if (Test-Path -LiteralPath $curPath) {
-        Remove-Item -LiteralPath $curPath -Force
-        Write-Output "  removed    $curPath"
-        $removedAny = $true
+function Recover-Transaction {
+    param([string]$Transaction)
+    $journalPath = Join-Path $Transaction 'journal.json'
+    if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) { throw "Unfinished uninstall transaction has no journal; recover manually from $Transaction" }
+    $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json
+    if ($journal.phase -eq 'committed' -or $journal.phase -eq 'rolled-back') { Remove-Item -LiteralPath $Transaction -Recurse -Force; return }
+    $failures = @()
+    foreach ($record in @($journal.records)) {
+        $destination = [string]$record.destination
+        $backup = [string]$record.backup
+        if (Test-Path -LiteralPath $backup) {
+            if (-not (Test-Path -LiteralPath $destination)) {
+                try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null; Move-Item -LiteralPath $backup -Destination $destination }
+                catch { $failures += "$destination`: $($_.Exception.Message)" }
+            } else { $failures += "$destination`: destination and backup both exist" }
+        } elseif ($record.status -eq 'backing-up') { $failures += "$destination`: backup state is incomplete" }
     }
+    if ($failures.Count -gt 0) { throw "Unfinished uninstall transaction requires recovery: $Transaction`n$($failures -join "`n")" }
+    Remove-Item -LiteralPath $Transaction -Recurse -Force
 }
 
-# v0.2.0 colon-namespace dir:
-if (Test-Path -LiteralPath $NsDir) {
-    Remove-Item -LiteralPath $NsDir -Recurse -Force
-    Write-Output "  removed    $NsDir (v0.2.0 namespace layout)"
-    $removedAny = $true
+$owned = @($SkillDir,
+    (Join-Path $CommandsDir 'rust-cc-audit.md'), (Join-Path $CommandsDir 'rust-cc-fix.md'), (Join-Path $CommandsDir 'rust-cc-plan.md'),
+    $NsDir,
+    (Join-Path $CommandsDir 'rust-audit.md'), (Join-Path $CommandsDir 'rust-fix.md'),
+    (Join-Path $CommandsDir 'rust-plan.md'), (Join-Path $CommandsDir 'rust-intel.md'))
+$txParent = Split-Path -Parent $ClaudeDir
+New-Item -ItemType Directory -Force -Path $txParent | Out-Null
+foreach ($pending in @(Get-ChildItem -LiteralPath $txParent -Directory -Filter '.rust-intel-ps-uninstall-*' -ErrorAction SilentlyContinue)) { Recover-Transaction $pending.FullName }
+$txDir = Join-Path $txParent ('.rust-intel-ps-uninstall-' + [IO.Path]::GetRandomFileName())
+$backupRoot = Join-Path $txDir 'backup'
+New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+$records = @()
+foreach ($destination in $owned | Select-Object -Unique) {
+    $records += [pscustomobject]@{ destination = $destination; backup = Join-Path $backupRoot ([string]$records.Count); status = 'pending'; originalPresent = [bool](Test-Path -LiteralPath $destination) }
 }
-
-# v0.1.x legacy flat layout:
-foreach ($legacy in 'rust-audit.md', 'rust-fix.md', 'rust-plan.md', 'rust-intel.md') {
-    $legacyPath = Join-Path $CommandsDir $legacy
-    if (Test-Path -LiteralPath $legacyPath) {
-        Remove-Item -LiteralPath $legacyPath -Force
-        Write-Output "  removed    $legacyPath (legacy v0.1.x layout)"
-        $removedAny = $true
+$journalPath = Join-Path $txDir 'journal.json'
+Write-TransactionJournal $journalPath 'prepared' $records
+try {
+    foreach ($record in $records) {
+        if (-not $record.originalPresent) { continue }
+        $record.status = 'backing-up'; Write-TransactionJournal $journalPath 'active' $records
+        Move-Item -LiteralPath $record.destination -Destination $record.backup
+        $record.status = 'backed-up'; Write-TransactionJournal $journalPath 'active' $records
     }
+    $removedAny = [bool]($records | Where-Object { $_.originalPresent })
+    Write-TransactionJournal $journalPath 'committed' $records
+    Remove-Item -LiteralPath $txDir -Recurse -Force
+} catch {
+    $rollbackFailures = @()
+    for ($recordIndex = $records.Count - 1; $recordIndex -ge 0; $recordIndex--) {
+        $record = $records[$recordIndex]
+        if ((Test-Path -LiteralPath $record.backup) -and -not (Test-Path -LiteralPath $record.destination)) {
+            try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $record.destination) | Out-Null; Move-Item -LiteralPath $record.backup -Destination $record.destination }
+            catch { $rollbackFailures += "$($record.destination): $($_.Exception.Message)" }
+        }
+    }
+    if ($rollbackFailures.Count -gt 0) {
+        Write-TransactionJournal $journalPath 'rollback-failed' $records $rollbackFailures
+        throw "Uninstall failed and rollback is incomplete; recover from $txDir`n$($rollbackFailures -join "`n")"
+    }
+    Write-TransactionJournal $journalPath 'rolled-back' $records
+    Remove-Item -LiteralPath $txDir -Recurse -Force
+    throw
 }
 
 Write-Output ""

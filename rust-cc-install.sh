@@ -207,37 +207,99 @@ fi
 # moved to a backup only after every source file is known and copied successfully.
 TX_PARENT="$(dirname "$CLAUDE_DIR")"
 mkdir -p "$TX_PARENT"
-TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-tx.XXXXXX")"
+recover_transaction() {
+    local tx="$1" journal="$1/journal" phase kind index status original destination backup
+    [[ -f "$journal" ]] || { echo "Error: unfinished installer transaction has no journal; recover manually from $tx." >&2; return 1; }
+    phase="$(awk '$1 == "phase" { print $2; exit }' "$journal")"
+    if [[ "$phase" == committed || "$phase" == rolled-back ]]; then rm -rf -- "$tx"; return; fi
+    while read -r kind index status original; do
+        [[ "$kind" != phase ]] || continue
+        [[ "$kind" == record ]] || continue
+        destination="${OWNED[$index]}"
+        backup="$tx/backup/$index"
+        if [[ -e "$backup" || -L "$backup" ]]; then
+            if [[ ( "$status" == installed || "$status" == installing ) && ( -e "$destination" || -L "$destination" ) ]]; then
+                rm -rf -- "$destination" || return 1
+            fi
+            if [[ ! -e "$destination" && ! -L "$destination" ]]; then
+                mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || return 1
+            else
+                echo "Error: unfinished transaction has both destination and backup: $destination (recover from $tx)." >&2
+                return 1
+            fi
+        elif [[ ( "$status" == installed || "$status" == installing ) && "$original" == 0 && ( -e "$destination" || -L "$destination" ) ]]; then
+            rm -rf -- "$destination" || return 1
+        elif [[ "$status" == backing-up ]]; then
+            echo "Error: unfinished transaction backup is incomplete: $destination (recover from $tx)." >&2
+            return 1
+        fi
+    done < "$journal"
+    rm -rf -- "$tx"
+}
+
+OWNED=("$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
+    "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md")
+for pending in "$TX_PARENT"/.rust-intel-bash-tx.*; do
+    [[ -d "$pending" ]] || continue
+    recover_transaction "$pending"
+done
+
+TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-bash-tx.XXXXXX")"
 STAGE_ROOT="$TX_DIR/stage"
 BACKUP_ROOT="$TX_DIR/backup"
+JOURNAL="$TX_DIR/journal"
 mkdir -p "$STAGE_ROOT" "$BACKUP_ROOT"
+write_journal() {
+    local phase="$1" temporary="$JOURNAL.tmp"
+    {
+        printf 'version 1\nphase %s\n' "$phase"
+        local index
+        for index in ${!OWNED[@]}; do
+            printf 'record %s %s %s\n' "$index" "${RECORD_STATUS[$index]}" "${RECORD_ORIGINAL[$index]}"
+        done
+    } > "$temporary"
+    mv -- "$temporary" "$JOURNAL"
+}
 
 ROLLBACK_NEEDED=1
 BACKUP_COUNT=0
 REPLACE_COUNT=0
 BACKUP_DESTS=()
 BACKUP_PATHS=()
+BACKUP_INDICES=()
+RECORD_STATUS=()
+RECORD_ORIGINAL=()
+for index in ${!OWNED[@]}; do
+    RECORD_STATUS[$index]=pending
+    if [[ -e "${OWNED[$index]}" || -L "${OWNED[$index]}" ]]; then RECORD_ORIGINAL[$index]=1; else RECORD_ORIGINAL[$index]=0; fi
+done
+write_journal prepared
 
 rollback_transaction() {
     local status=$?
     set +e
     if [[ "$ROLLBACK_NEEDED" -eq 1 ]]; then
         local destination
-        for destination in "$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
-            "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md"; do
-            if [[ -e "$destination" || -L "$destination" ]]; then rm -rf "$destination"; fi
-        done
-        local index
+        local index destination owned_index rollback_failure=0
         index=$((BACKUP_COUNT - 1))
         while [[ "$index" -ge 0 ]]; do
             destination="${BACKUP_DESTS[$index]}"
-            if [[ -e "$destination" || -L "$destination" ]]; then rm -rf "$destination"; fi
-            mkdir -p "$(dirname "$destination")"
-            mv "${BACKUP_PATHS[$index]}" "$destination"
+            owned_index="${BACKUP_INDICES[$index]}"
+            if [[ -e "$destination" || -L "$destination" ]]; then
+                if [[ "${RECORD_STATUS[$owned_index]}" == installed ]]; then rm -rf -- "$destination" || rollback_failure=1; fi
+            fi
+            if [[ ! -e "$destination" && ! -L "$destination" ]]; then
+                mkdir -p -- "$(dirname "$destination")" && mv -- "${BACKUP_PATHS[$index]}" "$destination" || rollback_failure=1
+            fi
             index=$((index - 1))
         done
     fi
-    rm -rf "$TX_DIR"
+    if [[ "$rollback_failure" -ne 0 ]]; then
+        echo "Installer rollback incomplete; transaction retained for recovery: $TX_DIR" >&2
+    else
+        write_journal rolled-back || true
+        rm -rf -- "$TX_DIR"
+    fi
     trap - EXIT
     exit "$status"
 }
@@ -284,24 +346,38 @@ backup_owned() {
     if [[ -e "$destination" || -L "$destination" ]]; then
         BACKUP_DESTS[$BACKUP_COUNT]="$destination"
         BACKUP_PATHS[$BACKUP_COUNT]="$BACKUP_ROOT/$BACKUP_COUNT"
-        mv "$destination" "${BACKUP_PATHS[$BACKUP_COUNT]}"
+        local index="$BACKUP_COUNT"
+        local owned_index
+        for owned_index in ${!OWNED[@]}; do
+            [[ "${OWNED[$owned_index]}" == "$destination" ]] && break
+        done
+        BACKUP_INDICES[$index]="$owned_index"
+        RECORD_STATUS[$index]=backing-up
+        write_journal active
+        mv -- "$destination" "${BACKUP_PATHS[$BACKUP_COUNT]}"
+        RECORD_STATUS[$index]=backed-up
+        write_journal active
         BACKUP_COUNT=$((BACKUP_COUNT + 1))
     fi
 }
-for owned in "$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
-    "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md"; do
-    backup_owned "$owned"
+for index in ${!OWNED[@]}; do
+    backup_owned "${OWNED[$index]}"
 done
 
 mkdir -p "$CLAUDE_DIR/skills" "$COMMANDS_DIR"
-mv "$STAGE_ROOT/skill" "$SKILL_DIR"
+RECORD_STATUS[0]=installing; write_journal active
+mv -- "$STAGE_ROOT/skill" "$SKILL_DIR"
+RECORD_STATUS[0]=installed; write_journal active
 REPLACE_COUNT=$((REPLACE_COUNT + 1))
 if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$REPLACE_COUNT" -eq "$RUST_INTEL_INSTALL_FAIL_AFTER" ]]; then
     echo "Error: injected installer failure after replacement $REPLACE_COUNT." >&2
     exit 1
 fi
 for command_name in audit fix plan; do
-    mv "$STAGE_ROOT/commands/rust-cc-$command_name.md" "$COMMANDS_DIR/rust-cc-$command_name.md"
+    command_index=$REPLACE_COUNT
+    RECORD_STATUS[$command_index]=installing; write_journal active
+    mv -- "$STAGE_ROOT/commands/rust-cc-$command_name.md" "$COMMANDS_DIR/rust-cc-$command_name.md"
+    RECORD_STATUS[$command_index]=installed; write_journal active
     REPLACE_COUNT=$((REPLACE_COUNT + 1))
     if [[ "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" =~ ^[1-9][0-9]*$ && "$REPLACE_COUNT" -eq "$RUST_INTEL_INSTALL_FAIL_AFTER" ]]; then
         echo "Error: injected installer failure after replacement $REPLACE_COUNT." >&2
@@ -309,7 +385,8 @@ for command_name in audit fix plan; do
     fi
 done
 
-rm -rf "$TX_DIR"
+write_journal committed
+rm -rf -- "$TX_DIR"
 ROLLBACK_NEEDED=0
 trap - EXIT
 

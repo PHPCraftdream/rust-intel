@@ -128,9 +128,72 @@ foreach ($source in $commandSources) {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Source command is missing: $source" }
 }
 
+$owned = @($SkillDir,
+    (Join-Path $CommandsDir 'rust-cc-audit.md'), (Join-Path $CommandsDir 'rust-cc-fix.md'), (Join-Path $CommandsDir 'rust-cc-plan.md'),
+    $NsDir,
+    (Join-Path $CommandsDir 'rust-audit.md'), (Join-Path $CommandsDir 'rust-fix.md'),
+    (Join-Path $CommandsDir 'rust-plan.md'), (Join-Path $CommandsDir 'rust-intel.md'))
+
+function Write-TransactionJournal {
+    param([string]$Path, [string]$Phase, [object[]]$Records, [string[]]$Failures = @())
+    $payload = [ordered]@{ version = 1; phase = $Phase; records = @($Records) }
+    if ($Failures.Count -gt 0) { $payload.rollbackFailures = @($Failures) }
+    $temporary = "$Path.tmp-$PID"
+    $json = $payload | ConvertTo-Json -Depth 8
+    $stream = New-Object IO.FileStream($temporary, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($json + "`n")
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally { $stream.Dispose() }
+    Move-Item -LiteralPath $temporary -Destination $Path -Force
+}
+
+function Recover-Transaction {
+    param([string]$Transaction)
+    $journalPath = Join-Path $Transaction 'journal.json'
+    if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) {
+        throw "Unfinished installer transaction has no journal; recover manually from $Transaction"
+    }
+    $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json
+    if ($journal.phase -eq 'committed' -or $journal.phase -eq 'rolled-back') {
+        Remove-Item -LiteralPath $Transaction -Recurse -Force
+        return
+    }
+    $failures = @()
+    foreach ($record in @($journal.records)) {
+        $destination = [string]$record.destination
+        $backup = [string]$record.backup
+        $backupPresent = Test-Path -LiteralPath $backup
+        if ($backupPresent) {
+            if (($record.status -eq 'installed' -or $record.status -eq 'installing') -and (Test-Path -LiteralPath $destination)) {
+                try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
+            }
+            if (-not (Test-Path -LiteralPath $destination) -and (Test-Path -LiteralPath $backup)) {
+                try {
+                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+                    Move-Item -LiteralPath $backup -Destination $destination
+                } catch { $failures += "$destination`: $($_.Exception.Message)" }
+            } elseif ((Test-Path -LiteralPath $backup) -and (Test-Path -LiteralPath $destination)) {
+                $failures += "$destination`: destination and backup both exist"
+            }
+        } elseif (($record.status -eq 'installed' -or $record.status -eq 'installing') -and -not [bool]$record.originalPresent -and (Test-Path -LiteralPath $destination)) {
+            try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
+        } elseif ($record.status -eq 'backing-up') {
+            $failures += "$destination`: backup state is incomplete"
+        }
+    }
+    if ($failures.Count -gt 0) { throw "Unfinished installer transaction requires recovery: $Transaction`n$($failures -join "`n")" }
+    Remove-Item -LiteralPath $Transaction -Recurse -Force
+}
+
 $txParent = Split-Path -Parent $ClaudeDir
 New-Item -ItemType Directory -Force -Path $txParent | Out-Null
-$txDir = Join-Path $txParent ('.rust-intel-tx-' + [IO.Path]::GetRandomFileName())
+foreach ($pending in @(Get-ChildItem -LiteralPath $txParent -Directory -Filter '.rust-intel-ps-tx-*' -ErrorAction SilentlyContinue)) {
+    Recover-Transaction $pending.FullName
+}
+
+$txDir = Join-Path $txParent ('.rust-intel-ps-tx-' + [IO.Path]::GetRandomFileName())
 $stageRoot = Join-Path $txDir 'stage'
 $backupRoot = Join-Path $txDir 'backup'
 New-Item -ItemType Directory -Force -Path $stageRoot, $backupRoot | Out-Null
@@ -156,41 +219,64 @@ foreach ($file in $skillFiles) {
     if ((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $staged).Hash) { throw "Staged skill file differs: $relative" }
 }
 
-$owned = @($SkillDir,
-    (Join-Path $CommandsDir 'rust-cc-audit.md'), (Join-Path $CommandsDir 'rust-cc-fix.md'), (Join-Path $CommandsDir 'rust-cc-plan.md'),
-    $NsDir,
-    (Join-Path $CommandsDir 'rust-audit.md'), (Join-Path $CommandsDir 'rust-fix.md'),
-    (Join-Path $CommandsDir 'rust-plan.md'), (Join-Path $CommandsDir 'rust-intel.md'))
-$backups = @()
 $replacements = @(@{ Destination = $SkillDir; Staged = $stageSkill })
 for ($index = 0; $index -lt $stageCommands.Count; $index++) {
     $replacements += @{ Destination = (Join-Path $CommandsDir ('rust-cc-' + @('audit','fix','plan')[$index] + '.md')); Staged = $stageCommands[$index] }
 }
+$journalPath = Join-Path $txDir 'journal.json'
+$records = @()
+foreach ($destination in $owned | Select-Object -Unique) {
+    $records += [pscustomobject]@{
+        destination = $destination
+        backup = Join-Path $backupRoot ([string]$records.Count)
+        status = 'pending'
+        originalPresent = [bool](Test-Path -LiteralPath $destination)
+    }
+}
+Write-TransactionJournal $journalPath 'prepared' $records
 $replaceCount = 0
 try {
-    foreach ($destination in $owned) {
-        if (Test-Path -LiteralPath $destination) {
-            $backup = Join-Path $backupRoot ([string]$backups.Count)
-            Move-Item -LiteralPath $destination -Destination $backup
-            $backups += @{ Destination = $destination; Backup = $backup }
-        }
+    foreach ($record in $records) {
+        if (-not $record.originalPresent) { continue }
+        $record.status = 'backing-up'
+        Write-TransactionJournal $journalPath 'active' $records
+        Move-Item -LiteralPath $record.destination -Destination $record.backup
+        $record.status = 'backed-up'
+        Write-TransactionJournal $journalPath 'active' $records
     }
     foreach ($replacement in $replacements) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $replacement.Destination) | Out-Null
+        $record = $records | Where-Object { $_.destination -eq $replacement.Destination }
+        $record.status = 'installing'
+        Write-TransactionJournal $journalPath 'active' $records
         Move-Item -LiteralPath $replacement.Staged -Destination $replacement.Destination
+        $record.status = 'installed'
+        Write-TransactionJournal $journalPath 'active' $records
         $replaceCount++
         if ($env:RUST_INTEL_INSTALL_FAIL_AFTER -and $replaceCount -eq [int]$env:RUST_INTEL_INSTALL_FAIL_AFTER) { throw "Injected installer failure after replacement $replaceCount." }
     }
+    Write-TransactionJournal $journalPath 'committed' $records
     Remove-Item -LiteralPath $txDir -Recurse -Force
 } catch {
-    foreach ($replacement in $replacements) {
-        if (Test-Path -LiteralPath $replacement.Destination) { Remove-Item -LiteralPath $replacement.Destination -Recurse -Force }
+    $rollbackFailures = @()
+    for ($recordIndex = $records.Count - 1; $recordIndex -ge 0; $recordIndex--) {
+        $record = $records[$recordIndex]
+        if ($record.status -eq 'installed' -and (Test-Path -LiteralPath $record.destination)) {
+            try { Remove-Item -LiteralPath $record.destination -Recurse -Force } catch { $rollbackFailures += "$($record.destination): $($_.Exception.Message)" }
+        }
+        if ((Test-Path -LiteralPath $record.backup) -and -not (Test-Path -LiteralPath $record.destination)) {
+            try {
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $record.destination) | Out-Null
+                Move-Item -LiteralPath $record.backup -Destination $record.destination
+            } catch { $rollbackFailures += "$($record.destination): $($_.Exception.Message)" }
+        }
     }
-    foreach ($record in @($backups | Select-Object -Last $backups.Count)) {
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $record.Destination) | Out-Null
-        Move-Item -LiteralPath $record.Backup -Destination $record.Destination
+    if ($rollbackFailures.Count -gt 0) {
+        Write-TransactionJournal $journalPath 'rollback-failed' $records $rollbackFailures
+        throw "Installer failed and rollback is incomplete; recover from $txDir`n$($rollbackFailures -join "`n")"
     }
-    if (Test-Path -LiteralPath $txDir) { Remove-Item -LiteralPath $txDir -Recurse -Force }
+    Write-TransactionJournal $journalPath 'rolled-back' $records
+    Remove-Item -LiteralPath $txDir -Recurse -Force
     throw
 }
 
