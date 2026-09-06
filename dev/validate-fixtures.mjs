@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 384 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 388 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 366 spawn a validator child and 18 are in-process (the junction alias and direct oracles); there
+// 370 spawn a validator child and 18 are in-process (the junction alias and direct oracles); there
 // are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
 // probes (B5/B26). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -121,7 +121,7 @@ function makeTempRootOutside(sourceRoot) {
 }
 
 // Explicit allowlist of what dev/validate.mjs reads or spawns (verified against its source):
-// link/header scans over skill/ and skills/, count mentions in README.md/package.json/
+// link/header scans over skill/ and skills/, count mentions in README.md/CHANGELOG.md/package.json/
 // .claude-plugin/, the plugin manifests, commands/rust-intel-cc/audit.md, the spawned
 // installer + fixture script, and the `required` existence list. Copying only these — not the
 // whole tree — means an unrelated locked/generated/untracked worktree directory can never
@@ -131,6 +131,7 @@ const validateInputs = [
   'skill',
   'skills',
   'README.md',
+  'CHANGELOG.md',
   'package.json',
   '.claude-plugin',
   '.codex-plugin',
@@ -293,6 +294,35 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
     fs.rmSync(aliasPath, { recursive: true, force: true });
     fs.rmSync(physicalTarget, { recursive: true, force: true });
   }
+}
+
+// Controls 385-388: release-facing fixture counts must track the authoritative scope header, while
+// revision-qualified historical counts remain valid. The first two mutations make one current
+// claim stale in each release document and must fail; the latter two add an explicitly historical
+// count beside the unchanged current claim and must pass.
+for (const [number, file, mutate, label, expectedNeedle] of [
+  [385, 'README.md', (source) => source.replace(
+    /The validator fixture suite currently has \*\*(\d+)\*\* controls\./,
+    (_, count) => `The validator fixture suite currently has **${Number.parseInt(count, 10) - 1}** controls.`,
+  ), 'README current fixture count', 'README.md current Status fixture count'],
+  [386, 'CHANGELOG.md', (source) => source.replace(
+    /(?<=\*\*Net tooling state\.\*\*[\s\S]*?fixture suite has )\d+(?= controls\b)/,
+    (count) => String(Number.parseInt(count, 10) - 1),
+  ), 'CHANGELOG current fixture count', 'CHANGELOG.md current Unreleased fixture count'],
+  [387, 'README.md', (source) => source.replace(
+    /(The validator fixture suite currently has \*\*\d+\*\* controls\.)/,
+    '$1 Historical v0.6.0 documentation records 379 controls.',
+  ), 'README qualified historical fixture count', null],
+  [388, 'CHANGELOG.md', (source) => source.replace(
+    /(\*\*Net tooling state\.\*\*[\s\S]*?fixture suite has \d+ controls\.)/,
+    '$1 The v0.6.0 release record historically qualified 379 controls.',
+  ), 'CHANGELOG qualified historical fixture count', null],
+]) {
+  const result = runValidateAgainstMutatedFiles([file], mutate);
+  if (number <= 386) expectFixture(result, `Control ${number}: ${label} is mechanically pinned`, 1, [expectedNeedle]);
+  else if (result.skipped) failures.push(`Control ${number}: ${label}: mutation was not applied`);
+  else if (result.executionFailure) failures.push(`Control ${number}: ${label}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
+  else if (result.status !== 0) failures.push(`Control ${number}: ${label}: historical qualified count caused an unexpected failure: ${result.output.trim()}`);
 }
 
 // Cycle-5 anchored table contract controls.

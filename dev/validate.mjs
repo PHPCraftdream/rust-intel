@@ -1764,6 +1764,63 @@ for (const [file, text] of categoryCountFileTexts) {
   }
 }
 
+// The fixture runner's scope header is the authoritative source for its control count. Keep the
+// release-facing copies in README and the current CHANGELOG section mechanically tied to that
+// header, while leaving revision-qualified historical counts free to document earlier states.
+const fixtureSource = fs.readFileSync(path.join(root, 'dev/validate-fixtures.mjs'), 'utf8');
+const fixtureCountHeaderMatches = [...fixtureSource.matchAll(/^\/\/ Scope, stated honestly: (\d+) hand-written controls:/gm)];
+if (fixtureCountHeaderMatches.length !== 1) {
+  errors.push(`dev/validate-fixtures.mjs: authoritative control-count header must occur exactly once (found ${fixtureCountHeaderMatches.length})`);
+}
+const fixtureControlCount = fixtureCountHeaderMatches.length === 1
+  ? Number.parseInt(fixtureCountHeaderMatches[0][1], 10)
+  : null;
+if (!Number.isSafeInteger(fixtureControlCount) || fixtureControlCount <= 0) {
+  errors.push(`dev/validate-fixtures.mjs: authoritative control count must be a positive safe integer (got ${fixtureControlCount ?? 'missing'})`);
+}
+
+function sectionAfterHeading(source, heading) {
+  const start = source.indexOf(heading);
+  if (start < 0) return null;
+  const bodyStart = start + heading.length;
+  const nextHeading = source.slice(bodyStart).search(/^##\s/m);
+  return source.slice(bodyStart, nextHeading < 0 ? source.length : bodyStart + nextHeading);
+}
+
+const fixtureCountClaims = [
+  {
+    file: 'README.md',
+    label: 'README.md current Status fixture count',
+    pattern: /The validator fixture suite currently has \*\*(\d+)\*\* controls\./g,
+  },
+  {
+    file: 'README.md',
+    label: 'README.md release-checklist fixture count',
+    pattern: /Re-check the fixture-control count against the header in `dev\/validate-fixtures\.mjs` \(currently \*\*(\d+)\*\*\)/g,
+  },
+];
+const changelogText = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+const unreleasedChangelog = sectionAfterHeading(changelogText, '## [Unreleased]');
+if (unreleasedChangelog === null) errors.push('CHANGELOG.md: missing current ## [Unreleased] section for fixture-count validation');
+fixtureCountClaims.push({
+  file: 'CHANGELOG.md',
+  label: 'CHANGELOG.md current Unreleased fixture count',
+  pattern: /\bfixture suite has (\d+) controls\b/g,
+  text: unreleasedChangelog,
+});
+for (const claim of fixtureCountClaims) {
+  const text = claim.text ?? fs.readFileSync(path.join(root, claim.file), 'utf8');
+  const matches = [...text.matchAll(claim.pattern)];
+  if (matches.length !== 1) {
+    errors.push(`${claim.label}: expected exactly one unqualified current count (found ${matches.length})`);
+    continue;
+  }
+  const stated = Number.parseInt(matches[0][1], 10);
+  if (stated !== fixtureControlCount) {
+    errors.push(`${claim.label}: states ${stated} controls, but dev/validate-fixtures.mjs authoritative header states ${fixtureControlCount}`);
+  }
+}
+
 // The repository owns exactly two top-level trigger tables. This is deliberately a small
 // contract: it requires the canonical anchors and raw-column-1 pipes, rather than pretending
 // to be a complete GFM table parser.  A missing first pipe is still located and diagnosed.
