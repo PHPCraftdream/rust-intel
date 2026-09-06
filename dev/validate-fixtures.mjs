@@ -21,7 +21,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { isJsLineTerminator, literalTrueCompletionViolations, maskJsNonCode } from './js-lexer.mjs';
+import {
+  isJsLineTerminator,
+  literalTrueCompletionDiagnostics,
+  literalTrueCompletionViolations,
+  maskJsNonCode,
+} from './js-lexer.mjs';
 
 const require = createRequire(import.meta.url);
 const { assertSupportedNodeVersion } = require('../bin/node-version.js');
@@ -3786,7 +3791,24 @@ expectRegistryCase('shared lexical helper detects literal true without masking l
   const decoyViolations = literalTrueCompletionViolations(decoys);
   if (liveViolations.length) return [`live fixture contains literal-true completion(s): ${liveViolations.join(', ')}`];
   const expected = [7, 8, 9, 10];
-  return JSON.stringify(decoyViolations) === JSON.stringify(expected) ? [] : [`shared lexical helper returned ${JSON.stringify(decoyViolations)}; expected ${JSON.stringify(expected)}`];
+  if (JSON.stringify(decoyViolations) !== JSON.stringify(expected)) {
+    return [`shared lexical helper returned ${JSON.stringify(decoyViolations)}; expected ${JSON.stringify(expected)}`];
+  }
+  const equivalentForms = [
+    'completeCurrentControlScope((19), true);',
+    'const id = 20; completeCurrentControlScope(id, true);',
+    'completeCurrentControlScope?.(21, true);',
+    '(completeCurrentControlScope)(22, true);',
+    'other.completeCurrentControlScope(23, true);',
+    'completeCurrentControlScope(1, `${true, condition}`);',
+    'completeCurrentControlSc\\u006fpe(17, true);',
+  ].join('\n');
+  const diagnostics = literalTrueCompletionDiagnostics(equivalentForms);
+  const expectedDiagnostics = [19, null, 21, 22, 17];
+  const actualDiagnostics = diagnostics.map(({ id }) => id);
+  return JSON.stringify(actualDiagnostics) === JSON.stringify(expectedDiagnostics)
+    ? []
+    : [`shared lexical helper equivalent-call diagnostics returned ${JSON.stringify(actualDiagnostics)}; expected ${JSON.stringify(expectedDiagnostics)}`];
 }, []);
 expectRegistryCase('registry source has no accounting-only marker patterns', () => {
   const forbiddenScopeHelper = ['control', 'ScopePassed'].join('');
