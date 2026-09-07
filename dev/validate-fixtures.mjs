@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 492 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 494 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 416 spawn child processes (390 validator children and 26 focused lexer/helper children), and 76
+// 419 spawn child processes (390 validator children and 29 focused lexer/helper children), and 75
 // run in-process (including direct, rule-text, and crude source oracles; see ruleTextControls and
 // B5/B26 below). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -15,6 +15,7 @@
 // paragraphs: pinning prose in CI turns every legitimate rewrite into a red build and freezes
 // whichever phrasing shipped first.
 
+import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -27,7 +28,6 @@ import {
   literalTrueCompletionViolations,
   maskJsNonCode,
 } from './js-lexer.mjs';
-import { observeLiteralTrueCompletion } from './validate-lexer-observations.mjs';
 
 const require = createRequire(import.meta.url);
 const { assertSupportedNodeVersion } = require('../bin/node-version.js');
@@ -97,7 +97,7 @@ const progress = (message) => {
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 492;
+const CONTROL_REGISTRY_TOTAL = 494;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -184,7 +184,6 @@ const tallyChildSpawn = (kind) => {
 const registeredControls = controlRegistry.registered;
 const observedControls = controlRegistry.completed;
 const fixtureSource = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
-const lexerProbeSource = fs.readFileSync(path.join(root, 'dev', 'validate-lexer-probes.mjs'), 'utf8');
 const scopeHeaderMatch = /^\/\/ Scope, stated honestly: (\d+) hand-written controls:/m.exec(fixtureSource);
 const scopeHeaderTotal = scopeHeaderMatch ? Number.parseInt(scopeHeaderMatch[1], 10) : null;
 if (scopeHeaderTotal !== CONTROL_REGISTRY_TOTAL) {
@@ -291,7 +290,6 @@ const validateInputs = [
   'dev/validate-all.mjs',
   'dev/js-lexer.mjs',
   'dev/validate-lexer-probes.mjs',
-  'dev/validate-lexer-observations.mjs',
   'dev/semver.mjs',
   'dev/set-release-version.mjs',
   'dev/check-release-version.mjs',
@@ -366,8 +364,8 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 // Resource-heavy lexer probes run in short-lived children. V8's parser/native allocation zones
 // are process-scoped and may outlive JavaScript references until a major collection; one child per
 // probe gives the full suite a deterministic memory ceiling without changing lexer budgets or
-// weakening the large-input controls. The child emits a structured semantic observation and
-// terminal resource sample on normal completion; a killed/fatal child has no terminal sample.
+// weakening the large-input controls. The child emits a structured semantic observation on normal
+// completion; the parent judges it against the control's expected result.
 const lexerProbeScript = path.join(root, 'dev', 'validate-lexer-probes.mjs');
 // Keep each resource-heavy probe below the host's normal V8 reservation. This is a lower cap,
 // not a heap increase: the probes' deterministic 2,000,001-code-unit workload fits comfortably
@@ -375,7 +373,7 @@ const lexerProbeScript = path.join(root, 'dev', 'validate-lexer-probes.mjs');
 // the long-lived fixture parent.
 const lexerProbeHeapMb = 64;
 function runLexerProbe(controlId, timeoutMs = 120_000) {
-  const command = [process.execPath, `--max-old-space-size=${lexerProbeHeapMb}`, lexerProbeScript, String(controlId), ...(controlId === 401 ? [String(control401MarkerId)] : [])];
+  const command = [process.execPath, `--max-old-space-size=${lexerProbeHeapMb}`, lexerProbeScript, String(controlId)];
   tallyChildSpawn('focused');
   progress(`spawn lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} timeout=${timeoutMs}`);
   const run = spawnSync(process.execPath, command.slice(1), {
@@ -403,76 +401,20 @@ function runLexerProbe(controlId, timeoutMs = 120_000) {
     payload = null;
   }
   result.payload = payload;
-  result.terminalSample = payload?.telemetry?.terminalSample === true;
-  progress(`child lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} terminalSample=${result.terminalSample ? 'yes' : 'no-terminal-sample'} outputBytes=${Buffer.byteLength(result.output)}`);
+  progress(`child lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} outputBytes=${Buffer.byteLength(result.output)}`);
   return result;
 }
-// Control 401's marker id is chosen at run time and handed to the focused child via argv. The
-// id and its source index are recoverable from the input string itself — the marker ends in a
-// fixed shape — so the semantic oracle alone does not prove a scan ran (round-45 review P3-1).
-// What proves work is control 458's callee-identity pin on the shared observation module plus
-// the same-child allocation floors asserted below. The id is bounded to six digits so the
-// marker length — and with it the scan's operation count and the expected source index —
-// stays constant across runs.
-function chooseControl401MarkerId() {
-  return 100_003 + (Date.now() % 800_000);
-}
-const control401MarkerId = chooseControl401MarkerId();
-function expectedControl401Observation(markerId) {
-  const markerLength = `;completeCurrentControlScope(${markerId}, true)`.length;
-  return {
-    kind: 'diagnostics',
-    inputLength: 2_000_000,
-    ids: [markerId],
-    indexes: [2_000_000 - markerLength + 1],
-    companion: { kind: 'diagnostics', inputLength: 38, ids: [901], indexes: [0] },
-  };
-}
-// Control 401 must also show a causal resource signature of a real scan. Two work signals,
-// sampled by the focused child itself and asserted here (either alone passes a genuine scan;
-// a scan-eliding facade produces neither):
-// (1) scan-heap ratio — heapUsed sampled immediately after the large scan returns (before the
-//     companion call evicts it from the one-entry lexical cache), divided by the same child's
-//     pre-scan baseline. Ratios are portable; the previous absolute terminal-sample byte floor
-//     asserted only that a major GC had not run between the scan and the measurement (round-45
-//     review P2-1). Measured on the reference host (win32 10.0.19045, Node v24.12.0,
-//     --max-old-space-size=64): a genuine scan ratios ~17x; a scan-eliding facade ratios ~1.5x.
-// (2) retained-array delta — the scanner retains a source.length-byte regex-start bitmap in
-//     its one-entry cache, so process.memoryUsage().arrayBuffers must grow by at least half
-//     the 2,000,000-unit input while the sample is still reachable. The bitmap is reachable at
-//     the scan sample, so unlike heapUsed this signal cannot shrink under garbage collection,
-//     and it is derived from the scanner's own allocation rather than calibrated on any host.
-// Neither signal defeats an author who deliberately pads memory inside a forged callee (control
-// 458 pins callee identity independently for the shared observation module), and neither signal
-// defeats an allocating fast path inside dev/js-lexer.mjs itself: one retained
-// new Uint8Array(source.length) satisfies the delta floor without scanning. That third file is
-// outside this project's threat model — a deliberate lexer forgery, not a quietly rotted control —
-// and the release records must not claim floor-based closure over it.
-const control401ScanHeapRatioFloor = 3;
-const control401ScanArrayBuffersDeltaFloor = 1_000_000;
-// peakRss stays only as a conservative tripwire, not the gate: absolute byte floors are not
-// portable, the default below has NOT been validated on Linux (both ubuntu CI lanes evaluate
-// it for the first time on the project's first pushed CI run), and it is overridable per host
-// via RUST_INTEL_CONTROL401_MIN_PEAK_RSS_MB (a positive integer in MiB; a malformed value is a
-// fixture failure, matching the other RUST_INTEL_* knobs' explicit-failure behavior). Measured
-// genuine peak RSS on the reference host is ~142 MB; a scan-eliding facade grows ~2 MB over
-// the child's baseline.
-const control401PeakRssFloorDefaultMb = 32;
-const control401PeakRssFloorRaw = process.env.RUST_INTEL_CONTROL401_MIN_PEAK_RSS_MB;
-let control401PeakRssFloor = control401PeakRssFloorDefaultMb * 1024 * 1024;
-if (control401PeakRssFloorRaw !== undefined) {
-  if (!/^[1-9]\d*$/u.test(control401PeakRssFloorRaw)) {
-    failures.push(`RUST_INTEL_CONTROL401_MIN_PEAK_RSS_MB must be a positive integer in MiB; got ${JSON.stringify(control401PeakRssFloorRaw)}`);
-  } else {
-    control401PeakRssFloor = Number(control401PeakRssFloorRaw) * 1024 * 1024;
-  }
-}
+// Mutation anchors inside dev/js-lexer.mjs used by the behavioral-differential controls below.
+// Each is verified to occur exactly once in the file, so a lost anchor means the mutation did
+// not apply (the differential reports it as skipped and the control fails).
+const BUDGET_LINE = 'const MAX_LEXICAL_OPERATIONS = 2_000_000;';
+const STEP_BLOCK = '  const step = () => {\n    operations += 1;\n    if (operations > MAX_LEXICAL_OPERATIONS) throw new Error(\'JavaScript lexical scan exceeded its deterministic budget\');\n  };';
+const NAME_LINE = 'const COMPLETION_NAME = \'completeCurrentControlScope\';';
+const COMMENT_IF = '    if (character === \'/\' && next === \'*\') {';
+
 const expectedLexerObservations = new Map([
   [399, { kind: 'error', name: 'Error', message: 'JavaScript lexical nesting exceeded its deterministic budget' }],
   [400, { kind: 'error', name: 'Error', message: 'JavaScript lexical delimiter mismatch' }],
-  // 401 is absent by design: its expected observation is derived at run time from
-  // control401MarkerId via expectedControl401Observation and must not exist as a static literal.
-  [402, { kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget' }],
   [409, { kind: 'completion-violations', ids: [null] }],
   [410, { kind: 'completion-violations', ids: [null] }],
   [411, { kind: 'completion-violations', ids: [null] }],
@@ -491,52 +433,46 @@ const expectedLexerObservations = new Map([
   [477, { kind: 'completion-violations', ids: [null] }],
   [478, { kind: 'completion-violations', ids: [null] }],
 ]);
-// The work-floor evaluation is shared verbatim by expectLexerProbe (positive path) and control
-// 491 (negative control): the negative control must exercise the SAME predicate the positive
-// control asserts, not a re-implementation that can drift from it.
-function evaluateWorkFloors(telemetry, scanHeapRatioFloor, scanArrayBuffersDeltaFloor) {
-  const scanHeapRatio = telemetry
-    && Number.isSafeInteger(telemetry.initialHeapUsed) && telemetry.initialHeapUsed > 0
-    && Number.isSafeInteger(telemetry.scanHeapSample) && telemetry.scanHeapSample >= 0
-    ? telemetry.scanHeapSample / telemetry.initialHeapUsed
-    : null;
-  const scanArrayBuffersDelta = telemetry
-    && Number.isSafeInteger(telemetry.initialArrayBuffers) && telemetry.initialArrayBuffers >= 0
-    && Number.isSafeInteger(telemetry.scanArrayBuffersSample) && telemetry.scanArrayBuffersSample >= 0
-    ? telemetry.scanArrayBuffersSample - telemetry.initialArrayBuffers
-    : null;
-  return {
-    scanHeapRatio,
-    scanArrayBuffersDelta,
-    floorsSatisfied: scanHeapRatioFloor > 0
-      && ((scanHeapRatio !== null && scanHeapRatio >= scanHeapRatioFloor)
-        || (scanArrayBuffersDelta !== null && scanArrayBuffersDelta >= scanArrayBuffersDeltaFloor)),
-  };
-}
-function expectLexerProbe(controlId, { expected, scanHeapRatioFloor = 0, scanArrayBuffersDeltaFloor = 0, peakRssFloor = 0 } = {}) {
+function expectLexerProbe(controlId, { expected } = {}) {
   const result = runLexerProbe(controlId);
   const expectedObservation = expected ?? expectedLexerObservations.get(controlId);
-  const telemetry = result.payload?.telemetry;
-  const { scanHeapRatio, scanArrayBuffersDelta, floorsSatisfied } = evaluateWorkFloors(telemetry, scanHeapRatioFloor, scanArrayBuffersDeltaFloor);
   const passed = result.status === 0 && !result.signal && !result.error
     && result.payload?.controlId === controlId
-    && telemetry?.source === 'child'
-    && telemetry?.terminalSample === true
-    && Number.isSafeInteger(telemetry.heapUsed) && telemetry.heapUsed >= 0
-    && Number.isSafeInteger(telemetry.rss) && telemetry.rss >= 0
-    && Number.isSafeInteger(telemetry.peakHeapUsed) && telemetry.peakHeapUsed >= telemetry.heapUsed
-    && telemetry?.peakHeapSource === 'sampled-around-scan-and-terminal'
-    && (telemetry?.peakRssSource === 'boundary-sample' || telemetry?.peakRssSource === 'process.resourceUsage.maxRSS')
-    && Number.isSafeInteger(telemetry.initialHeapUsed) && telemetry.initialHeapUsed >= 0
-    && (scanHeapRatioFloor <= 0 || floorsSatisfied)
-    && Number.isSafeInteger(telemetry.peakRss) && telemetry.peakRss >= telemetry.rss
-    && telemetry.peakRss >= peakRssFloor
     && JSON.stringify(result.payload?.observation) === JSON.stringify(expectedObservation);
   if (!passed) {
-    const sampleStatus = result.terminalSample ? 'terminal sample present' : 'no terminal sample (child may have failed fatally or been killed)';
-    const expectedId = controlId === 401 ? `, expected marker id ${control401MarkerId}` : '';
-    failures.push(`Control ${controlId}: focused lexer child failed (${sampleStatus}; status ${result.status ?? 'null'}, signal ${result.signal || 'none'}, error ${result.error || 'none'}, work floors: scanHeapRatio=${scanHeapRatio === null ? 'n/a' : scanHeapRatio.toFixed(2)} (floor ${scanHeapRatioFloor}), scanArrayBuffersDelta=${scanArrayBuffersDelta === null ? 'n/a' : scanArrayBuffersDelta} (floor ${scanArrayBuffersDeltaFloor}), peakRss=${telemetry?.peakRss ?? 'n/a'} (floor ${peakRssFloor})${expectedId}, output: ${result.output.trim()})`);
+    failures.push(`Control ${controlId}: focused lexer child failed (status ${result.status ?? 'null'}, signal ${result.signal || 'none'}, error ${result.error || 'none'}, output: ${result.output.trim()})`);
   }
+  completeCurrentControlScope(controlId, passed);
+}
+
+// Behavioral-differential evaluation shared by controls 401, 402, 458, 459, 491, 492, 493, and
+// 494: spawn the focused probe child from a TEMP-TREE COPY of the repository whose
+// dev/js-lexer.mjs carries a run-time-chosen mutation (or none), and require the child's
+// semantic observation to equal the outcome only genuinely executing that mutated lexer can
+// produce. The probe vehicle itself is byte-identical in both trees, so no text-level property
+// of it (presence, arrangement, occurrence counts, position pins — the round-43 through round-47
+// bypass class) can distinguish the runs; only executing the mutated spot can. Every expected
+// index/id below was verified by actually running the mutation against the real scanner.
+// A mutate() that returns null (anchor lost) fails the control, matching the skipped handling
+// of controls 486/488.
+function expectJsLexerDifferential(controlId, probeId, mutate, expected) {
+  const result = runValidateAgainstMutatedFiles(['dev/js-lexer.mjs'], mutate, {
+    script: 'dev/validate-lexer-probes.mjs',
+    args: [String(probeId)],
+    timeoutMs: 120_000,
+  });
+  let payload = null;
+  try {
+    if (result.stdout.trim()) payload = JSON.parse(result.stdout.trim());
+  } catch {
+    payload = null;
+  }
+  const passed = !result.skipped && !result.executionFailure && result.status === 0
+    && payload?.controlId === probeId
+    && JSON.stringify(payload?.observation) === JSON.stringify(expected);
+  if (result.skipped) failures.push(`Control ${controlId}: required dev/js-lexer.mjs anchor was not found`);
+  else if (result.executionFailure) failures.push(`Control ${controlId}: focused lexer child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
+  else if (!passed) failures.push(`Control ${controlId}: expected observation ${JSON.stringify(expected)}, got status ${result.status ?? 'null'}, output: ${result.output.trim()}`);
   completeCurrentControlScope(controlId, passed);
 }
 
@@ -4107,19 +4043,22 @@ observeControls(399);
 expectLexerProbe(399);
 
 // Controls 400-402: delimiter mismatches fail closed without a backward stack walk, and the
-// shared lexer accepts work exactly at its operation budget but rejects work above it. Each
-// large-input probe runs in a short-lived child so V8 native allocation zones cannot accumulate
-// across the full fixture process. These controls use deterministic exception/result oracles;
-// elapsed time is intentionally not part of the assertion.
+// shared lexer accepts work exactly at its operation budget but rejects work above it. Controls
+// 401 and 402 are behavioral differentials: the unmodified tree must accept the exactly
+// 2,000,000-unit marker input with the canonical diagnostic at the marker's index, and reject
+// the 2,000,001-unit input one operation above the budget; controls 458/459/491/492 mutate
+// dev/js-lexer.mjs itself to prove those outcomes are caused by the scanner actually executing.
+// Each large-input probe runs in a short-lived child so V8 native allocation zones cannot
+// accumulate across the full fixture process; elapsed time is intentionally not part of the
+// assertion.
 observeControls({ start: 400, end: 402 });
 expectLexerProbe(400);
-expectLexerProbe(401, {
-  expected: expectedControl401Observation(control401MarkerId),
-  scanHeapRatioFloor: control401ScanHeapRatioFloor,
-  scanArrayBuffersDeltaFloor: control401ScanArrayBuffersDeltaFloor,
-  peakRssFloor: control401PeakRssFloor,
+expectJsLexerDifferential(401, 401, (source) => source, {
+  kind: 'diagnostics', inputLength: 2_000_000, ids: [902], indexes: [1_999_962],
 });
-expectLexerProbe(402);
+expectJsLexerDifferential(402, 402, (source) => source, {
+  kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget',
+});
 
 // Controls 403-404: private names are IdentifierName tokens even when their spelling is a
 // keyword.  A live division after `this.#if()` must remain visible, while a real regexp in the
@@ -4385,164 +4324,33 @@ observeControls(457);
 completeCurrentControlScope(457, passed);
 }
 
-// Shared evaluation of the observation module's integrity contract, used verbatim by control 458
-// (positive path) and control 492 (negative control). The import pin is a conjunction of two
-// halves. The RAW half pins the module specifier, which masking erases; the MASKED half pins
-// liveness: maskJsNonCode blanks comment and string interiors while preserving offsets, so a
-// copy of the import line inside a comment or a string is a run of spaces that can never equal
-// the masked image of the pinned line — the raw/masked asymmetry that defeated the round-45 pin
-// (round-46 review P2-1) fails the masked half, and a forged module path fails the raw half.
-// The pinned image is computed by masking the pinned line itself, because the line's own string
-// literal ('./js-lexer.mjs') is blanked by the same masking.
-function evaluateObservationModuleContract(observationModuleSource) {
-  let masked = null;
-  try {
-    masked = maskJsNonCode(observationModuleSource);
-  } catch {
-    // A forged or corrupted module can be unlexable; that is a rejection, not a crash. Fail
-    // closed: nothing about the identity contract can be held for text the lexer cannot scan.
-    return {
-      masked: null,
-      lexable: false,
-      hasUnguardedFirstStatementScannerCall: false,
-      hasPinnedScannerImport: false,
-      hasPinnedScannerImportRaw: false,
-      hasPinnedScannerImportMasked: false,
-      scannerIdentityOccurrences: 0,
-      hasScannerBindingDeclaration: false,
-      hasScannerAliasBinding: false,
-      identityHeld: false,
-    };
-  }
-  const functionAnchor = 'export function observeLiteralTrueCompletion(source)';
-  const functionStart = masked.indexOf(functionAnchor);
-  const bodyOpen = functionStart < 0 ? -1 : masked.indexOf('{', functionStart);
-  const scannerStatement = 'const diagnostics = literalTrueCompletionDiagnostics(source);';
-  const scannerStatementIndex = bodyOpen < 0 ? -1 : masked.indexOf(scannerStatement, bodyOpen);
-  const scannerPreamble = bodyOpen >= 0 && scannerStatementIndex > bodyOpen
-    ? masked.slice(bodyOpen + 1, scannerStatementIndex)
-    : null;
-  // The scanner call must be the FIRST statement of the exported observation function, preceded
-  // only by whitespace or comments: a size-conditional early return placed above the call
-  // satisfies a whole-file substring search while never scanning the large input.
-  const pinnedScannerImportLine = "import { literalTrueCompletionDiagnostics } from './js-lexer.mjs';";
-  const pinnedScannerImportMaskedLine = maskJsNonCode(pinnedScannerImportLine);
-  // Callee-identity pin as a binding-shape claim, not an occurrence total: the identifier must be
-  // bound exactly once, by the pinned import line, and never re-declared or aliased. A legitimate
-  // third MENTION stays legal, while every wrapper spelling the reviews demonstrated — a
-  // function/const/let/var/class declaration, or an `X as literalTrueCompletionDiagnostics` /
-  // `literalTrueCompletionDiagnostics as Y` rebinding — is a binding and is rejected.
-  const hasPinnedScannerImportRaw = observationModuleSource.split(/\r?\n/).some((line) => line === pinnedScannerImportLine);
-  const hasPinnedScannerImportMasked = masked.split(/\r?\n/).some((line) => line === pinnedScannerImportMaskedLine);
-  const hasScannerBindingDeclaration = /(?:function|const|let|var|class)\s+literalTrueCompletionDiagnostics\b/u.test(masked);
-  const hasScannerAliasBinding = /\bliteralTrueCompletionDiagnostics\s+as\b/u.test(masked)
-    || /\bas\s+literalTrueCompletionDiagnostics\b/u.test(masked);
-  return {
-    masked,
-    lexable: true,
-    hasUnguardedFirstStatementScannerCall: scannerPreamble !== null && /^[ \t\r\n]*$/u.test(scannerPreamble),
-    hasPinnedScannerImport: hasPinnedScannerImportRaw && hasPinnedScannerImportMasked,
-    hasPinnedScannerImportRaw,
-    hasPinnedScannerImportMasked,
-    scannerIdentityOccurrences: [...masked.matchAll(/\bliteralTrueCompletionDiagnostics\b/gu)].length,
-    hasScannerBindingDeclaration,
-    hasScannerAliasBinding,
-    identityHeld: hasPinnedScannerImportRaw && hasPinnedScannerImportMasked
-      && !hasScannerBindingDeclaration && !hasScannerAliasBinding,
-  };
-}
-
-// Control 458: focused lexer probes are part of the fixture's anti-vacuity contract.  Keep the
-// canonical argument parser, structured semantic result, and child-owned terminal telemetry in
-// source inventory, keep the shared observation's scanner call reachable as the function's first
-// statement, and pin the callee's identity: the import line verbatim in live (comment/string-
-// masked) code, with no second binding of the scanner identifier anywhere in the module. Both
-// halves of the pin read the masked image, so a copy of the import line inside a comment
-// satisfies nothing (round-46 review P2-1). A free-form success sentence, an early-return
-// facade, or a same-named module-scope wrapper aliased over the real scanner is not an accepted
-// protocol; controls 491 and 492 are the negative controls proving the work floors and this pin
-// still fire.
+// Control 458: differential M-A — lower the scanner's operation budget by one and the 401 input
+// must be REJECTED. Together with control 401 this pins the operations actually charged for the
+// 2,000,000-unit input to exactly the budget constant — a facade that does not charge one
+// operation per input unit cannot trip the lowered budget. The former source-inventory pin on
+// the shared observation module is retired together with that module: rounds 43-47 each found a
+// text-arrangement bypass of one of those pins.
 observeControls(458);
-{
-  const helperContract = [
-    /const canonicalControlId = \/\^\(\?:0\|\[1-9\]\\d\*\)\$\/u\.test\(rawControlId\)/u,
-    /JSON\.stringify\(\{ controlId, observation: result\.observation, telemetry: telemetry\(initialMemory\) \}\)/u,
-    /terminalSample: true/u,
-    /source: 'child'/u,
-    /const canonicalMarkerId = \/\^\(\?:0\|\[1-9\]\\d\*\)\$\/u\.test\(process\.argv\[3\] \|\| ''\)/u,
-    /const markerId = Number\.isSafeInteger\(canonicalMarkerId\) && canonicalMarkerId >= 1 \? canonicalMarkerId : NaN;/u,
-    /const marker = `;completeCurrentControlScope\(\$\{markerId\}, true\)`;/u,
-    /const fillerLength = 2_000_000 - marker\.length;/u,
-    /observeLiteralTrueCompletion\('x'\.repeat\(fillerLength\) \+ marker\)/u,
-    /observeLiteralTrueCompletion\('completeCurrentControlScope\(901, true\)'\)/u,
-    // Work-floor telemetry provenance (round-46 review P2-2): the sampling statements and the
-    // telemetry field expressions that carry control 401's work proof are pinned at source
-    // level, including the scan-then-sample adjacency. Control 401 also fails closed at runtime
-    // when both signals go null (control 491 proves it), but the pins make the removal, the
-    // replacement with a forged sampling value, or a reordering visible at the source contract.
-    /const initialMemory = process\.memoryUsage\(\);/u,
-    /scanMemory = process\.memoryUsage\(\);/u,
-    /companionMemory = process\.memoryUsage\(\);/u,
-    /observeLiteralTrueCompletion\('x'\.repeat\(fillerLength\) \+ marker\);\s*\n\s*scanMemory = process\.memoryUsage\(\);/u,
-    /scanHeapSample: scanMemory \? scanMemory\.heapUsed : null/u,
-    /scanArrayBuffersSample: scanMemory \? scanMemory\.arrayBuffers : null/u,
-    /initialArrayBuffers: initialMemory\.arrayBuffers/u,
-    /peakHeapSource: 'sampled-around-scan-and-terminal'/u,
-  ];
-  const observationModuleSource = fs.readFileSync(path.join(root, 'dev', 'validate-lexer-observations.mjs'), 'utf8');
-  const evaluation = evaluateObservationModuleContract(observationModuleSource);
-  const hasUnguardedFirstStatementScannerCall = evaluation.hasUnguardedFirstStatementScannerCall;
-  const hasPinnedScannerIdentity = evaluation.identityHeld;
-  const violations = literalTrueCompletionViolations(lexerProbeSource);
-  const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
-  const passed = helperContract.every((pattern) => pattern.test(lexerProbeSource))
-    && hasUnguardedFirstStatementScannerCall
-    && hasPinnedScannerIdentity
-    && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901], indexes: [0] })
-    && violations.length === 0
-    && !lexerProbeSource.includes('lexer probe passed (control');
-  if (!passed) {
-    const identityDetail = evaluation.lexable === false
-      ? 'observation module is not lexable JavaScript, so the callee identity contract cannot hold (callee identity pin)'
-      : !evaluation.hasPinnedScannerImport
-      ? 'observation module must import the scanner verbatim as "import { literalTrueCompletionDiagnostics } from \'./js-lexer.mjs\';" as live code — verbatim in the raw source AND present (unmasked) in the comment/string-masked image (callee identity pin)'
-      : evaluation.hasScannerBindingDeclaration || evaluation.hasScannerAliasBinding
-        ? `the scanner identifier must have no second binding in the observation module — no function/const/let/var/class declaration, no as-alias (${evaluation.scannerIdentityOccurrences} masked occurrences found) (callee identity pin)`
-        : !hasUnguardedFirstStatementScannerCall
-          ? 'the scanner call must remain the observation function\'s first statement'
-          : '';
-    failures.push(`Control 458: focused lexer helper anti-vacuity contract drifted (${identityDetail ? identityDetail + '; ' : ''}violations: ${JSON.stringify(violations)})`);
-  }
-  completeCurrentControlScope(458, passed);
-}
+expectJsLexerDifferential(458, 401, (source) => {
+  if (!source.includes(BUDGET_LINE)) return null;
+  return source.replace(BUDGET_LINE, 'const MAX_LEXICAL_OPERATIONS = 1_999_999;');
+}, { kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget' });
 
-// Control 459: mutate the shared observation's scanner result to an expected-shaped constant.
-// The expected observation is derived from the run-time marker id, so a constant cannot match
-// it; non-allocating eliding facades that keep the anchor line intact are rejected by control
-// 401's same-child work floors, and observation-module forgeries by control 458's callee-identity
-// pin (negatively controlled by 491 and 492). This control proves the predicate mutation itself
-// is caught by the independent semantic oracle.
+// Control 459: differential M-B — inject a throw at a run-time-random operation count K directly
+// inside step(), after the increment. The K-specific message and the index it reports can only
+// be produced by a scan that genuinely advances index in lockstep with the charged operations
+// through the filler — a facade that never calls step(), including one that merely reads
+// MAX_LEXICAL_OPERATIONS and compares the input length against it, cannot know when the random
+// K will hit (verified: at the K-th step the scan's index equals K for K in [2, 1_999_961]).
 observeControls(459);
 {
-  const mutated = runValidateAgainstMutatedFiles(['dev/validate-lexer-observations.mjs'], (source) => {
-    const scanner = 'const diagnostics = literalTrueCompletionDiagnostics(source);';
-    if (!source.includes(scanner)) return null;
-    return source.replace(scanner, 'const diagnostics = [];');
-  }, { script: 'dev/validate-lexer-probes.mjs', args: ['401', String(control401MarkerId)], timeoutMs: 30_000 });
-  let payload = null;
-  try {
-    if (mutated.stdout.trim()) payload = JSON.parse(mutated.stdout.trim());
-  } catch {
-    payload = null;
-  }
-  const expected = expectedControl401Observation(control401MarkerId);
-  const facadeWouldPass = mutated.status === 0 && payload?.controlId === 401
-    && JSON.stringify(payload.observation) === JSON.stringify(expected);
-  const passed = !mutated.skipped && !mutated.executionFailure && !facadeWouldPass
-    && payload?.controlId === 401
-    && payload.observation?.companion?.ids?.[0] !== 901;
-  if (!passed) failures.push(`Control 459: helper predicate mutation was not rejected by the independent semantic oracle (status ${mutated.status ?? 'null'}, output: ${mutated.output.trim()})`);
-  completeCurrentControlScope(459, passed);
+  const probeOperation = randomInt(2, 1_999_962);
+  expectJsLexerDifferential(459, 401, (source) => {
+    if (!source.includes(STEP_BLOCK)) return null;
+    const injected = `    if (operations === ${probeOperation}) throw new Error(\`lexical operation probe reached ${probeOperation} at index \${index}\`);\n`;
+    const mutatedStepBlock = STEP_BLOCK.replace('    operations += 1;\n', (line) => line + injected);
+    return source.replace(STEP_BLOCK, (anchor) => mutatedStepBlock);
+  }, { kind: 'error', name: 'Error', message: `lexical operation probe reached ${probeOperation} at index ${probeOperation}` });
 }
 
 // Control 460: the focused helper's developer-facing control argument is canonical-only.  A
@@ -4561,9 +4369,9 @@ observeControls(460);
   completeCurrentControlScope(460, passed);
 }
 
-// Control 485: a workflow run step may not reference a script that is absent from the tree. Three
-// commits in the round-42 window shipped ci.yml steps invoking dev/validate-all.mjs and
-// dev/validate-lexer-observations.mjs before either file existed, so per-commit CI was red by
+// Control 485: a workflow run step may not reference a script that is absent from the tree. Recent
+// rounds shipped ci.yml steps invoking dev/validate-all.mjs and a helper script before either file
+// existed, so per-commit CI was red by
 // construction; this control proves the validator's run-step existence check rejects the shape.
 observeControls(485);
 {
@@ -4681,95 +4489,43 @@ observeControls(490);
   expectFixture(result, 'Control 490: workflow-level RUST_INTEL_VALIDATE_TIMEOUT_MS override is rejected', 1, ['must not set RUST_INTEL_VALIDATE_TIMEOUT_MS'], 490);
 }
 
-// Control 491: the work floors are the mechanism that detects a scan-eliding probe, so their
-// detection must be real. With the probe file's post-scan sampling statement removed, the child's
-// semantic observation still matches its oracle — proving nothing else catches the removal — and
-// the SAME floor predicate control 401 asserts (evaluateWorkFloors, shared verbatim) must reject
-// the resulting null telemetry. A future edit that makes the floors vacuous (treating missing
-// samples as satisfied) fails here.
+// Control 491: differential M-D — raise the budget by one and the 402 input — one unit LONGER
+// than the old budget — must be ACCEPTED with the canonical diagnostic at the marker's index.
+// Together with control 402 this proves the rejection is caused by the budget constant itself,
+// not by a separately fakeable length check.
 observeControls(491);
-{
-  const mutated = runValidateAgainstMutatedFiles(['dev/validate-lexer-probes.mjs'], (source) => {
-    const anchor = 'scanMemory = process.memoryUsage();';
-    if (!source.includes(anchor)) return null;
-    return source.replace(anchor, ';');
-  }, { script: 'dev/validate-lexer-probes.mjs', args: ['401', String(control401MarkerId)], timeoutMs: 30_000 });
-  let payload = null;
-  try {
-    if (mutated.stdout.trim()) payload = JSON.parse(mutated.stdout.trim());
-  } catch {
-    payload = null;
-  }
-  const evaluation = evaluateWorkFloors(payload?.telemetry, control401ScanHeapRatioFloor, control401ScanArrayBuffersDeltaFloor);
-  const observationStillPasses = payload?.controlId === 401
-    && JSON.stringify(payload.observation) === JSON.stringify(expectedControl401Observation(control401MarkerId));
-  const passed = !mutated.skipped && !mutated.executionFailure
-    && mutated.status === 0
-    && observationStillPasses
-    && !evaluation.floorsSatisfied;
-  if (!passed) failures.push(`Control 491: removing the probe's post-scan sampling must leave the semantic oracle green and be rejected by the control 401 work floors (status ${mutated.status ?? 'null'}, floorsSatisfied=${evaluation.floorsSatisfied}, observationStillPasses=${observationStillPasses}, output: ${mutated.output.trim()})`);
-  completeCurrentControlScope(491, passed);
-}
+expectJsLexerDifferential(491, 402, (source) => {
+  if (!source.includes(BUDGET_LINE)) return null;
+  return source.replace(BUDGET_LINE, 'const MAX_LEXICAL_OPERATIONS = 2_000_001;');
+}, { kind: 'diagnostics', inputLength: 2_000_001, ids: [902], indexes: [1_999_963] });
 
-// Control 492: the callee-identity pin is the mechanism that catches observation-module forgeries,
-// so it must reject the real exploit shapes. Build both reconstructed facades from the REAL module
-// source — the round-46 review's comment-hidden-import wrapper (the pinned import inside a block
-// comment, plus a same-named module-scope wrapper that retains a Uint8Array and recovers the id
-// and index from the input tail) and the round-45 alias-import wrapper — and require: the
-// comment-hidden facade still passes the child's full semantic oracle (which is exactly why the
-// parent-level pin must exist), the shared evaluateObservationModuleContract evaluation flags
-// both facades, and the unmutated module stays clean.
+// Control 492: differential M-E — rename the completion identifier inside the lexer itself and
+// the 401 input must produce NO diagnostics — the reported diagnostic is computed by the real
+// completion-detection layer against the lexer's own constant, not fabricated from the input
+// text. The former callee-identity pin on the shared observation module is retired together
+// with that module.
 observeControls(492);
-{
-  const realSource = fs.readFileSync(path.join(root, 'dev', 'validate-lexer-observations.mjs'), 'utf8');
-  const pinnedImportLine = "import { literalTrueCompletionDiagnostics } from './js-lexer.mjs';";
-  const exportAnchor = 'export function observeLiteralTrueCompletion(source)';
-  const wrapperSource = [
-    'let retained492 = null;',
-    'function literalTrueCompletionDiagnostics(source) {',
-    '  retained492 = new Uint8Array(source.length);',
-    '  const tail = source.slice(-64);',
-    '  const m = /;completeCurrentControlScope\\((\\d+), true\\)$/u.exec(tail);',
-    '  if (m) return [{ id: Number(m[1]), index: source.length - m[0].length + 1 }];',
-    "  if (source === 'completeCurrentControlScope(901, true)') return [{ id: 901, index: 0 }];",
-    '  return [];',
-    '}',
-    '',
-  ].join('\n');
-  const commentHiddenFacade = realSource.includes(pinnedImportLine) && realSource.includes(exportAnchor)
-    ? realSource.replace(pinnedImportLine, `/*\n${pinnedImportLine}\n*/`)
-      .replace(exportAnchor, wrapperSource + exportAnchor)
-    : null;
-  const aliasFacade = commentHiddenFacade === null ? null : realSource
-    .replace(pinnedImportLine, "import { literalTrueCompletionDiagnostics as lexicalScanner492 } from './js-lexer.mjs';")
-    .replace(exportAnchor, wrapperSource + exportAnchor);
-  let facadeChildWouldPass = null;
-  if (commentHiddenFacade !== null) {
-    const facadeRun = runValidateAgainstMutatedFiles(['dev/validate-lexer-observations.mjs'], () => commentHiddenFacade, { script: 'dev/validate-lexer-probes.mjs', args: ['401', String(control401MarkerId)], timeoutMs: 30_000 });
-    let facadePayload = null;
-    try {
-      if (facadeRun.stdout.trim()) facadePayload = JSON.parse(facadeRun.stdout.trim());
-    } catch {
-      facadePayload = null;
-    }
-    facadeChildWouldPass = facadeRun.status === 0 && !facadeRun.executionFailure
-      && facadePayload?.controlId === 401
-      && JSON.stringify(facadePayload.observation) === JSON.stringify(expectedControl401Observation(control401MarkerId));
-  }
-  const realEvaluation = commentHiddenFacade === null ? null : evaluateObservationModuleContract(realSource);
-  const facadeEvaluation = commentHiddenFacade === null ? null : evaluateObservationModuleContract(commentHiddenFacade);
-  const aliasEvaluation = aliasFacade === null ? null : evaluateObservationModuleContract(aliasFacade);
-  const passed = commentHiddenFacade !== null && aliasFacade !== null
-    && facadeChildWouldPass === true
-    && realEvaluation.identityHeld === true
-    && facadeEvaluation.identityHeld === false
-    && facadeEvaluation.hasPinnedScannerImport === false
-    && facadeEvaluation.hasUnguardedFirstStatementScannerCall === true
-    && aliasEvaluation.identityHeld === false
-    && (aliasEvaluation.hasScannerBindingDeclaration === true || aliasEvaluation.hasScannerAliasBinding === true);
-  if (!passed) failures.push(`Control 492: the callee-identity pin must reject the reconstructed observation-module facades while the unmutated module passes (facadeApplied=${commentHiddenFacade !== null}, facadeChildWouldPass=${facadeChildWouldPass}, realIdentityHeld=${realEvaluation ? String(realEvaluation.identityHeld) : 'n/a'}, facadeIdentityHeld=${facadeEvaluation ? String(facadeEvaluation.identityHeld) : 'n/a'}, facadePinImport=${facadeEvaluation ? String(facadeEvaluation.hasPinnedScannerImport) : 'n/a'}, aliasIdentityHeld=${aliasEvaluation ? String(aliasEvaluation.identityHeld) : 'n/a'})`);
-  completeCurrentControlScope(492, passed);
-}
+expectJsLexerDifferential(492, 401, (source) => {
+  if (!source.includes(NAME_LINE)) return null;
+  return source.replace(NAME_LINE, "const COMPLETION_NAME = 'completeCurrentControlScope_mutated';");
+}, { kind: 'diagnostics', inputLength: 2_000_000, ids: [], indexes: [] });
+
+// Controls 493-494: masking-liveness differentials (M-C). On a 1,000,000-unit input whose decoy
+// completion call sits inside a block comment after 400,000 filler units, the unmodified tree
+// must suppress the decoy (block-comment masking genuinely runs), and disabling the scanner's
+// block-comment branch must make the decoy live code and detected. Without this pair, a facade
+// that charges one operation per unit but returns the source unmasked would be behaviorally
+// indistinguishable from the real scanner on the pure-x-plus-marker inputs of controls
+// 401/402/458/459/491/492, which contain no comments at all.
+observeControls(493);
+expectJsLexerDifferential(493, 493, (source) => source, {
+  kind: 'diagnostics', inputLength: 1_000_000, ids: [902], indexes: [400_001],
+});
+observeControls(494);
+expectJsLexerDifferential(494, 493, (source) => {
+  if (!source.includes(COMMENT_IF)) return null;
+  return source.replace(COMMENT_IF, "    if (false && character === '/' && next === '*') {");
+}, { kind: 'diagnostics', inputLength: 1_000_000, ids: [902, 777], indexes: [400_001, 999_960] });
 
 for (const fixture of cases) {
   const source = fs.readFileSync(path.join(fixtureRoot, fixture.file), 'utf8');

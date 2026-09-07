@@ -7,14 +7,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { literalTrueCompletionDiagnostics, literalTrueCompletionViolations } from './js-lexer.mjs';
-import { observeLiteralTrueCompletion } from './validate-lexer-observations.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureSource = fs.readFileSync(path.join(root, 'dev', 'validate-fixtures.mjs'), 'utf8');
 const rawControlId = process.argv[2] || '';
 const canonicalControlId = /^(?:0|[1-9]\d*)$/u.test(rawControlId) ? Number(rawControlId) : NaN;
 const controlId = Number.isSafeInteger(canonicalControlId) ? canonicalControlId : NaN;
-const supportedControls = new Set([399, 400, 401, 402, 409, 410, 411, 412, 413, 414, 421, 429, 439, 445, 446, 473, 474, 475, 476, 477, 478]);
+const supportedControls = new Set([399, 400, 401, 402, 409, 410, 411, 412, 413, 414, 421, 429, 439, 445, 446, 473, 474, 475, 476, 477, 478, 493]);
 
 function completionMutation(replacement) {
   const anchor = '// Controls 400-402:';
@@ -45,47 +44,29 @@ function checkControl(id) {
       return { ok: observation.message === 'JavaScript lexical delimiter mismatch', observation };
     }
   }
-  if (id === 401) {
-    try {
-      // The parent chooses the marker id at run time and passes it in argv. The id and its
-      // source index are recoverable from the input string itself (the marker ends in a fixed
-      // shape), so the semantic oracle below does not by itself prove that a scan ran; what
-      // proves work is the same-child allocation signature sampled here and asserted by the
-      // parent, plus the fixture's callee-identity pin on the shared observation module. The
-      // ';' separator is load-bearing (a completion call directly after an ordinary word token
-      // is suppressed as non-canonical), and the filler keeps the total at exactly 2,000,000
-      // code units, one unit below the deterministic scan budget (control 402).
-      const canonicalMarkerId = /^(?:0|[1-9]\d*)$/u.test(process.argv[3] || '') ? Number(process.argv[3]) : NaN;
-      const markerId = Number.isSafeInteger(canonicalMarkerId) && canonicalMarkerId >= 1 ? canonicalMarkerId : NaN;
-      if (!Number.isSafeInteger(markerId)) return { ok: false, observation: { kind: 'missing-or-invalid-marker-id' } };
-      const marker = `;completeCurrentControlScope(${markerId}, true)`;
-      const fillerLength = 2_000_000 - marker.length;
-      const observation = observeLiteralTrueCompletion('x'.repeat(fillerLength) + marker);
-      scanMemory = process.memoryUsage();
-      const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
-      companionMemory = process.memoryUsage();
-      const combined = { ...observation, companion };
-      return {
-        ok: observation.inputLength === 2_000_000
-          && observation.ids.length === 1
-          && observation.ids[0] === markerId
-          && observation.indexes.length === 1
-          && observation.indexes[0] === fillerLength + 1
-          && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901], indexes: [0] }),
-        observation: combined,
-      };
-    } catch (error) {
-      return { ok: false, observation: { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) } };
-    }
+  if (id === 401 || id === 402) {
+    // The parent mutates dev/js-lexer.mjs in a temp-tree copy of this script's directory and
+    // judges the observation; nothing here self-reports success, samples telemetry, or reads a
+    // marker id from argv. The ';' separator is load-bearing (a completion call directly after
+    // an ordinary word token is suppressed as non-canonical), and the filler keeps control 401's
+    // input at exactly 2,000,000 code units — the scanner's exact operation budget (control 402
+    // is one unit above it).
+    const marker = ';completeCurrentControlScope(902, true)';
+    const length = id === 401 ? 2_000_000 : 2_000_001;
+    const input = 'x'.repeat(length - marker.length) + marker;
+    return { observation: observe(() => literalTrueCompletionDiagnostics(input), input.length) };
   }
-  if (id === 402) {
-    try {
-      literalTrueCompletionDiagnostics('x'.repeat(2_000_001));
-      return { ok: false, observation: { kind: 'unexpected-success' } };
-    } catch (error) {
-      const observation = { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) };
-      return { ok: observation.message === 'JavaScript lexical scan exceeded its deterministic budget', observation };
-    }
+  if (id === 493) {
+    // Masking-liveness input: the decoy completion call sits inside a block comment on a
+    // 1,000,000-unit input. A scanner that stops genuinely masking block comments makes the
+    // decoy live code (the parent's negative control 494 detects exactly that differential).
+    const marker = ';completeCurrentControlScope(902, true)';
+    const decoy = '/*;completeCurrentControlScope(777, true)*/';
+    const fillerLength = 400_000;
+    const length = 1_000_000;
+    const input = 'x'.repeat(fillerLength) + marker
+      + 'x'.repeat(length - fillerLength - marker.length - decoy.length) + decoy;
+    return { observation: observe(() => literalTrueCompletionDiagnostics(input), input.length) };
   }
 
   const replacements = {
@@ -114,16 +95,29 @@ function checkControl(id) {
   return { ok: observation.ids.length === 1 && observation.ids[0] === null, observation };
 }
 
+// Reports exactly what happened when the real scanner ran: the returned diagnostics, or the
+// thrown error. No predicate lives here — the child's own verdict would be vacuous evidence;
+// the parent compares this observation against the expectation derived from each control's
+// tree mutation.
+function observe(run, inputLength) {
+  try {
+    const diagnostics = run();
+    return {
+      kind: 'diagnostics',
+      inputLength,
+      ids: diagnostics.map(({ id }) => id),
+      indexes: diagnostics.map(({ index }) => index),
+    };
+  } catch (error) {
+    return { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) };
+  }
+}
+
 if (!supportedControls.has(controlId)) {
   console.error(`ERROR: unsupported lexer probe control ${rawControlId || '<missing>'}`);
   process.exit(2);
 }
 
-// Samples taken inside control 401, immediately after the large scan and after the companion
-// call; null for every other control. Read by telemetry() below.
-let scanMemory = null;
-let companionMemory = null;
-const initialMemory = process.memoryUsage();
 let result;
 try {
   result = checkControl(controlId);
@@ -132,36 +126,8 @@ try {
   process.exit(1);
 }
 
-// The parent independently validates controlId and observation.  Do not emit a freely chosen
-// success sentence: a mutated predicate may still exit zero, but it cannot forge the semantic
-// observation expected for the selected control without failing that parent oracle.
-function telemetry(initialMemory) {
-  const memory = process.memoryUsage();
-  const usage = typeof process.resourceUsage === 'function' ? process.resourceUsage() : null;
-  const maxRss = usage && Number.isFinite(usage.maxRSS) && usage.maxRSS > 0 ? usage.maxRSS * 1024 : null;
-  return {
-    source: 'child',
-    terminalSample: true,
-    initialHeapUsed: initialMemory.heapUsed,
-    initialArrayBuffers: initialMemory.arrayBuffers,
-    scanHeapSample: scanMemory ? scanMemory.heapUsed : null,
-    scanArrayBuffersSample: scanMemory ? scanMemory.arrayBuffers : null,
-    companionHeapSample: companionMemory ? companionMemory.heapUsed : null,
-    heapUsed: memory.heapUsed,
-    rss: memory.rss,
-    peakHeapUsed: Math.max(
-      initialMemory.heapUsed,
-      scanMemory ? scanMemory.heapUsed : 0,
-      companionMemory ? companionMemory.heapUsed : 0,
-      memory.heapUsed,
-    ),
-    peakHeapSource: 'sampled-around-scan-and-terminal',
-    peakRss: maxRss === null ? Math.max(initialMemory.rss, memory.rss) : Math.max(initialMemory.rss, memory.rss, maxRss),
-    peakRssSource: maxRss === null ? 'boundary-sample' : 'process.resourceUsage.maxRSS',
-  };
-}
-console.log(JSON.stringify({ controlId, observation: result.observation, telemetry: telemetry(initialMemory) }));
-if (!result.ok) {
+console.log(JSON.stringify({ controlId, observation: result.observation }));
+if (result.ok === false) {
   console.error(`ERROR: lexer probe ${controlId} did not match its deterministic oracle`);
   process.exit(1);
 }

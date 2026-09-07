@@ -28,7 +28,6 @@ const required = [
   'dev/check-release-version.mjs',
   'dev/js-lexer.mjs',
   'dev/validate-all.mjs',
-  'dev/validate-lexer-observations.mjs',
   'dev/semver.mjs',
   'dev/validate-fixtures.mjs',
   'examples/fixtures/cases.json',
@@ -2148,7 +2147,6 @@ for (const [file, source, job] of [
 }
 for (const [file, source, needle] of [
   ['.github/workflows/ci.yml', ciWorkflow, 'node --check dev/validate-all.mjs'],
-  ['.github/workflows/ci.yml', ciWorkflow, 'node --check dev/validate-lexer-observations.mjs'],
 ]) {
   if (!source.includes(needle)) errors.push(`${file} must syntax-check the coordinator modules (${needle})`);
 }

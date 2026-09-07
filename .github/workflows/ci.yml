@@ -56,7 +56,6 @@ jobs:
           node --check dev/snapshot-install.mjs
           node --check dev/test-installer-recovery.mjs
           node --check dev/validate-all.mjs
-          node --check dev/validate-lexer-observations.mjs
           node --check skill/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
