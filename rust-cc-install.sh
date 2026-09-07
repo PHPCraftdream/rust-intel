@@ -204,7 +204,7 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
 fi
 
 abrupt_abort() {
-    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
+    if [[ "${RUST_INTEL_INSTALL_ROLLING_BACK:-0}" != 1 && "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
     return 0
 }
 
@@ -315,6 +315,9 @@ mkdir -p "$STAGE_ROOT" "$BACKUP_ROOT"
 rollback_transaction() {
     local status=$?
     set +e
+    # `exit` runs this EXIT trap. Disable fault injection before journal cleanup so an abort at
+    # before/after-journal cannot recursively re-enter rollback_transaction.
+    RUST_INTEL_INSTALL_ROLLING_BACK=1
     if [[ "$ROLLBACK_NEEDED" -eq 1 ]]; then
         local destination
         local index destination backup owned_status rollback_failure=0
