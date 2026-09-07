@@ -95,6 +95,53 @@ function scanLexical(source) {
     if (stack.length >= MAX_LEXICAL_DEPTH) throw new Error('JavaScript lexical nesting exceeded its deterministic budget');
     stack.push(entry);
   };
+  // A class body is not a keyword-free zone: `function` and `class` can be ordinary
+  // field/method names, but the same words regain their construct meaning after an
+  // element name and `=`.  Keep this small state machine on the class-body frame so
+  // nested initializer delimiters cannot make an expression keyword look like a name.
+  const classBodyFrame = () => {
+    const frame = stack.at(-1);
+    return frame?.type === 'brace' && frame.classBody ? frame : null;
+  };
+  const classElementNamePosition = () => {
+    const frame = classBodyFrame();
+    return frame && (frame.elementState === 'name' || frame.elementState === 'candidate');
+  };
+  const noteClassElementWord = (word) => {
+    const frame = classBodyFrame();
+    if (!frame) return;
+    if (frame.elementState === 'name') {
+      frame.elementState = 'candidate';
+      frame.elementModifier = word === 'static' ? 'static' : null;
+    } else if (frame.elementState === 'candidate') {
+      // `static get name()`/`static async name()` has two modifiers before the
+      // actual name.  Accessor words after a non-static first word are names.
+      const chainedStaticModifier = frame.elementModifier === 'static'
+        && (word === 'get' || word === 'set' || word === 'async');
+      if (chainedStaticModifier) frame.elementModifier = 'accessor';
+      else frame.elementState = 'afterName';
+    }
+  };
+  const noteClassElementToken = (token) => {
+    const frame = classBodyFrame();
+    if (!frame) return;
+    if (frame.elementState === 'candidate') {
+      // A lone `static { ... }` is a static block.  All other punctuation resolves
+      // the preceding token as the element name (including `static = ...`).
+      if (token === '{' && previousWord === 'static') frame.elementState = 'staticBlock';
+      else if (token === '*') return; // generator marker precedes the actual element name
+      else if (token !== '}') frame.elementState = 'afterName';
+    }
+    if (frame.elementState === 'afterName') {
+      if (token === '=') frame.elementState = 'initializer';
+      else if (token === '(') frame.elementState = 'methodSignature';
+      else if (token === ';') frame.elementState = 'name';
+    } else if (frame.elementState === 'initializer' && token === ';') {
+      frame.elementState = 'name';
+    } else if (frame.elementState === 'methodSignature' && token === ')') {
+      frame.elementState = 'methodBodyPending';
+    }
+  };
   const declarationOrExpression = (token, word, tokenBeforeWord, wordBeforeWord, enclosingBlock = false) => {
     if (word === 'export' || (word === 'default' && wordBeforeWord === 'export')) return 'declaration';
     if (word === 'async') {
@@ -213,12 +260,12 @@ function scanLexical(source) {
       previousTokenBeforeWord = tokenBeforeWord;
       previousWordBeforeToken = wordBeforeWord;
       previousWord = word;
-      // `class` and `function` are valid public class-element names.  At the class-body
-      // element depth they are IdentifierName tokens, not construct keywords; otherwise a
-      // field initializer such as `function = {} / value` leaves a false pending construct and
-      // masks the division as a regexp.  A nested method/static-block body is not classBody, so
-      // real declarations there still use the normal construct tracking below.
-      const classElementName = stack.at(-1)?.type === 'brace' && stack.at(-1).classBody;
+      // `class` and `function` are valid public class-element names.  They are names only at
+      // the element-name position; after `field =`, the same words are genuine expressions.
+      // A nested method/static-block body is not classBody, so declarations there retain normal
+      // construct tracking.
+      const classElementName = classElementNamePosition();
+      noteClassElementWord(word);
       if (word === 'class' && !propertyName && !classElementName) {
         const constructs = pendingConstructs.get(stack.length) || [];
         constructs.push({
@@ -282,6 +329,7 @@ function scanLexical(source) {
     }
 
     if (character === '(') {
+      noteClassElementToken('(');
       const constructs = pendingConstructs.get(stack.length);
       const functionConstruct = constructs?.at(-1)?.type === 'function' ? constructs.pop() : null;
       if (constructs?.length === 0) pendingConstructs.delete(stack.length);
@@ -299,9 +347,15 @@ function scanLexical(source) {
       // Only the most recent construct at the current delimiter depth can own this brace. A brace
       // in `extends mixin({})`, an object literal, or a nested class is therefore left on its own
       // frame; the outer class role is consumed by the later body brace.
+      noteClassElementToken('{');
       const constructs = pendingConstructs.get(stack.length);
       const construct = constructs?.at(-1) || null;
       const bodyRole = construct?.bodyRole || null;
+      const enclosingClassBody = classBodyFrame();
+      const classElementBody = Boolean(enclosingClassBody
+        && (enclosingClassBody.elementState === 'methodBodyPending'
+          || enclosingClassBody.elementState === 'staticBlock'));
+      if (classElementBody) enclosingClassBody.elementState = 'elementBody';
       const block = previousWord === 'else' || previousWord === 'do' || previousWord === 'try'
         || previousWord === 'catch' || previousWord === 'finally' || bodyRole !== null || previousToken === ')'
         || previousToken === '}' || previousToken === ';' || previousToken === ':' || previousToken === '=>'
@@ -310,6 +364,9 @@ function scanLexical(source) {
         type: 'brace',
         block,
         classBody: construct?.type === 'class' && bodyRole !== null,
+        elementState: construct?.type === 'class' && bodyRole !== null ? 'name' : undefined,
+        elementModifier: null,
+        classElementBody,
         closeCanStartRegex: bodyRole === 'expression' ? false : block,
       });
       if (construct) {
@@ -329,8 +386,13 @@ function scanLexical(source) {
         throw new Error('JavaScript lexical delimiter mismatch');
       }
       stack.pop();
+      if (character === '}' && entry?.classElementBody) {
+        const enclosingClassBody = classBodyFrame();
+        if (enclosingClassBody) enclosingClassBody.elementState = 'name';
+      }
       if (entry?.type === 'template') { mode = entry.returnMode; canStartRegex = false; }
       else if (character === ')') {
+        noteClassElementToken(')');
         canStartRegex = Boolean(entry?.control);
         if (entry?.functionRole) {
           const constructs = pendingConstructs.get(stack.length) || [];
@@ -344,11 +406,12 @@ function scanLexical(source) {
     }
 
     const two = source.slice(index, index + 2);
-    if (two === '++' || two === '--') { index += 2; canStartRegex = false; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = two; continue; }
-    if (two === '?.') { index += 2; canStartRegex = false; previousWasDot = true; previousWasProperty = false; previousToken = two; continue; }
-    if (character === '.') { index += 1; canStartRegex = false; previousWord = ''; previousWasDot = true; previousWasProperty = false; previousToken = '.'; continue; }
+    if (two === '++' || two === '--') { noteClassElementToken(two); index += 2; canStartRegex = false; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = two; continue; }
+    if (two === '?.') { noteClassElementToken(two); index += 2; canStartRegex = false; previousWasDot = true; previousWasProperty = false; previousToken = two; continue; }
+    if (character === '.') { noteClassElementToken('.'); index += 1; canStartRegex = false; previousWord = ''; previousWasDot = true; previousWasProperty = false; previousToken = '.'; continue; }
     // Operators and statement separators permit an expression next. Keeping this decision here
     // means `/` after division is recognized as a regexp without inspecting an ever-growing prefix.
+    noteClassElementToken(character);
     canStartRegex = true;
     previousWord = '';
     previousWasDot = false;

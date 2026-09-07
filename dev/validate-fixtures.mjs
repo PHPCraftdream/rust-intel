@@ -2,14 +2,14 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 449 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 460 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 391 spawn a validator child and 58 are in-process (the junction alias and direct oracles); there
-// are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
-// probes (B5/B26). They verify that the seed still discriminates positive from negative and that
+// 397 spawn child processes (380 validator children and 17 focused lexer/helper children), and 63
+// run in-process (including direct, rule-text, and crude source oracles; see ruleTextControls and
+// B5/B26 below). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
 // measurement of the audit, and the rule-text controls pin greppable API/type signatures, not whole
 // paragraphs: pinning prose in CI turns every legitimate rewrite into a red build and freezes
@@ -96,7 +96,7 @@ const progress = (message) => {
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 449;
+const CONTROL_REGISTRY_TOTAL = 460;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -170,6 +170,7 @@ const CONTROL_REGISTRY = controlRegistry.declared;
 const registeredControls = controlRegistry.registered;
 const observedControls = controlRegistry.completed;
 const fixtureSource = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+const lexerProbeSource = fs.readFileSync(path.join(root, 'dev', 'validate-lexer-probes.mjs'), 'utf8');
 const scopeHeaderMatch = /^\/\/ Scope, stated honestly: (\d+) hand-written controls:/m.exec(fixtureSource);
 const scopeHeaderTotal = scopeHeaderMatch ? Number.parseInt(scopeHeaderMatch[1], 10) : null;
 if (scopeHeaderTotal !== CONTROL_REGISTRY_TOTAL) {
@@ -298,8 +299,9 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
     }
     const script = spawnOptions.script || 'dev/validate.mjs';
     const childPath = path.join(tmpRoot, ...script.split('/'));
-    progress(`spawn command=${JSON.stringify([process.execPath, childPath])} controls=${activeControlScope || 'unknown'} timeout=${spawnOptions.timeoutMs ?? 30_000}`);
-    const run = spawnSync(process.execPath, [childPath], {
+    const command = [process.execPath, childPath, ...(spawnOptions.args || [])];
+    progress(`spawn command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} timeout=${spawnOptions.timeoutMs ?? 30_000}`);
+    const run = spawnSync(process.execPath, [childPath, ...(spawnOptions.args || [])], {
       encoding: 'utf8',
       timeout: spawnOptions.timeoutMs ?? 30_000,
       env: {
@@ -319,7 +321,7 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
       executionFailure: Boolean(error || run.signal || run.status === null),
       output: `${run.stdout || ''}${run.stderr || ''}`,
     };
-    progress(`child command=${JSON.stringify([process.execPath, childPath])} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} outputBytes=${Buffer.byteLength(result.output)}`);
+    progress(`child command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} outputBytes=${Buffer.byteLength(result.output)}`);
     return result;
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
@@ -333,8 +335,8 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 // Resource-heavy lexer probes run in short-lived children. V8's parser/native allocation zones
 // are process-scoped and may outlive JavaScript references until a major collection; one child per
 // probe gives the full suite a deterministic memory ceiling without changing lexer budgets or
-// weakening the large-input controls. The child reports one concise line on success and all
-// timeout/exit details are retained for an opt-in progress trace and failure diagnosis.
+// weakening the large-input controls. The child emits a structured semantic observation and
+// terminal resource sample on normal completion; a killed/fatal child has no terminal sample.
 const lexerProbeScript = path.join(root, 'dev', 'validate-lexer-probes.mjs');
 // Keep each resource-heavy probe below the host's normal V8 reservation. This is a lower cap,
 // not a heap increase: the probes' deterministic 2,000,001-code-unit workload fits comfortably
@@ -358,17 +360,55 @@ function runLexerProbe(controlId, timeoutMs = 120_000) {
     status: Number.isInteger(run.status) ? run.status : null,
     signal: run.signal || null,
     error: error ? `${error.code || error.name || 'spawn error'}: ${error.message}` : null,
+    stdout: run.stdout || '',
+    stderr: run.stderr || '',
     output: `${run.stdout || ''}${run.stderr || ''}`,
   };
-  progress(`child lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} outputBytes=${Buffer.byteLength(result.output)}`);
+  let payload = null;
+  try {
+    if (result.stdout.trim()) payload = JSON.parse(result.stdout.trim());
+  } catch {
+    payload = null;
+  }
+  result.payload = payload;
+  result.terminalSample = payload?.telemetry?.terminalSample === true;
+  progress(`child lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} terminalSample=${result.terminalSample ? 'yes' : 'no-terminal-sample'} outputBytes=${Buffer.byteLength(result.output)}`);
   return result;
 }
+const expectedLexerObservations = new Map([
+  [399, { kind: 'error', name: 'Error', message: 'JavaScript lexical nesting exceeded its deterministic budget' }],
+  [400, { kind: 'error', name: 'Error', message: 'JavaScript lexical delimiter mismatch' }],
+  [401, { kind: 'diagnostics', inputLength: 2_000_000, ids: [] }],
+  [402, { kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget' }],
+  [409, { kind: 'completion-violations', ids: [null] }],
+  [410, { kind: 'completion-violations', ids: [null] }],
+  [411, { kind: 'completion-violations', ids: [null] }],
+  [412, { kind: 'completion-violations', ids: [null] }],
+  [413, { kind: 'completion-violations', ids: [null] }],
+  [414, { kind: 'completion-violations', ids: [null] }],
+  [421, { kind: 'completion-violations', ids: [null] }],
+  [429, { kind: 'completion-violations', ids: [null] }],
+  [439, { kind: 'completion-violations', ids: [null] }],
+  [445, { kind: 'completion-violations', ids: [null] }],
+  [446, { kind: 'completion-violations', ids: [null] }],
+]);
 function expectLexerProbe(controlId) {
   const result = runLexerProbe(controlId);
+  const expected = expectedLexerObservations.get(controlId);
+  const telemetry = result.payload?.telemetry;
   const passed = result.status === 0 && !result.signal && !result.error
-    && result.output.trim() === `lexer probe passed (control ${controlId})`;
+    && result.payload?.controlId === controlId
+    && telemetry?.source === 'child'
+    && telemetry?.terminalSample === true
+    && Number.isSafeInteger(telemetry.heapUsed) && telemetry.heapUsed >= 0
+    && Number.isSafeInteger(telemetry.rss) && telemetry.rss >= 0
+    && Number.isSafeInteger(telemetry.peakHeapUsed) && telemetry.peakHeapUsed >= telemetry.heapUsed
+    && telemetry.peakHeapSource === 'terminal-boundary-sample'
+    && Number.isSafeInteger(telemetry.peakRss) && telemetry.peakRss >= telemetry.rss
+    && JSON.stringify(result.payload?.observation) === JSON.stringify(expected);
   if (!passed) {
-    failures.push(`Control ${controlId}: focused lexer child failed (status ${result.status ?? 'null'}, signal ${result.signal || 'none'}, error ${result.error || 'none'}, output: ${result.output.trim()})`);
+    const sampleStatus = result.terminalSample ? 'terminal sample present' : 'no terminal sample (child may have failed fatally or been killed)';
+    failures.push(`Control ${controlId}: focused lexer child failed (${sampleStatus}; status ${result.status ?? 'null'}, signal ${result.signal || 'none'}, error ${result.error || 'none'}, output: ${result.output.trim()})`);
   }
   completeCurrentControlScope(controlId, passed);
 }
@@ -4115,10 +4155,40 @@ for (const [number, keyword, rootName] of [[447, 'function', 'MODULES'], [448, '
   expectFixture(result, `Control ${number}: actual workflow ${keyword}-field mutation is rejected`, 1, ['workflow'], number);
 }
 
-// Control 449: lexical scans may retain only one source/result pair, never an unbounded
+// Controls 449-456: a genuine function expression in a class-field initializer is not an element
+// name.  Exercise anonymous/named ordinary and static fields, then mutate both live workflow
+// roots with the same shapes.  This is deliberately adjacent to the keyword-field controls:
+// suppressing every `function` token at class-body depth would hide these mutations as regexps.
+observeControls({ start: 449, end: 456 });
+for (const [number, source, expected] of [
+  [449, 'const expression449 = class { value = function () {} / completeCurrentControlScope(449, true) / 2; };', [449]],
+  [450, 'const expression450 = class { value = function named450() {} / completeCurrentControlScope(450, true) / 2; };', [450]],
+  [451, 'const expression451 = class { static value = function () {} / completeCurrentControlScope(451, true) / 2; };', [451]],
+  [452, 'const expression452 = class { static value = function named452() {} / completeCurrentControlScope(452, true) / 2; };', [452]],
+]) {
+  const actual = literalTrueCompletionViolations(source);
+  const passed = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!passed) failures.push(`Control ${number}: class-field function-expression slash role mismatch (got ${JSON.stringify(actual)})`);
+  completeCurrentControlScope(number, passed);
+}
+for (const [number, field, rootName] of [
+  [453, 'value = function () {}', 'MODULES'],
+  [454, 'value = function named454() {}', 'MODULES'],
+  [455, 'static value = function () {}', 'AUDIT_UNITS'],
+  [456, 'static value = function named456() {}', 'AUDIT_UNITS'],
+]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    rootName,
+    `const fieldFunctionMutation${number} = class { ${field} / ${rootName}.push({}) / 2; };`,
+  ));
+  expectFixture(result, `Control ${number}: actual workflow class-field function-expression mutation is rejected`, 1, ['workflow'], number);
+}
+
+// Control 457: lexical scans may retain only one source/result pair, never an unbounded
 // source->mask Map.  This source-level invariant is deterministic and catches a future
 // reintroduction of the retention that made the 440-control child workload OOM.
-observeControls(449);
+observeControls(457);
 {
   const lexerSource = fs.readFileSync(path.join(root, 'dev', 'js-lexer.mjs'), 'utf8');
   const scanStart = lexerSource.indexOf('function scanLexical');
@@ -4127,8 +4197,71 @@ observeControls(449);
   const hasBoundedLexicalCache = /let lexicalCacheSource\s*=\s*null/u.test(modulePrelude)
     && /let lexicalCacheResult\s*=\s*null/u.test(modulePrelude);
   const passed = scanStart >= 0 && !hasUnboundedLexicalCache && hasBoundedLexicalCache;
-  if (!passed) failures.push('Control 449: JavaScript lexical helper cache is not a bounded one-entry cache');
-  completeCurrentControlScope(449, passed);
+  if (!passed) failures.push('Control 457: JavaScript lexical helper cache is not a bounded one-entry cache');
+completeCurrentControlScope(457, passed);
+}
+
+// Control 458: focused lexer probes are part of the fixture's anti-vacuity contract.  Keep the
+// canonical argument parser, structured semantic result, and child-owned terminal telemetry in
+// the source inventory; a free-form success sentence is not an accepted protocol.
+observeControls(458);
+{
+  const helperContract = [
+    /const canonicalControlId = \/\^\(\?:0\|\[1-9\]\\d\*\)\$\/u\.test\(rawControlId\)/u,
+    /JSON\.stringify\(\{ controlId, observation: result\.observation, telemetry: telemetry\(\) \}\)/u,
+    /terminalSample: true/u,
+    /source: 'child'/u,
+  ];
+  const violations = literalTrueCompletionViolations(lexerProbeSource);
+  const passed = helperContract.every((pattern) => pattern.test(lexerProbeSource))
+    && violations.length === 0
+    && !lexerProbeSource.includes('lexer probe passed (control');
+  if (!passed) failures.push(`Control 458: focused lexer helper anti-vacuity contract drifted (${JSON.stringify(violations)})`);
+  completeCurrentControlScope(458, passed);
+}
+
+// Control 459: mutate both the focused helper's scanner result and its predicate to an
+// unconditional success.  The child may still exit zero, but the parent must reject its wrong
+// structured observation; this is the negative that prevents a relocated facade from becoming
+// an unchecked success string.
+observeControls(459);
+{
+  const mutated = runValidateAgainstMutatedFiles(['dev/validate-lexer-probes.mjs'], (source) => {
+    const scanner = 'const violations = literalTrueCompletionViolations(mutated);';
+    const predicate = 'return { ok: observation.ids.length === 1 && observation.ids[0] === null, observation };';
+    if (!source.includes(scanner) || !source.includes(predicate)) return null;
+    return source.replace(scanner, 'const violations = [];').replace(predicate, 'return { ok: true, observation };');
+  }, { script: 'dev/validate-lexer-probes.mjs', args: ['409'], timeoutMs: 30_000 });
+  let payload = null;
+  try {
+    if (mutated.stdout.trim()) payload = JSON.parse(mutated.stdout.trim());
+  } catch {
+    payload = null;
+  }
+  const expected = expectedLexerObservations.get(409);
+  const facadeWouldPass = mutated.status === 0 && payload?.controlId === 409
+    && JSON.stringify(payload.observation) === JSON.stringify(expected);
+  const passed = !mutated.skipped && !mutated.executionFailure && !facadeWouldPass
+    && payload?.controlId === 409
+    && JSON.stringify(payload.observation) === JSON.stringify({ kind: 'completion-violations', ids: [] });
+  if (!passed) failures.push(`Control 459: helper predicate mutation was not rejected by the independent semantic oracle (status ${mutated.status ?? 'null'}, output: ${mutated.output.trim()})`);
+  completeCurrentControlScope(459, passed);
+}
+
+// Control 460: the focused helper's developer-facing control argument is canonical-only.  A
+// prefix such as `409junk` must not be accepted by parseInt-style coercion or run an unintended
+// probe.
+observeControls(460);
+{
+  const result = runValidateAgainstMutatedFiles([], (source) => source, {
+    script: 'dev/validate-lexer-probes.mjs',
+    args: ['409junk'],
+    timeoutMs: 30_000,
+  });
+  const passed = !result.skipped && !result.executionFailure && result.status === 2
+    && !result.stdout.trim() && result.stderr.includes('unsupported lexer probe control 409junk');
+  if (!passed) failures.push(`Control 460: malformed focused-helper control argument was accepted (status ${result.status ?? 'null'}, output: ${result.output.trim()})`);
+  completeCurrentControlScope(460, passed);
 }
 
 for (const fixture of cases) {
