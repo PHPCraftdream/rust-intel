@@ -12,7 +12,7 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 **The planned next release is `0.7.0` (MINOR).** Raising the runtime/install floor makes previously working installs on older Node lines fail, so it is classified by the compatibility rule above even though the numbered spec categories and BANNED/REQUIRED shapes are unchanged.
 
-**Semver classification re-derived against the accumulated packaged delta (round 45).** The MINOR call above was made in round 23 at `3ed04b9`, before the packaged `bin/` surface changed by `+479/−50` across `bin/install.js`, `bin/install-codex.js`, and the new 419-line `bin/install-transaction.js` (added by `230ef59`, "fix: make installer upgrades transactional") — all inside `package.json`'s `files` allowlist. Re-derived against that delta: the two CLI entrypoints (`bin/install.js`, `bin/install-codex.js`) are unchanged as `package.json`'s `bin` targets, the transaction module is additive and required by both entrypoints, the installers' CLI arguments and installed paths are unchanged (the diff replaces direct copy/clean internals with the transactional flow, not the surface), and the rule text (`skill/`, `skills/`, `commands/`, both plugin manifests) is byte-identical to `3ed04b9`. The classification still holds: **`0.7.0` MINOR**.
+**Semver classification re-derived against the released tag `v0.6.0` (round 46; round 45 had re-derived against `3ed04b9`, the last CI-verified commit, which is not a release boundary).** The correct baseline is the last released tag, `v0.6.0` (`d5b15ec`). `git diff --stat v0.6.0^{}..HEAD` over the packaged surface (`bin`, `skill`, `skills`, `commands`, both plugin manifests, `package.json`, the `rust-cc-*` installers) is 37 files, `+2448/−759`. The two `package.json` `bin` targets are unchanged (`rust-intel-cc` → `bin/install.js`, `rust-intel-codex` → `bin/install-codex.js`), the installers' CLI arguments and installed paths are unchanged (the diff replaces direct copy/clean internals with the transactional flow of the additive, 419-line `bin/install-transaction.js`, added by `230ef59`), `bin/node-version.js` is a new published module enforcing the runtime floor, `commands/` is unchanged, and the rule-text delta is 1,566 changed lines across the 26 mirrored rule files (13 unique files plus their `skills/rust-intel/` mirrors), with the numbered-category header set identical at both refs (59 = 59; none added, retired, or renumbered). The compatibility-breaking change against the released tag is the raised runtime/install floor (`engines.node` `>=16` → `>=24.0.0`, enforced at startup by both installers and both validators), which makes previously working installs on older Node lines fail — classified by the compatibility rule above. The classification holds: **`0.7.0` MINOR**. (Round 45's supplementary re-derivation against `3ed04b9` — packaged `bin/` delta `+479/−50` — remains true for the window since the round-23 decision and is subsumed by this larger delta.)
 
 **Release tooling hardening.** The manifest updater now records a recoverable transaction: POSIX
 file and parent-directory syncs, same-volume Windows rename discipline, a recovery-only entry
@@ -96,7 +96,7 @@ This release also closes out two prior commits that shipped without a changelog 
 
 **Rounds 20–21's two validator-conformance P3s are closed in the net architecture.** The anchored contract's shared `projectFenceOpener` feeds the fence mask, and invalid backtick-info lines are body-width failures rather than table-boundary false negatives; no standalone table-boundary detector remains. The NBSP arbitrary-table delimiter case is moot because non-anchored tables are outside the anchored contract, while surviving delimiter normalization still treats only the cmark-gfm ASCII whitespace class as table space. See `docs/reviews/latest-commits-review-round-20-2026-09-04-1206.md` findings 1–2 and `docs/reviews/latest-commits-review-round-21-2026-09-04-1228.md` carried P3 findings 1–2.
 
-**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, tracks class-body roles across brace-bearing `extends` expressions, and handles ordinary, static, private, computed, string, and numeric class-field names with a bounded lexical cache. Function/class-expression division, direct function-heritage ordering, class-field initializer roles, and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–484; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 490 controls, with 414 child-process controls (390 validator-entrypoint and 24 focused lexer/helper children) and 76 in-process controls, a split the fixture registry now machine-checks against the spawns it actually routes; the 484-control/409-child/75-in-process split is historical to the round-42 fixing state, and the 460-control/397-child/63-in-process split is historical to the round-42 review base at `633a0da`. Installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Focused lexer children emit child-owned heap/RSS telemetry only with a terminal JSON sample; fatal or killed children have no terminal sample. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
+**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, tracks class-body roles across brace-bearing `extends` expressions, and handles ordinary, static, private, computed, string, and numeric class-field names with a bounded lexical cache. Function/class-expression division, direct function-heritage ordering, class-field initializer roles, and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–484; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 492 controls, with 416 child-process controls (390 validator-entrypoint and 26 focused lexer/helper children) and 76 in-process controls, a split the fixture registry now machine-checks against the spawns it actually routes; the 490-control/414-child/76-in-process split is historical to the round-45 fixing state, the 484-control/409-child/75-in-process split is historical to the round-42 fixing state, and the 460-control/397-child/63-in-process split is historical to the round-42 review base at `633a0da`. Installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Focused lexer children emit child-owned heap/RSS telemetry only with a terminal JSON sample; fatal or killed children have no terminal sample. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
 
 **Round-38 fixing disposition.** `2948c85` tracks class-body roles across brace-bearing `extends`
 expressions and adds the corresponding causal controls; `5d9e8a8` implements the reported installer
@@ -266,10 +266,15 @@ false — the marker id is recoverable from the input string — and control 458
 identity: the import line must be verbatim
 `import { literalTrueCompletionDiagnostics } from './js-lexer.mjs';` and the identifier must
 appear exactly twice in the comment/string-masked module (import binding plus anchored call).
-This rejects the module-scope wrapper facade the review demonstrated. The length-gated
-fast-path vector inside `dev/js-lexer.mjs` itself is covered structurally by control 401's work
-floors — an eliding fast path allocates neither signal — rather than by a brittle source
-pattern. Closure prose in this changelog, the ledger, and the code comments is narrowed to what
+This rejected the specific `as`-aliased module-scope wrapper facade the review demonstrated.
+The length-gated fast-path vector inside `dev/js-lexer.mjs` itself is NOT closed by the work
+floors: an allocating fast path satisfies the retained-array delta with a single
+`new Uint8Array(source.length)` while never scanning. (Round-46 correction, inserted in place:
+the original text here claimed the floors covered that vector structurally; that was false as
+stated — see the round-46 fixing disposition below. The floors close non-allocating eliding
+facades, which is the only reconstruction actually run; an allocating fast path inside
+`dev/js-lexer.mjs` is excluded by the stated threat model — deliberate forgery of the lexer —
+not by the floors.) Closure prose in this changelog, the ledger, and the code comments is narrowed to what
 was actually tested. P3-4/P3-B: the `...phase.env` pin is anchored to the actual `spawnSync(`
 options object instead of the whole file, the fixtures-arm phase slice is bounded at the phases
 array's `];` instead of end-of-file, and new control 487 executes `dev/validate-all.mjs`
@@ -289,6 +294,69 @@ in 344 s with exit 0 and 490/490 controls; the recorded run predates only the
 insertion of its own figures into this paragraph. This is local non-reproduction evidence for
 the current fixing state, not a demonstrated fix; independent HS review and exact-head CI
 remain release gates, and no version bump, tag, push, or publication is claimed.
+
+**Round-46 fixing disposition (implemented; ordinary Windows validation re-run locally).**
+The round-46 review (`docs/reviews/latest-commits-review-round-46-2026-09-07-1826.md`) is disposed
+as follows, committed as the commit containing this row, on top of `c2ee3fb` (the round-46 report
+commit); push, bump, tag, and publication remain separate, explicit, human-authorized actions.
+Closure below is stated per reconstruction actually run, not per class. P2-1: control 458's
+callee-identity pin is reworked so both halves agree on what counts as source — the pinned import
+must appear verbatim in the raw text AND its comment/string-masked image must appear as a live
+line (a copy inside a comment or a string satisfies nothing; a forged module path fails the raw
+half; the pinned image is computed by masking the pinned line itself, because the line's own
+`'./js-lexer.mjs'` string is blanked by the same masking) — and the brittle exactly-twice
+occurrence count is replaced by binding-shape assertions (no `function`/`const`/`let`/`var`/`class`
+declaration of the identifier, no `as`-alias in either direction), evaluated by a shared
+`evaluateObservationModuleContract` function used verbatim by the positive and negative controls.
+Reconstructions run and rejected: (1) the review's comment-hidden-import wrapper facade
+(block-commented pinned import + same-named wrapper retaining `new Uint8Array(source.length)` +
+tail recovery), inserted into the real module — the full fixture suite exits 1 with control 458's
+pin message naming the violated check (observed twice); (2) the round-45 `as`-alias wrapper
+spelling — flagged by the binding-shape assertions. Residual stated honestly: a binding that is
+neither a declaration nor an alias (for example a same-named forged parameter default) is not
+asserted against; deliberate source forgery remains outside the threat model, as the control 401
+comment already states. P2-2: control 458's `helperContract` now pins the work-floor telemetry's
+provenance at source level — `initialMemory`/`scanMemory`/`companionMemory` sampled from
+`process.memoryUsage()`, the scan-then-sample adjacency, the `scanHeapSample`/
+`scanArrayBuffersSample`/`initialArrayBuffers` telemetry expressions, and the `peakHeapSource`
+label — and `expectLexerProbe` re-asserts `peakHeapSource === 'sampled-around-scan-and-terminal'`
+plus `peakRssSource` being `boundary-sample` or `process.resourceUsage.maxRSS` (the round-45
+deleted telemetry-provenance assertion is restored and extended). Recorded distinction: removing
+the sampling statements outright already fails control 401 closed at runtime (both work signals
+evaluate to null, so the floor OR is false) — observed via control 491's diagnostic — so that
+removal was a regression-clarity gap, not a live bypass; the pins additionally close the
+replacement forgery (a fabricated `scanMemory` value no longer passes control 458's source
+contract). P3-1: the false fast-path closure claim in the round-45 paragraph above is corrected
+in place; the code comment at the floors and control 459's comment now state that the floors close
+non-allocating eliding facades only, and that an allocating fast path inside `dev/js-lexer.mjs` is
+out of the stated threat model rather than floor-closed. P3-2: control 487's mutated core phase now
+writes a stdout sentinel and exits 7 — a value that is not the coordinator's fallback — and the
+control asserts the coordinator's own status is 7, the `exit status 7` diagnostic, the sentinel's
+arrival (the `stdio: 'inherit'` contract), `phase=core failed`, and the absence of both
+`phase=core passed` and `phase=fixtures`. Discrimination observed: replacing the coordinator's
+forwarding expression with a literal `process.exit(1)` makes control 487 the suite's only failure
+(status 1 against the child's 7). P3-3: two negative controls close the gap for this round's own
+mechanisms — control 491 removes the probe file's post-scan sampling in a temp copy and requires
+the shared `evaluateWorkFloors` predicate to reject the resulting null telemetry while the
+semantic oracle stays green (discrimination observed: neutering the shared predicate makes control
+491 the only failure, with both samples null and the child still exiting 0); control 492 builds
+both facade shapes from the real module source and requires the comment-hidden facade to pass the
+child's full semantic oracle (which is why the parent-level pin must exist) while the shared
+`evaluateObservationModuleContract` evaluation flags both facades and the unmutated module stays
+clean (discrimination observed: neutering the shared evaluation's `identityHeld` makes control 492
+the only failure). Control 492 also exposed a failure mode in this pass's first draft: a forged
+module the lexer cannot scan crashed the suite with an unhandled `maskJsNonCode` exception; the
+shared evaluation now returns a fail-closed `lexable: false` result and control 458 reports a
+dedicated message. P3-4: `RUST_INTEL_CONTROL401_MIN_PEAK_RSS_MB` is documented in the README's
+tooling paragraph beside the other knobs. P3-A: the semver paragraph above is re-anchored at
+`v0.6.0`. Suite: the fixture suite is 492 controls — 416 child-process (390 validator-entrypoint
+plus 26 focused) plus 76 in-process — with header, registry, README, and this changelog in
+agreement. Fresh evidence for the open Windows gate: ordinary `npm run validate` at this fixing
+pass's tree (Node v24.12.0, Windows 10.0.19045) passed with exit 0 and 492/492 controls in 432 s;
+the recorded run predates only the insertion of its own figures into this sentence. This is
+local non-reproduction evidence for the current fixing state, not a demonstrated fix; independent
+HS review and exact-head CI remain release gates, and no version bump, tag, push, or publication
+is claimed.
 
 ## [0.6.0] — 2026-08-19
 
