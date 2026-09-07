@@ -20,13 +20,24 @@ const phases = [
   {
     name: 'fixtures',
     script: path.join(root, 'dev', 'validate-fixtures.mjs'),
+    // validate-fixtures.mjs never reads this variable itself (it sets '1' explicitly for the
+    // validator children it spawns); '0' only neutralizes an inherited
+    // RUST_INTEL_SKIP_NESTED_FIXTURES=1 from the caller's environment.
     env: { RUST_INTEL_SKIP_NESTED_FIXTURES: '0' },
   },
 ];
-const configuredTimeout = Number(process.env.RUST_INTEL_VALIDATE_TIMEOUT_MS);
-const timeoutMs = Number.isSafeInteger(configuredTimeout) && configuredTimeout > 0
-  ? configuredTimeout
-  : 20 * 60 * 1000;
+// A malformed value hard-errors instead of silently restoring the default: this knob can kill a
+// release-gating run when a mistyped timeout quietly replaces the intended one, and the other
+// RUST_INTEL_* knobs fail explicitly on malformed input (see positiveIntegerEnv in dev/validate.mjs).
+const rawTimeoutMs = process.env.RUST_INTEL_VALIDATE_TIMEOUT_MS;
+let timeoutMs = 20 * 60 * 1000;
+if (rawTimeoutMs !== undefined) {
+  if (!/^[1-9]\d*$/u.test(rawTimeoutMs) || !Number.isSafeInteger(Number(rawTimeoutMs))) {
+    console.error(`[validate-all] RUST_INTEL_VALIDATE_TIMEOUT_MS must be a positive integer in milliseconds; got ${JSON.stringify(rawTimeoutMs)}`);
+    process.exit(2);
+  }
+  timeoutMs = Number(rawTimeoutMs);
+}
 
 for (const phase of phases) {
   const result = spawnSync(process.execPath, [phase.script, ...process.argv.slice(2)], {

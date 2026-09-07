@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 484 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 486 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 409 spawn child processes (386 validator children and 23 focused lexer/helper children), and 75
+// 410 spawn child processes (387 validator children and 23 focused lexer/helper children), and 76
 // run in-process (including direct, rule-text, and crude source oracles; see ruleTextControls and
 // B5/B26 below). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -97,7 +97,7 @@ const progress = (message) => {
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 484;
+const CONTROL_REGISTRY_TOTAL = 486;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -168,6 +168,19 @@ function createControlRegistry(total) {
 
 const controlRegistry = createControlRegistry(CONTROL_REGISTRY_TOTAL);
 const CONTROL_REGISTRY = controlRegistry.declared;
+
+// Execution-breakdown authority: the scope header's child-process split is machine-checked against
+// the spawns the registry actually routes. Every child spawn is attributed to the control that
+// completes next (the established pattern is one spawn immediately followed by that control's
+// completion), so a control that spawns twice, a spawn outside any control scope, or a hand-edited
+// header all fail the same way a wrong total does.
+const childSpawnTally = { validator: 0, focused: 0 };
+const childSpawnControls = { validator: new Set(), focused: new Set() };
+let childSpawnsPending = { validator: 0, focused: 0 };
+const tallyChildSpawn = (kind) => {
+  childSpawnTally[kind] += 1;
+  childSpawnsPending[kind] += 1;
+};
 const registeredControls = controlRegistry.registered;
 const observedControls = controlRegistry.completed;
 const fixtureSource = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
@@ -186,6 +199,12 @@ function observeControls(value) {
 
 function completeCurrentControlScope(controlId, outcome) {
   controlRegistry.complete(controlId, outcome);
+  for (const kind of ['validator', 'focused']) {
+    if (childSpawnsPending[kind] > 0) {
+      childSpawnControls[kind].add(controlId);
+      childSpawnsPending[kind] = 0;
+    }
+  }
   progress(`complete control=${controlId} outcome=${Boolean(outcome)}`);
 }
 
@@ -250,7 +269,10 @@ function makeTempRootOutside(sourceRoot) {
 // Explicit allowlist of what dev/validate.mjs reads or spawns (verified against its source):
 // link/header scans over skill/ and skills/, count mentions in README.md/CHANGELOG.md/package.json/
 // .claude-plugin/, the plugin manifests, commands/rust-intel-cc/audit.md, the spawned
-// installer + fixture script, and the `required` existence list. Copying only these — not the
+// installer + fixture script, and the `required` existence list.
+// The three workflow-referenced dev scripts (sync-mirror, snapshot-install, test-installer-recovery)
+// are included because the validator's workflow run-step existence check resolves those paths.
+// Copying only these — not the
 // whole tree — means an unrelated locked/generated/untracked worktree directory can never
 // break or slow the run; the growing exclusion list this replaces was that failure class
 // repeating.
@@ -274,6 +296,9 @@ const validateInputs = [
   'dev/set-release-version.mjs',
   'dev/check-release-version.mjs',
   'dev/validate-fixtures.mjs',
+  'dev/sync-mirror.mjs',
+  'dev/snapshot-install.mjs',
+  'dev/test-installer-recovery.mjs',
   'examples/fixtures/cases.json',
 ];
 
@@ -303,6 +328,7 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
     const script = spawnOptions.script || 'dev/validate.mjs';
     const childPath = path.join(tmpRoot, ...script.split('/'));
     const command = [process.execPath, childPath, ...(spawnOptions.args || [])];
+    tallyChildSpawn(spawnOptions.script && spawnOptions.script !== 'dev/validate.mjs' ? 'focused' : 'validator');
     progress(`spawn command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} timeout=${spawnOptions.timeoutMs ?? 30_000}`);
     const run = spawnSync(process.execPath, [childPath, ...(spawnOptions.args || [])], {
       encoding: 'utf8',
@@ -350,6 +376,7 @@ const lexerProbeScript = path.join(root, 'dev', 'validate-lexer-probes.mjs');
 const lexerProbeHeapMb = 64;
 function runLexerProbe(controlId, timeoutMs = 120_000) {
   const command = [process.execPath, `--max-old-space-size=${lexerProbeHeapMb}`, lexerProbeScript, String(controlId)];
+  tallyChildSpawn('focused');
   progress(`spawn lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} timeout=${timeoutMs}`);
   const run = spawnSync(process.execPath, command.slice(1), {
     encoding: 'utf8',
@@ -383,7 +410,7 @@ function runLexerProbe(controlId, timeoutMs = 120_000) {
 const expectedLexerObservations = new Map([
   [399, { kind: 'error', name: 'Error', message: 'JavaScript lexical nesting exceeded its deterministic budget' }],
   [400, { kind: 'error', name: 'Error', message: 'JavaScript lexical delimiter mismatch' }],
-  [401, { kind: 'diagnostics', inputLength: 2_000_000, ids: [], companion: { kind: 'diagnostics', inputLength: 38, ids: [901] } }],
+  [401, { kind: 'diagnostics', inputLength: 2_000_000, ids: [902], companion: { kind: 'diagnostics', inputLength: 38, ids: [901] } }],
   [402, { kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget' }],
   [409, { kind: 'completion-violations', ids: [null] }],
   [410, { kind: 'completion-violations', ids: [null] }],
@@ -4272,7 +4299,9 @@ observeControls(458);
     /JSON\.stringify\(\{ controlId, observation: result\.observation, telemetry: telemetry\(initialMemory\) \}\)/u,
     /terminalSample: true/u,
     /source: 'child'/u,
-    /observeLiteralTrueCompletion\('x'\.repeat\(inputLength\)\)/u,
+    /const marker = ';completeCurrentControlScope\(902, true\)';/u,
+    /const fillerLength = 2_000_000 - marker\.length;/u,
+    /observeLiteralTrueCompletion\('x'\.repeat\(fillerLength\) \+ marker\)/u,
     /observeLiteralTrueCompletion\('completeCurrentControlScope\(901, true\)'\)/u,
   ];
   const observationModuleSource = fs.readFileSync(path.join(root, 'dev', 'validate-lexer-observations.mjs'), 'utf8');
@@ -4330,6 +4359,37 @@ observeControls(460);
   completeCurrentControlScope(460, passed);
 }
 
+// Control 485: a workflow run step may not reference a script that is absent from the tree. Three
+// commits in the round-42 window shipped ci.yml steps invoking dev/validate-all.mjs and
+// dev/validate-lexer-observations.mjs before either file existed, so per-commit CI was red by
+// construction; this control proves the validator's run-step existence check rejects the shape.
+observeControls(485);
+{
+  const result = runValidateAgainstMutatedFiles(['.github/workflows/ci.yml'], (source) => {
+    const anchor = 'run: node dev/sync-mirror.mjs --check';
+    if (!source.includes(anchor)) return null;
+    return source.replace(anchor, 'run: node dev/sync-mirror-missing-485.mjs --check');
+  });
+  expectFixture(result, 'Control 485: workflow run step referencing a missing script is rejected', 1, ['references missing script', 'dev/sync-mirror-missing-485.mjs'], 485);
+}
+
+// Control 486: the coordinator's phase wiring is pinned by dev/validate.mjs. Flipping the core
+// phase's nested-fixture escape hatch to '0' would silently re-nest the fixture suite inside the
+// core validator process — the exact topology the sequential coordinator exists to avoid.
+observeControls(486);
+{
+  const result = runValidateAgainstMutatedFiles(['dev/validate-all.mjs'], (source) => {
+    const phaseAnchor = "name: 'core',";
+    const phaseStart = source.indexOf(phaseAnchor);
+    if (phaseStart < 0) return null;
+    const envAnchor = "RUST_INTEL_SKIP_NESTED_FIXTURES: '1'";
+    const envIndex = source.indexOf(envAnchor, phaseStart);
+    if (envIndex < 0) return null;
+    return source.slice(0, envIndex) + source.slice(envIndex).replace(envAnchor, "RUST_INTEL_SKIP_NESTED_FIXTURES: '0'");
+  });
+  expectFixture(result, 'Control 486: coordinator core-phase nested-fixture escape hatch mutation is rejected', 1, ["dev/validate-all.mjs phase 'core'"], 486);
+}
+
 for (const fixture of cases) {
   const source = fs.readFileSync(path.join(fixtureRoot, fixture.file), 'utf8');
   const actual = [...detectors].filter(([, detect]) => detect(source)).map(([category]) => category).sort();
@@ -4340,6 +4400,25 @@ for (const fixture of cases) {
 }
 
 for (const diagnostic of controlRegistry.finalize()) failures.push(diagnostic);
+const executionSplitMatch = /(\d+) spawn child processes \((\d+) validator children and (\d+) focused lexer\/helper children\), and (\d+)\s*\n\/\/ run in-process/u.exec(fixtureSource);
+if (!executionSplitMatch) {
+  failures.push('fixture header execution breakdown is missing or reworded: expected "N spawn child processes (N validator children and N focused lexer/helper children), and N run in-process"');
+} else {
+  const [headerChildTotal, headerValidatorChildren, headerFocusedChildren, headerInProcess] = executionSplitMatch.slice(1).map(Number);
+  if (childSpawnTally.validator !== headerValidatorChildren || childSpawnTally.focused !== headerFocusedChildren) {
+    failures.push(`execution breakdown mismatch: header declares ${headerValidatorChildren} validator and ${headerFocusedChildren} focused child spawns, registry routed ${childSpawnTally.validator} validator and ${childSpawnTally.focused} focused`);
+  }
+  if (childSpawnControls.validator.size !== childSpawnTally.validator || childSpawnControls.focused.size !== childSpawnTally.focused) {
+    failures.push(`child spawns are not one per control: ${childSpawnTally.validator} validator spawns across ${childSpawnControls.validator.size} controls, ${childSpawnTally.focused} focused spawns across ${childSpawnControls.focused.size} controls`);
+  }
+  if (headerValidatorChildren + headerFocusedChildren !== headerChildTotal || headerChildTotal + headerInProcess !== CONTROL_REGISTRY_TOTAL) {
+    failures.push(`execution breakdown arithmetic mismatch: header declares ${headerChildTotal} = ${headerValidatorChildren} + ${headerFocusedChildren} children plus ${headerInProcess} in-process against registry total ${CONTROL_REGISTRY_TOTAL}`);
+  }
+  const observedInProcess = CONTROL_REGISTRY_TOTAL - childSpawnControls.validator.size - childSpawnControls.focused.size;
+  if (observedInProcess !== headerInProcess) {
+    failures.push(`in-process control count mismatch: header declares ${headerInProcess}, registry observed ${observedInProcess}`);
+  }
+}
 const missingExecutedControls = [...CONTROL_REGISTRY].filter((id) => !observedControls.has(id));
 if (missingExecutedControls.length) {
   failures.push(`missing executable controls: ${missingExecutedControls.join(', ')}`);

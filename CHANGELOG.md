@@ -94,7 +94,7 @@ This release also closes out two prior commits that shipped without a changelog 
 
 **Rounds 20–21's two validator-conformance P3s are closed in the net architecture.** The anchored contract's shared `projectFenceOpener` feeds the fence mask, and invalid backtick-info lines are body-width failures rather than table-boundary false negatives; no standalone table-boundary detector remains. The NBSP arbitrary-table delimiter case is moot because non-anchored tables are outside the anchored contract, while surviving delimiter normalization still treats only the cmark-gfm ASCII whitespace class as table space. See `docs/reviews/latest-commits-review-round-20-2026-09-04-1206.md` findings 1–2 and `docs/reviews/latest-commits-review-round-21-2026-09-04-1228.md` carried P3 findings 1–2.
 
-**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, tracks class-body roles across brace-bearing `extends` expressions, and handles ordinary, static, private, computed, string, and numeric class-field names with a bounded lexical cache. Function/class-expression division, direct function-heritage ordering, class-field initializer roles, and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–484; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 484 controls, with 409 child-process controls (386 validator-entrypoint and 23 focused lexer/helper children) and 75 in-process controls; the 460-control/397-child/63-in-process split is historical to the round-42 review base at `633a0da`. Installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Focused lexer children emit child-owned heap/RSS telemetry only with a terminal JSON sample; fatal or killed children have no terminal sample. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
+**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, tracks class-body roles across brace-bearing `extends` expressions, and handles ordinary, static, private, computed, string, and numeric class-field names with a bounded lexical cache. Function/class-expression division, direct function-heritage ordering, class-field initializer roles, and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–484; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 486 controls, with 410 child-process controls (387 validator-entrypoint and 23 focused lexer/helper children) and 76 in-process controls, a split the fixture registry now machine-checks against the spawns it actually routes; the 484-control/409-child/75-in-process split is historical to the round-42 fixing state, and the 460-control/397-child/63-in-process split is historical to the round-42 review base at `633a0da`. Installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Focused lexer children emit child-owned heap/RSS telemetry only with a terminal JSON sample; fatal or killed children have no terminal sample. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
 
 **Round-38 fixing disposition.** `2948c85` tracks class-body roles across brace-bearing `extends`
 expressions and adds the corresponding causal controls; `5d9e8a8` implements the reported installer
@@ -158,16 +158,48 @@ is claimed.
 
 **Round-42 fixing disposition (partial; ordinary Windows validation passed locally).**
 `ef20ca5` advances class-element state for private, computed, string, and numeric names and adds
-declaration, completion, and workflow controls 461–484. `14a672a` adds isolated Windows validator
-lanes through `dev/validate-all.mjs`, parameterizes the recovery helper, and exercises both
-`pwsh` and `powershell.exe`, including the documented `.bat` paths. These are partial fixes and
-matrix definitions. Acceptance of the sequential coordinator also produced one successful ordinary
-Windows `npm run validate` run: core checks and all 484 fixture controls passed. Independent review
-and CI on the resulting commit remain required. The
-current fixture header is 484 controls: 409 child-process controls (386 validator-entrypoint and
-23 focused lexer/helper children) plus 75 in-process controls. Focused-helper anti-vacuity,
-independent HS review, and exact-head CI remain release gates; no version bump, tag, push, or
-publication is claimed.
+declaration, completion, and workflow controls 461–484. `14a672a` adds the isolated Windows
+`windows-validator` CI lane and repoints the workflow validate steps at the coordinator
+entrypoint, parameterizes the recovery helper, and exercises both `pwsh` and `powershell.exe`,
+including the documented `.bat` paths. `49dd4f0` creates `dev/validate-all.mjs` and
+`dev/validate-lexer-observations.mjs` — the two files the three earlier commits referenced before
+either existed — repoints `package.json`'s `validate` script and `.github/workflows/npm-publish.yml`
+at the coordinator, corrects the 484-control execution breakdown, and implements the anti-vacuity
+companion. These are partial fixes and matrix definitions. Acceptance of the sequential
+coordinator also produced one successful ordinary Windows `npm run validate` run: core checks and
+all 484 fixture controls passed. Independent review and CI on the resulting commit remain
+required. At that fixing state the fixture header read 484 controls: 409 child-process controls
+(386 validator-entrypoint and 23 focused lexer/helper children) plus 75 in-process controls — a
+hand-maintained split the registry tally later showed to be off by one. Focused-helper
+anti-vacuity, independent HS review, and exact-head CI remained release gates at that state; no
+version bump, tag, push, or publication is claimed.
+
+**Round-43 fixing disposition (implemented; ordinary Windows validation re-run locally).**
+The round-43 review (`docs/reviews/latest-commits-review-round-43-2026-09-07-1144.md`) is disposed
+as follows, applied in one uncommitted working tree. P2-1: a validator check now extracts every
+`node <path>` / `node --check <path>` argument from workflow run steps and asserts the file
+exists, with regression control 485. P3-1: control 401's input embeds a causal marker —
+`';completeCurrentControlScope(902, true)'` after 1,999,961 filler units, exactly 2,000,000 code
+units — and requires `{inputLength: 2000000, ids: [902]}`; the size-conditional facade the review
+demonstrated was re-tested against the new observation and is rejected, so the anti-vacuity gate
+is now enforced causally rather than by companion shape alone. P3-A: `dev/validate-all.mjs`
+joins `runtimeGuardContracts`, its phase wiring is source-pinned with negative control 486, and
+`package.json`'s `validate` script plus the three workflow invocations are pinned to the
+coordinator path. P3-B: the registry tallies actual validator/focused child spawns against the
+header and proved the reviewed head's own 386/23/75 prose off by one (actual 385/23/76); the
+header now states the routed 387/23/76 split. P3-4: `RUST_INTEL_VALIDATE_TIMEOUT_MS` hard-errors
+on a malformed value instead of silently restoring the 20-minute default, and the fixtures-phase
+`'0'` entry documents that it only neutralizes an inherited `=1`. P3-2/P3-3/P3-C: this changelog,
+the ledger, and the README Layout/Status text now credit `49dd4f0` with its actual contents, move
+the coordinator attribution off `14a672a`, state one anti-vacuity disposition, and document
+`RUST_INTEL_SKIP_NESTED_FIXTURES` and `RUST_INTEL_VALIDATE_TIMEOUT_MS`. P2-2 remains an open
+evidence item, not a closure claim: at the reviewed head on Node v24.12.0 / Windows 10.0.19045
+the fault did not reproduce in three attempts — one progress-instrumented fixture run (246.310 s,
+484/484 controls, peak heap ≈21.2 MB, last live control 460) and two ordinary coordinator runs
+(276.451 s, 285.209 s), all exit 0 — so the coordinator stays a mitigation whose effect on the
+original fault is unconfirmed, and the `windows-validator` lane's first real CI run remains the
+required proof. Independent HS review and exact-head CI remain release gates; no version bump,
+tag, push, or publication is claimed.
 
 ## [0.6.0] — 2026-08-19
 

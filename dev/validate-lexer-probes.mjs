@@ -47,11 +47,24 @@ function checkControl(id) {
   }
   if (id === 401) {
     try {
-      const inputLength = 2_000_000;
-      const observation = observeLiteralTrueCompletion('x'.repeat(inputLength));
+      // The marker makes the observation causally depend on the full-length scan: ids [902] can
+      // only come from completing the scan of the marker itself, so neither a constant nor a
+      // size-conditional branch in the shared observation module can produce the expected result
+      // for free. The ';' separator is load-bearing (a completion call directly after an ordinary
+      // word token is suppressed as non-canonical), and the filler keeps the total at exactly
+      // 2,000,000 code units, one unit below the deterministic scan budget (control 402).
+      const marker = ';completeCurrentControlScope(902, true)';
+      const fillerLength = 2_000_000 - marker.length;
+      const observation = observeLiteralTrueCompletion('x'.repeat(fillerLength) + marker);
       const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
       const combined = { ...observation, companion };
-      return { ok: observation.ids.length === 0 && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901] }), observation: combined };
+      return {
+        ok: observation.inputLength === 2_000_000
+          && observation.ids.length === 1
+          && observation.ids[0] === 902
+          && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901] }),
+        observation: combined,
+      };
     } catch (error) {
       return { ok: false, observation: { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) } };
     }

@@ -2007,6 +2007,7 @@ const runtimeGuardContracts = [
   ['bin/install.js', "require('./node-version.js')", 'const fs = require('],
   ['bin/install-codex.js', "require('./node-version.js')", 'const fs = require('],
   ['dev/validate.mjs', "require('../bin/node-version.js')", 'const root ='],
+  ['dev/validate-all.mjs', "require('../bin/node-version.js')", 'const root ='],
   ['dev/validate-fixtures.mjs', "require('../bin/node-version.js')", 'const root ='],
 ];
 for (const [relative, importToken, workToken] of runtimeGuardContracts) {
@@ -2083,6 +2084,89 @@ for (const [file, source, job, expected] of [
     errors.push(`${file} job ${job} must use exactly one actions/setup-node with node-version: ${expected} (found ${found})`);
   }
 }
+
+// Every `node <path>` / `node --check <path>` argument inside a workflow run step must exist in
+// the tree. Three commits in the round-42 window shipped ci.yml steps invoking dev/validate-all.mjs
+// and dev/validate-lexer-observations.mjs before either file existed, so per-commit CI was red by
+// construction and the hand-maintained required list could not catch it. The scan is deliberately
+// conservative: only plain repo-relative script-path tokens are checked, so quoted,
+// variable-bearing, and flag-value tokens (e.g. node "$HELPER", node -e '<code>', Join-Path
+// fragments) stay out of scope.
+function nodeScriptPathArguments(line) {
+  const found = [];
+  const nodeInvocation = /(?:^|[\s;&|(])node\s+/gu;
+  let match;
+  while ((match = nodeInvocation.exec(line)) !== null) {
+    let token = null;
+    for (const candidate of line.slice(match.index + match[0].length).split(/\s+/u)) {
+      if (candidate.startsWith('-')) continue;
+      token = candidate;
+      break;
+    }
+    if (token && /^(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:mjs|cjs|js)$/u.test(token)) found.push(token);
+  }
+  return found;
+}
+const workflowRunStepFiles = fs.readdirSync(path.join(root, '.github/workflows')).filter((name) => /\.ya?ml$/u.test(name)).sort();
+for (const name of workflowRunStepFiles) {
+  const workflowRelative = `.github/workflows/${name}`;
+  const workflowLines = fs.readFileSync(path.join(root, '.github/workflows', name), 'utf8').replace(/\r\n?/g, '\n').split('\n');
+  const scriptArgs = [];
+  for (let index = 0; index < workflowLines.length; index += 1) {
+    const runMatch = /^(\s*)(?:-\s+)?run:\s*(.*)$/.exec(workflowLines[index]);
+    if (!runMatch) continue;
+    const runIndent = runMatch[1].length;
+    const inline = runMatch[2].trim();
+    const stepLines = ['|', '>', '|-', '>-', '|+', '>+'].includes(inline) ? [] : inline ? [inline] : [];
+    if (!stepLines.length && ['|', '>', '|-', '>-', '|+', '>+'].includes(inline)) {
+      for (let cursor = index + 1; cursor < workflowLines.length; cursor += 1) {
+        if (!workflowLines[cursor].trim()) continue;
+        if (workflowLines[cursor].match(/^\s*/u)[0].length <= runIndent) break;
+        stepLines.push(workflowLines[cursor]);
+      }
+    }
+    for (const stepLine of stepLines) scriptArgs.push(...nodeScriptPathArguments(stepLine));
+  }
+  for (const arg of scriptArgs) {
+    if (!fs.existsSync(path.join(root, arg))) errors.push(`${workflowRelative} run step references missing script: ${arg}`);
+  }
+}
+
+// Pin the release entrypoint. dev/validate-all.mjs is the coordinator that runs the core validator
+// and the fixture suite as sequential sibling processes; a silent regression back to
+// `node dev/validate.mjs` as the entrypoint would restore the nested single-process topology the
+// coordinator exists to avoid, so every caller is pinned to the coordinator path.
+if (packageJson.scripts?.validate !== 'node dev/validate-all.mjs') errors.push('package.json scripts.validate must run the validation coordinator (node dev/validate-all.mjs)');
+for (const [file, source, job] of [
+  ['.github/workflows/ci.yml', ciWorkflow, 'repository-checks'],
+  ['.github/workflows/ci.yml', ciWorkflow, 'windows-validator'],
+  ['.github/workflows/npm-publish.yml', publishWorkflow, 'publish'],
+]) {
+  const jobLines = yamlJobSection(source, job);
+  const runsCoordinator = jobLines !== null && jobLines.some((line) => /(?:^|\s)run: node dev\/validate-all\.mjs\s*$/.test(line) || /^\s*node dev\/validate-all\.mjs\s*$/.test(line));
+  if (!runsCoordinator) errors.push(`${file} job ${job} must run the validation coordinator (node dev/validate-all.mjs)`);
+}
+for (const [file, source, needle] of [
+  ['.github/workflows/ci.yml', ciWorkflow, 'node --check dev/validate-all.mjs'],
+  ['.github/workflows/ci.yml', ciWorkflow, 'node --check dev/validate-lexer-observations.mjs'],
+]) {
+  if (!source.includes(needle)) errors.push(`${file} must syntax-check the coordinator modules (${needle})`);
+}
+
+// Pin the coordinator's phase wiring: the core phase must enter with the nested-fixture escape
+// hatch set and the fixtures phase must not. Flipping the core value would silently re-nest the
+// fixture suite inside the core validator process — the topology the coordinator exists to avoid.
+const coordinatorSource = stripJsComments(fs.readFileSync(path.join(root, 'dev/validate-all.mjs'), 'utf8'));
+for (const [phase, scriptName, skipValue] of [
+  ['core', 'validate.mjs', '1'],
+  ['fixtures', 'validate-fixtures.mjs', '0'],
+]) {
+  const phaseContract = new RegExp(`name: '${phase}',[\\s\\S]*?script: path\\.join\\(root, 'dev', '${scriptName.replace(/\./gu, '\\.')}'\\),[\\s\\S]*?RUST_INTEL_SKIP_NESTED_FIXTURES: '${skipValue}'`);
+  if (!phaseContract.test(coordinatorSource)) {
+    errors.push(`dev/validate-all.mjs phase '${phase}' must run dev/${scriptName} with RUST_INTEL_SKIP_NESTED_FIXTURES: '${skipValue}'`);
+  }
+}
+
 const allowedPluginFields = new Set(['id', 'name', 'version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'skills', 'apps', 'mcpServers', 'hooks', 'interface']);
 for (const field of Object.keys(plugin)) if (!allowedPluginFields.has(field)) errors.push(`unsupported Codex plugin field: ${field}`);
 for (const field of ['name', 'version', 'description']) if (typeof plugin[field] !== 'string' || !plugin[field].trim()) errors.push(`Codex plugin field ${field} must be a non-empty string`);
