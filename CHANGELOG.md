@@ -28,14 +28,14 @@ inventories and retain byte-aware rollback safeguards, with `dev/snapshot-instal
 the inventory used by those checks. The round-36 fixing commits close the ordinary Bash abort-hook,
 first-journal, one-forward-replacement, sparse-index, and exact release-calibration cases. The
 round-37 fixing pass makes backup restoration restartable through explicit journal states and
-adds a separate `dev/test-installer-recovery.mjs` boundary-matrix helper. Round 38 found that the
-committed matrix still requests unreachable rollback depths, Bash and PowerShell pass incorrect
-restore-hook indices, fresh fixtures and concrete inventories are incomplete, and the successful
-restart oracle does not inspect sibling transaction directories. Those installer and recovery
-claims therefore remain partial pending fixes and complete matrix execution. The documented
-Windows contract remains process interruption, not sudden-power-loss durability; caught-error
-rollback retains ambiguous states for manual recovery instead of silently deleting or guessing
-at owned paths. No version bump, tag, CI, push, or publication is implied by this unreleased entry.
+adds a separate `dev/test-installer-recovery.mjs` boundary-matrix helper. The round-38 fixing
+pass addresses the unreachable rollback depths, restore-hook indices, fresh fixtures, concrete
+inventories, sibling transaction cleanup oracle, and brace-bearing `extends` lexical cases
+identified by the round-38 review. Full Node and Bash installer matrices pass locally; PowerShell
+runtime coverage remains pending CI. The documented Windows contract remains process interruption,
+not sudden-power-loss durability; caught-error rollback retains ambiguous states for manual
+recovery instead of silently deleting or guessing at owned paths. No current-head CI result,
+version bump, tag, push, or publication is implied by this unreleased entry.
 
 > Every `docs/reviews/*.md` citation below points to a file tracked in this **repository** (stable via a commit-pinned link, e.g. `https://github.com/PHPCraftdream/rust-intel/tree/1591d39/docs/reviews`) — not to a file included in the **npm package**: `docs/reviews/` is not in `package.json`'s `files` allowlist, so clone or browse the repository for the underlying reports. The package also explicitly lists the two license files, while npm includes package metadata, README, and applicable license files under its standard package rules.
 
@@ -88,6 +88,14 @@ This release also closes out two prior commits that shipped without a changelog 
 **Rounds 20–21's two validator-conformance P3s are closed in the net architecture.** The anchored contract's shared `projectFenceOpener` feeds the fence mask, and invalid backtick-info lines are body-width failures rather than table-boundary false negatives; no standalone table-boundary detector remains. The NBSP arbitrary-table delimiter case is moot because non-anchored tables are outside the anchored contract, while surviving delimiter normalization still treats only the cmark-gfm ASCII whitespace class as table space. See `docs/reviews/latest-commits-review-round-20-2026-09-04-1206.md` findings 1–2 and `docs/reviews/latest-commits-review-round-21-2026-09-04-1228.md` carried P3 findings 1–2.
 
 **Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, and tracks class-body roles across brace-bearing `extends` expressions. Function/class-expression division and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–430; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 430 controls, with 373 child-process controls and 57 in-process controls; installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
+
+**Round-38 fixing disposition.** `2948c85` tracks class-body roles across brace-bearing `extends`
+expressions and adds the corresponding causal controls; `5d9e8a8` closes the installer matrix
+reachability, indexing, fixture, inventory, and sibling-cleanup gaps; and `7e3afb3` qualifies
+the release-facing Status, CHANGELOG, and ledger claims. Full Node and Bash installer matrices
+pass locally. PowerShell runtime coverage remains pending CI, and a fresh independent HS review
+is still required before the release gate can open. No current-head CI result, version bump, tag,
+push, or publication is claimed.
 
 ## [0.6.0] — 2026-08-19
 
