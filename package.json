@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "sync": "node dev/sync-mirror.mjs",
-    "validate": "node dev/validate.mjs"
+    "validate": "node dev/validate-all.mjs"
   },
   "engines": {
     "node": ">=24.0.0"

@@ -27,6 +27,8 @@ const required = [
   'dev/set-release-version.mjs',
   'dev/check-release-version.mjs',
   'dev/js-lexer.mjs',
+  'dev/validate-all.mjs',
+  'dev/validate-lexer-observations.mjs',
   'dev/semver.mjs',
   'dev/validate-fixtures.mjs',
   'examples/fixtures/cases.json',

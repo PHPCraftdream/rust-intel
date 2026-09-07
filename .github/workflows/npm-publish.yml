@@ -58,7 +58,7 @@ jobs:
           test -f skill/references/sources.md
           test -f .codex-plugin/plugin.json
           test -f commands/rust-intel-cc/audit.md
-          node dev/validate.mjs
+          node dev/validate-all.mjs
 
       - name: Smoke-test the installer
         run: |

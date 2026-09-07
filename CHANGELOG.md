@@ -156,12 +156,14 @@ and accepts `RUST_INTEL_POWERSHELL_EXECUTABLE=powershell.exe` for the Windows Po
 runtime used by the `.bat` wrappers. No current-head CI, version bump, tag, push, or publication
 is claimed.
 
-**Round-42 fixing disposition (partial; ordinary Windows validation not yet demonstrated).**
+**Round-42 fixing disposition (partial; ordinary Windows validation passed locally).**
 `ef20ca5` advances class-element state for private, computed, string, and numeric names and adds
 declaration, completion, and workflow controls 461–484. `14a672a` adds isolated Windows validator
 lanes through `dev/validate-all.mjs`, parameterizes the recovery helper, and exercises both
 `pwsh` and `powershell.exe`, including the documented `.bat` paths. These are partial fixes and
-matrix definitions; no accepted ordinary Windows validation result or closure is claimed. The
+matrix definitions. Acceptance of the sequential coordinator also produced one successful ordinary
+Windows `npm run validate` run: core checks and all 484 fixture controls passed. Independent review
+and CI on the resulting commit remain required. The
 current fixture header is 484 controls: 409 child-process controls (386 validator-entrypoint and
 23 focused lexer/helper children) plus 75 in-process controls. Focused-helper anti-vacuity,
 independent HS review, and exact-head CI remain release gates; no version bump, tag, push, or

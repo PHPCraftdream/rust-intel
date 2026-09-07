@@ -7,7 +7,7 @@
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 403 spawn child processes (386 validator children and 17 focused lexer/helper children), and 81
+// 409 spawn child processes (386 validator children and 23 focused lexer/helper children), and 75
 // run in-process (including direct, rule-text, and crude source oracles; see ruleTextControls and
 // B5/B26 below). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -27,6 +27,7 @@ import {
   literalTrueCompletionViolations,
   maskJsNonCode,
 } from './js-lexer.mjs';
+import { observeLiteralTrueCompletion } from './validate-lexer-observations.mjs';
 
 const require = createRequire(import.meta.url);
 const { assertSupportedNodeVersion } = require('../bin/node-version.js');
@@ -265,8 +266,10 @@ const validateInputs = [
   '.github/workflows',
   'commands',
   'dev/validate.mjs',
+  'dev/validate-all.mjs',
   'dev/js-lexer.mjs',
   'dev/validate-lexer-probes.mjs',
+  'dev/validate-lexer-observations.mjs',
   'dev/semver.mjs',
   'dev/set-release-version.mjs',
   'dev/check-release-version.mjs',
@@ -380,7 +383,7 @@ function runLexerProbe(controlId, timeoutMs = 120_000) {
 const expectedLexerObservations = new Map([
   [399, { kind: 'error', name: 'Error', message: 'JavaScript lexical nesting exceeded its deterministic budget' }],
   [400, { kind: 'error', name: 'Error', message: 'JavaScript lexical delimiter mismatch' }],
-  [401, { kind: 'diagnostics', inputLength: 2_000_000, ids: [] }],
+  [401, { kind: 'diagnostics', inputLength: 2_000_000, ids: [], companion: { kind: 'diagnostics', inputLength: 38, ids: [901] } }],
   [402, { kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget' }],
   [409, { kind: 'completion-violations', ids: [null] }],
   [410, { kind: 'completion-violations', ids: [null] }],
@@ -4269,39 +4272,44 @@ observeControls(458);
     /JSON\.stringify\(\{ controlId, observation: result\.observation, telemetry: telemetry\(initialMemory\) \}\)/u,
     /terminalSample: true/u,
     /source: 'child'/u,
+    /observeLiteralTrueCompletion\('x'\.repeat\(inputLength\)\)/u,
+    /observeLiteralTrueCompletion\('completeCurrentControlScope\(901, true\)'\)/u,
   ];
+  const observationModuleSource = fs.readFileSync(path.join(root, 'dev', 'validate-lexer-observations.mjs'), 'utf8');
+  const hasActualScannerCall = /literalTrueCompletionDiagnostics\(source\)/u.test(observationModuleSource);
   const violations = literalTrueCompletionViolations(lexerProbeSource);
+  const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
   const passed = helperContract.every((pattern) => pattern.test(lexerProbeSource))
+    && hasActualScannerCall
+    && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901] })
     && violations.length === 0
     && !lexerProbeSource.includes('lexer probe passed (control');
   if (!passed) failures.push(`Control 458: focused lexer helper anti-vacuity contract drifted (${JSON.stringify(violations)})`);
   completeCurrentControlScope(458, passed);
 }
 
-// Control 459: mutate both the focused helper's scanner result and its predicate to an
-// unconditional success.  The child may still exit zero, but the parent must reject its wrong
-// structured observation; this is the negative that prevents a relocated facade from becoming
-// an unchecked success string.
+// Control 459: mutate the shared observation's scanner result to an expected-shaped constant.
+// The bounded companion input must still produce its causal ID, so a facade cannot hide the
+// resource-heavy scan behind a constant while preserving the large-input result.
 observeControls(459);
 {
-  const mutated = runValidateAgainstMutatedFiles(['dev/validate-lexer-probes.mjs'], (source) => {
-    const scanner = 'const violations = literalTrueCompletionViolations(mutated);';
-    const predicate = 'return { ok: observation.ids.length === 1 && observation.ids[0] === null, observation };';
-    if (!source.includes(scanner) || !source.includes(predicate)) return null;
-    return source.replace(scanner, 'const violations = [];').replace(predicate, 'return { ok: true, observation };');
-  }, { script: 'dev/validate-lexer-probes.mjs', args: ['409'], timeoutMs: 30_000 });
+  const mutated = runValidateAgainstMutatedFiles(['dev/validate-lexer-observations.mjs'], (source) => {
+    const scanner = 'const diagnostics = literalTrueCompletionDiagnostics(source);';
+    if (!source.includes(scanner)) return null;
+    return source.replace(scanner, 'const diagnostics = [];');
+  }, { script: 'dev/validate-lexer-probes.mjs', args: ['401'], timeoutMs: 30_000 });
   let payload = null;
   try {
     if (mutated.stdout.trim()) payload = JSON.parse(mutated.stdout.trim());
   } catch {
     payload = null;
   }
-  const expected = expectedLexerObservations.get(409);
-  const facadeWouldPass = mutated.status === 0 && payload?.controlId === 409
+  const expected = expectedLexerObservations.get(401);
+  const facadeWouldPass = mutated.status === 0 && payload?.controlId === 401
     && JSON.stringify(payload.observation) === JSON.stringify(expected);
   const passed = !mutated.skipped && !mutated.executionFailure && !facadeWouldPass
-    && payload?.controlId === 409
-    && JSON.stringify(payload.observation) === JSON.stringify({ kind: 'completion-violations', ids: [] });
+    && payload?.controlId === 401
+    && payload.observation?.companion?.ids?.[0] !== 901;
   if (!passed) failures.push(`Control 459: helper predicate mutation was not rejected by the independent semantic oracle (status ${mutated.status ?? 'null'}, output: ${mutated.output.trim()})`);
   completeCurrentControlScope(459, passed);
 }

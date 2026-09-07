@@ -6,10 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  literalTrueCompletionDiagnostics,
-  literalTrueCompletionViolations,
-} from './js-lexer.mjs';
+import { literalTrueCompletionDiagnostics, literalTrueCompletionViolations } from './js-lexer.mjs';
+import { observeLiteralTrueCompletion } from './validate-lexer-observations.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureSource = fs.readFileSync(path.join(root, 'dev', 'validate-fixtures.mjs'), 'utf8');
@@ -50,9 +48,10 @@ function checkControl(id) {
   if (id === 401) {
     try {
       const inputLength = 2_000_000;
-      const diagnostics = literalTrueCompletionDiagnostics('x'.repeat(inputLength));
-      const observation = { kind: 'diagnostics', inputLength, ids: diagnostics.map(({ id: violationId }) => violationId) };
-      return { ok: observation.ids.length === 0, observation };
+      const observation = observeLiteralTrueCompletion('x'.repeat(inputLength));
+      const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
+      const combined = { ...observation, companion };
+      return { ok: observation.ids.length === 0 && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901] }), observation: combined };
     } catch (error) {
       return { ok: false, observation: { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) } };
     }
