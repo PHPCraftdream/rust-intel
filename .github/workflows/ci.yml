@@ -233,31 +233,55 @@ jobs:
           helper="$GITHUB_WORKSPACE/dev/test-installer-recovery.mjs"
           read_inventory() {
             local output="$1"
+            local parsed="${output}.parsed"
             shift
             if ! "$@" >"$output"; then
               echo 'boundary inventory producer failed' >&2
               return 1
             fi
-            [[ -s "$output" ]] || { echo 'boundary inventory is empty' >&2; return 1; }
+            if ! awk '{ line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line); if (length(line) > 0) print line }' "$output" >"$parsed"; then
+              echo 'boundary inventory parser failed' >&2
+              rm -f "$parsed"
+              return 1
+            fi
+            if [[ ! -s "$parsed" ]]; then
+              echo 'boundary inventory has no nonblank records' >&2
+              rm -f "$parsed"
+              return 1
+            fi
+            mv "$parsed" "$output"
           }
           negative_inventory="$(mktemp)"
-          trap 'rm -f "$negative_inventory"' EXIT
+          blank_inventory=''
+          inventory=''
+          cleanup_inventories() {
+            rm -f "$negative_inventory"
+            [[ -z "$blank_inventory" ]] || rm -f "$blank_inventory"
+            [[ -z "$inventory" ]] || rm -f "$inventory"
+          }
+          trap cleanup_inventories EXIT
           if read_inventory "$negative_inventory" bash -c 'exit 7'; then
             echo 'negative inventory producer unexpectedly succeeded' >&2
             exit 1
           fi
+          blank_inventory="$(mktemp)"
+          if read_inventory "$blank_inventory" bash -c 'printf " \n\t\n"'; then
+            echo 'blank inventory producer unexpectedly succeeded' >&2
+            exit 1
+          fi
+          rm -f "$blank_inventory"
+          blank_inventory=''
           for operation in install uninstall; do
             for mode in fresh upgrade sparse; do
               [[ "$operation" == uninstall && "$mode" == fresh ]] && continue
               inventory="$(mktemp)"
-              trap 'rm -f "$negative_inventory" "$inventory"' EXIT
               read_inventory "$inventory" node "$helper" --list "$SURFACE" "$operation" "$mode"
               while IFS= read -r boundary; do
-                [[ -n "$boundary" ]] || continue
                 node "$helper" "$SURFACE" "$operation" "$mode" "$boundary"
                 node "$helper" "$SURFACE" "$operation" "$mode" "$boundary" cross
               done < "$inventory"
               rm -f "$inventory"
+              inventory=''
             done
           done
 
@@ -390,8 +414,47 @@ jobs:
         run: |
           set -euo pipefail
           case "${BASH_VERSION:-}" in 3.2.*) ;; *) echo "expected Bash 3.2, got ${BASH_VERSION:-unknown}" >&2; exit 1 ;; esac
+          read_inventory() {
+            local output="$1"
+            local parsed="${output}.parsed"
+            shift
+            if ! "$@" >"$output"; then
+              echo 'boundary inventory producer failed' >&2
+              return 1
+            fi
+            if ! awk '{ line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line); if (length(line) > 0) print line }' "$output" >"$parsed"; then
+              echo 'boundary inventory parser failed' >&2
+              rm -f "$parsed"
+              return 1
+            fi
+            if [ ! -s "$parsed" ]; then
+              echo 'boundary inventory has no nonblank records' >&2
+              rm -f "$parsed"
+              return 1
+            fi
+            mv "$parsed" "$output"
+          }
           bash -n rust-cc-install.sh rust-cc-uninstall.sh
-          root="$(mktemp -d)"; trap 'rm -rf "$root"' EXIT
+          root="$(mktemp -d)"
+          negative_inventory=''
+          blank_inventory=''
+          inventory=''
+          cleanup_bash_floor() {
+            rm -rf "$root"
+            [[ -z "$negative_inventory" ]] || rm -f "$negative_inventory"
+            [[ -z "$blank_inventory" ]] || rm -f "$blank_inventory"
+            [[ -z "$inventory" ]] || rm -f "$inventory"
+          }
+          trap cleanup_bash_floor EXIT
+          negative_inventory="$(mktemp)"
+          blank_inventory="$(mktemp)"
+          if read_inventory "$negative_inventory" bash -c 'exit 7'; then
+            echo 'negative inventory producer unexpectedly succeeded' >&2; exit 1
+          fi
+          if read_inventory "$blank_inventory" bash -c 'printf " \n\t\n"'; then
+            echo 'blank inventory producer unexpectedly succeeded' >&2; exit 1
+          fi
+          rm -f "$negative_inventory" "$blank_inventory"
           target="$root/-target with spaces"
           mkdir -p "$target/skills/rust-intel" "$target/commands"
           printf 'old-skill\n' > "$target/skills/rust-intel/SKILL.md"
@@ -414,16 +477,12 @@ jobs:
             for mode in fresh upgrade sparse; do
               [[ "$operation" == uninstall && "$mode" == fresh ]] && continue
               inventory="$(mktemp)"
-              trap 'rm -f "$inventory"' EXIT
-              if ! node dev/test-installer-recovery.mjs --list bash "$operation" "$mode" > "$inventory"; then
-                echo "Bash 3.2 $operation $mode inventory generation failed" >&2; exit 1
-              fi
-              [ -s "$inventory" ] || { echo "Bash 3.2 $operation $mode inventory was empty" >&2; exit 1; }
+              read_inventory "$inventory" node dev/test-installer-recovery.mjs --list bash "$operation" "$mode"
               while IFS= read -r boundary; do
-                [ -n "$boundary" ] || continue
                 node dev/test-installer-recovery.mjs bash "$operation" "$mode" "$boundary"
                 node dev/test-installer-recovery.mjs bash "$operation" "$mode" "$boundary" cross
               done < "$inventory"
               rm -f "$inventory"
+              inventory=''
             done
           done

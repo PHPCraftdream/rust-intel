@@ -64,14 +64,18 @@ function ownedPaths(target) {
   ];
 }
 
-function transactionPrefixes() {
-  if (surface.startsWith('node-')) return ['.rust-intel-tx-'];
-  if (surface === 'bash') return operation === 'install'
-    ? ['.rust-intel-bash-tx.', '.rust-intel-bash-uninstall.']
-    : ['.rust-intel-bash-uninstall.', '.rust-intel-bash-tx.'];
-  return operation === 'install'
-    ? ['.rust-intel-ps-tx-', '.rust-intel-ps-uninstall-']
-    : ['.rust-intel-ps-uninstall-', '.rust-intel-ps-tx-'];
+// This is an independent oracle for the transaction namespaces. Keep it keyed only by the
+// installer surface: both operation prefixes must remain checked even when the case exercises
+// only one operation.
+const EXPECTED_TRANSACTION_PREFIXES = Object.freeze({
+  'node-claude': Object.freeze(['.rust-intel-tx-']),
+  'node-codex': Object.freeze(['.rust-intel-tx-']),
+  bash: Object.freeze(['.rust-intel-bash-tx.', '.rust-intel-bash-uninstall.']),
+  powershell: Object.freeze(['.rust-intel-ps-tx-', '.rust-intel-ps-uninstall-']),
+});
+
+function expectedTransactionPrefixes() {
+  return EXPECTED_TRANSACTION_PREFIXES[surface];
 }
 
 function unrelatedSibling(target) {
@@ -98,6 +102,13 @@ function claudeFixture(target, sparse) {
 function fixture(target) {
   unrelatedSibling(target);
   if (mode === 'fresh') {
+    if (surface !== 'node-codex') {
+      // Model the existing Claude/Bash config roots. A clean uninstall preserves these user-owned
+      // containers, so the direct opposite-operation oracle has the same starting inventory as a
+      // subject that first performed an install.
+      fs.mkdirSync(path.join(target, 'skills'), { recursive: true });
+      fs.mkdirSync(path.join(target, 'commands'), { recursive: true });
+    }
     write(path.join(target, 'other', 'sibling.md'), 'unrelated\n');
     return;
   }
@@ -129,13 +140,6 @@ function boundaryInventory(backups, replacements) {
   const rollback = operation === 'install' ? replacements : backups;
   for (const index of rollback) for (const phase of ['before-rollback', 'after-rollback']) boundaries.add(`${phase}-${index}`);
   return { boundaries, backups, replacements };
-}
-
-function replacementIndicesFromHooks(hooks) {
-  return [...new Set(hooks.flatMap((entry) => {
-    const match = entry.match(/^before-replacement-(\d+)$/);
-    return match ? [Number(match[1])] : [];
-  }))];
 }
 
 function expectedReplacementIndices() {
@@ -270,7 +274,7 @@ function assertHook(runResult, boundaryName, label) {
 
 function assertCleanTransactionParent(target, sibling) {
   const entries = fs.readdirSync(path.dirname(target), { withFileTypes: true });
-  const leftovers = entries.filter((entry) => transactionPrefixes().some((prefix) => entry.name.startsWith(prefix)));
+  const leftovers = entries.filter((entry) => expectedTransactionPrefixes().some((prefix) => entry.name.startsWith(prefix)));
   if (leftovers.length) throw new Error(`${surface} ${operation}: transaction artifacts remain after restart: ${leftovers.map((entry) => entry.name).join(', ')} in ${path.dirname(target)}`);
   if (!present(sibling) || fs.readFileSync(path.join(sibling, 'journal'), 'utf8') !== 'foreign transaction\n') {
     throw new Error(`${surface} ${operation}: unrelated sibling transaction was removed or changed`);
@@ -355,13 +359,13 @@ try {
     }
     let expected;
     if (crossMode) {
-      // The clean run above only calibrates emitted hooks. Restore the expected fixture so the
-      // reference path undergoes the same interrupted first operation as the actual path.
+      // The expected side is an independent semantic oracle: apply only the clean opposite
+      // operation to the original fixture. The interrupted first operation belongs only to the
+      // subject side below.
       fs.rmSync(expectedTarget, { recursive: true, force: true });
       fixture(expectedTarget);
-      interruptAtBoundary(expectedTarget, expectedInventory, boundary, `${surface} expected ${operation} ${mode} ${boundary}`);
       const oppositeExpected = run(expectedTarget, undefined, undefined, oppositeOperation);
-      assertStatus(oppositeExpected, 0, `clean ${oppositeOperation}`);
+      assertStatus(oppositeExpected, 0, `clean oracle ${oppositeOperation}`);
       expected = snapshot(expectedTarget);
     } else expected = snapshot(expectedTarget);
     interruptAtBoundary(actualTarget, actualInventory, boundary, `${surface} ${operation} ${mode} ${boundary}`);
@@ -369,15 +373,26 @@ try {
     assertStatus(restarted, 0, `${surface} ${operation} ${mode} ${boundary} ${crossMode ? 'cross-' : ''}restart`);
     const actualSnapshot = snapshot(actualTarget);
     if (actualSnapshot !== expected) throw new Error(`${surface} ${operation} ${mode} ${boundary}: restart did not produce clean-operation inventory\nexpected=${expected}\nactual=${actualSnapshot}`);
-    const negativeTransaction = path.join(path.dirname(actualTarget), `${transactionPrefixes()[0]}negative`);
-    write(path.join(negativeTransaction, 'stage', 'owned.txt'), 'owned\n');
-    write(path.join(negativeTransaction, 'backup', 'owned.txt'), 'owned\n');
-    write(path.join(negativeTransaction, 'journal'), 'owned transaction\n');
-    let rejectedOwnedTransaction = false;
-    try { assertCleanTransactionParent(actualTarget, sibling); }
-    catch { rejectedOwnedTransaction = true; }
-    fs.rmSync(negativeTransaction, { recursive: true, force: true });
-    if (!rejectedOwnedTransaction) throw new Error(`${surface} ${operation}: owned transaction cleanup oracle accepted a leaked transaction`);
+    if (crossMode) {
+      // A deterministic mutation must be visible to the full-tree oracle. This counterfactual
+      // guards against an expected side that accidentally replays the subject's recovery path.
+      const corruption = path.join(actualTarget, '.rust-intel-recovery-counterfactual');
+      write(corruption, 'deterministic corruption\n');
+      const corruptedSnapshot = snapshot(actualTarget);
+      fs.rmSync(corruption, { force: true });
+      if (corruptedSnapshot === expected) throw new Error(`${surface} ${operation}: cross-operation oracle accepted deterministic recovery corruption`);
+    }
+    for (const prefix of expectedTransactionPrefixes()) {
+      const negativeTransaction = path.join(path.dirname(actualTarget), `${prefix}negative`);
+      write(path.join(negativeTransaction, 'stage', 'owned.txt'), 'owned\n');
+      write(path.join(negativeTransaction, 'backup', 'owned.txt'), 'owned\n');
+      write(path.join(negativeTransaction, 'journal'), 'owned transaction\n');
+      let rejectedOwnedTransaction = false;
+      try { assertCleanTransactionParent(actualTarget, sibling); }
+      catch { rejectedOwnedTransaction = true; }
+      fs.rmSync(negativeTransaction, { recursive: true, force: true });
+      if (!rejectedOwnedTransaction) throw new Error(`${surface} ${operation}: owned transaction prefix ${prefix} was accepted as clean`);
+    }
     assertCleanTransactionParent(actualTarget, sibling);
   }
 } finally {
