@@ -375,7 +375,7 @@ const lexerProbeScript = path.join(root, 'dev', 'validate-lexer-probes.mjs');
 // the long-lived fixture parent.
 const lexerProbeHeapMb = 64;
 function runLexerProbe(controlId, timeoutMs = 120_000) {
-  const command = [process.execPath, `--max-old-space-size=${lexerProbeHeapMb}`, lexerProbeScript, String(controlId)];
+  const command = [process.execPath, `--max-old-space-size=${lexerProbeHeapMb}`, lexerProbeScript, String(controlId), ...(controlId === 401 ? [String(control401MarkerId)] : [])];
   tallyChildSpawn('focused');
   progress(`spawn lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} timeout=${timeoutMs}`);
   const run = spawnSync(process.execPath, command.slice(1), {
@@ -407,10 +407,38 @@ function runLexerProbe(controlId, timeoutMs = 120_000) {
   progress(`child lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} terminalSample=${result.terminalSample ? 'yes' : 'no-terminal-sample'} outputBytes=${Buffer.byteLength(result.output)}`);
   return result;
 }
+// Control 401's marker id is chosen at run time and handed to the focused child via argv, so the
+// expected observation is derived from a value that appears nowhere in the shipped source: neither
+// a constant-shaped result nor a source-length-gated early return in the shared observation module
+// can produce the expected id and source index without running the real full-length scan. The id
+// is bounded to six digits so the marker length — and with it the scan's operation count and the
+// expected source index — stays constant across runs.
+function chooseControl401MarkerId() {
+  return 100_003 + (Date.now() % 800_000);
+}
+const control401MarkerId = chooseControl401MarkerId();
+function expectedControl401Observation(markerId) {
+  const markerLength = `;completeCurrentControlScope(${markerId}, true)`.length;
+  return {
+    kind: 'diagnostics',
+    inputLength: 2_000_000,
+    ids: [markerId],
+    indexes: [2_000_000 - markerLength + 1],
+    companion: { kind: 'diagnostics', inputLength: 38, ids: [901], indexes: [0] },
+  };
+}
+// Control 401 must also show the resource signature of the real scan: on the reference host
+// (win32 10.0.19045, Node v24.12.0) a genuine 2,000,000-unit scan reports peakHeapUsed of about
+// 71 MB and peakRss of about 150 MB, while a scan-eliding facade reports a few MB of heap and no
+// scan-driven RSS growth. The floors sit far below the genuine figures and far above the facade's;
+// they are a coarse work-was-performed floor, not a measurement.
+const control401PeakHeapUsedFloor = 32 * 1024 * 1024;
+const control401PeakRssFloor = 100 * 1024 * 1024;
 const expectedLexerObservations = new Map([
   [399, { kind: 'error', name: 'Error', message: 'JavaScript lexical nesting exceeded its deterministic budget' }],
   [400, { kind: 'error', name: 'Error', message: 'JavaScript lexical delimiter mismatch' }],
-  [401, { kind: 'diagnostics', inputLength: 2_000_000, ids: [902], companion: { kind: 'diagnostics', inputLength: 38, ids: [901] } }],
+  // 401 is absent by design: its expected observation is derived at run time from
+  // control401MarkerId via expectedControl401Observation and must not exist as a static literal.
   [402, { kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget' }],
   [409, { kind: 'completion-violations', ids: [null] }],
   [410, { kind: 'completion-violations', ids: [null] }],
@@ -430,9 +458,9 @@ const expectedLexerObservations = new Map([
   [477, { kind: 'completion-violations', ids: [null] }],
   [478, { kind: 'completion-violations', ids: [null] }],
 ]);
-function expectLexerProbe(controlId) {
+function expectLexerProbe(controlId, { expected, peakHeapUsedFloor = 0, peakRssFloor = 0 } = {}) {
   const result = runLexerProbe(controlId);
-  const expected = expectedLexerObservations.get(controlId);
+  const expectedObservation = expected ?? expectedLexerObservations.get(controlId);
   const telemetry = result.payload?.telemetry;
   const passed = result.status === 0 && !result.signal && !result.error
     && result.payload?.controlId === controlId
@@ -441,9 +469,11 @@ function expectLexerProbe(controlId) {
     && Number.isSafeInteger(telemetry.heapUsed) && telemetry.heapUsed >= 0
     && Number.isSafeInteger(telemetry.rss) && telemetry.rss >= 0
     && Number.isSafeInteger(telemetry.peakHeapUsed) && telemetry.peakHeapUsed >= telemetry.heapUsed
+    && telemetry.peakHeapUsed >= peakHeapUsedFloor
     && telemetry.peakHeapSource === 'terminal-boundary-sample'
     && Number.isSafeInteger(telemetry.peakRss) && telemetry.peakRss >= telemetry.rss
-    && JSON.stringify(result.payload?.observation) === JSON.stringify(expected);
+    && telemetry.peakRss >= peakRssFloor
+    && JSON.stringify(result.payload?.observation) === JSON.stringify(expectedObservation);
   if (!passed) {
     const sampleStatus = result.terminalSample ? 'terminal sample present' : 'no terminal sample (child may have failed fatally or been killed)';
     failures.push(`Control ${controlId}: focused lexer child failed (${sampleStatus}; status ${result.status ?? 'null'}, signal ${result.signal || 'none'}, error ${result.error || 'none'}, output: ${result.output.trim()})`);
@@ -4023,7 +4053,13 @@ expectLexerProbe(399);
 // across the full fixture process. These controls use deterministic exception/result oracles;
 // elapsed time is intentionally not part of the assertion.
 observeControls({ start: 400, end: 402 });
-for (const number of [400, 401, 402]) expectLexerProbe(number);
+expectLexerProbe(400);
+expectLexerProbe(401, {
+  expected: expectedControl401Observation(control401MarkerId),
+  peakHeapUsedFloor: control401PeakHeapUsedFloor,
+  peakRssFloor: control401PeakRssFloor,
+});
+expectLexerProbe(402);
 
 // Controls 403-404: private names are IdentifierName tokens even when their spelling is a
 // keyword.  A live division after `this.#if()` must remain visible, while a real regexp in the
@@ -4291,7 +4327,7 @@ completeCurrentControlScope(457, passed);
 
 // Control 458: focused lexer probes are part of the fixture's anti-vacuity contract.  Keep the
 // canonical argument parser, structured semantic result, and child-owned terminal telemetry in
-// the source inventory; a free-form success sentence is not an accepted protocol.
+// source inventory, and keep the shared observation's scanner call reachable as the function's first statement; a free-form success sentence or an early-return facade is not an accepted protocol.
 observeControls(458);
 {
   const helperContract = [
@@ -4299,18 +4335,34 @@ observeControls(458);
     /JSON\.stringify\(\{ controlId, observation: result\.observation, telemetry: telemetry\(initialMemory\) \}\)/u,
     /terminalSample: true/u,
     /source: 'child'/u,
-    /const marker = ';completeCurrentControlScope\(902, true\)';/u,
+    /const canonicalMarkerId = \/\^\(\?:0\|\[1-9\]\\d\*\)\$\/u\.test\(process\.argv\[3\] \|\| ''\)/u,
+    /const markerId = Number\.isSafeInteger\(canonicalMarkerId\) && canonicalMarkerId >= 1 \? canonicalMarkerId : NaN;/u,
+    /const marker = `;completeCurrentControlScope\(\$\{markerId\}, true\)`;/u,
     /const fillerLength = 2_000_000 - marker\.length;/u,
     /observeLiteralTrueCompletion\('x'\.repeat\(fillerLength\) \+ marker\)/u,
     /observeLiteralTrueCompletion\('completeCurrentControlScope\(901, true\)'\)/u,
   ];
   const observationModuleSource = fs.readFileSync(path.join(root, 'dev', 'validate-lexer-observations.mjs'), 'utf8');
-  const hasActualScannerCall = /literalTrueCompletionDiagnostics\(source\)/u.test(observationModuleSource);
+  // The scanner call must be the FIRST statement of the exported observation function, preceded
+  // only by whitespace or comments: a size-conditional early return placed above the call
+  // satisfies a whole-file substring search while never scanning the large input. maskJsNonCode
+  // blanks comments and string interiors while preserving offsets, so a comment cannot disguise
+  // a preceding branch and a branch cannot hide behind a comment.
+  const observationModuleMasked = maskJsNonCode(observationModuleSource);
+  const functionAnchor = 'export function observeLiteralTrueCompletion(source)';
+  const functionStart = observationModuleMasked.indexOf(functionAnchor);
+  const bodyOpen = functionStart < 0 ? -1 : observationModuleMasked.indexOf('{', functionStart);
+  const scannerStatement = 'const diagnostics = literalTrueCompletionDiagnostics(source);';
+  const scannerStatementIndex = bodyOpen < 0 ? -1 : observationModuleMasked.indexOf(scannerStatement, bodyOpen);
+  const scannerPreamble = bodyOpen >= 0 && scannerStatementIndex > bodyOpen
+    ? observationModuleMasked.slice(bodyOpen + 1, scannerStatementIndex)
+    : null;
+  const hasUnguardedFirstStatementScannerCall = scannerPreamble !== null && /^[ \t\r\n]*$/u.test(scannerPreamble);
   const violations = literalTrueCompletionViolations(lexerProbeSource);
   const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
   const passed = helperContract.every((pattern) => pattern.test(lexerProbeSource))
-    && hasActualScannerCall
-    && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901] })
+    && hasUnguardedFirstStatementScannerCall
+    && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901], indexes: [0] })
     && violations.length === 0
     && !lexerProbeSource.includes('lexer probe passed (control');
   if (!passed) failures.push(`Control 458: focused lexer helper anti-vacuity contract drifted (${JSON.stringify(violations)})`);
@@ -4318,22 +4370,21 @@ observeControls(458);
 }
 
 // Control 459: mutate the shared observation's scanner result to an expected-shaped constant.
-// The bounded companion input must still produce its causal ID, so a facade cannot hide the
-// resource-heavy scan behind a constant while preserving the large-input result.
+// The expected observation is derived from the run-time marker id, so neither a constant nor an early-return facade can preserve the large-input result without performing the full-length scan.
 observeControls(459);
 {
   const mutated = runValidateAgainstMutatedFiles(['dev/validate-lexer-observations.mjs'], (source) => {
     const scanner = 'const diagnostics = literalTrueCompletionDiagnostics(source);';
     if (!source.includes(scanner)) return null;
     return source.replace(scanner, 'const diagnostics = [];');
-  }, { script: 'dev/validate-lexer-probes.mjs', args: ['401'], timeoutMs: 30_000 });
+  }, { script: 'dev/validate-lexer-probes.mjs', args: ['401', String(control401MarkerId)], timeoutMs: 30_000 });
   let payload = null;
   try {
     if (mutated.stdout.trim()) payload = JSON.parse(mutated.stdout.trim());
   } catch {
     payload = null;
   }
-  const expected = expectedLexerObservations.get(401);
+  const expected = expectedControl401Observation(control401MarkerId);
   const facadeWouldPass = mutated.status === 0 && payload?.controlId === 401
     && JSON.stringify(payload.observation) === JSON.stringify(expected);
   const passed = !mutated.skipped && !mutated.executionFailure && !facadeWouldPass
@@ -4373,9 +4424,12 @@ observeControls(485);
   expectFixture(result, 'Control 485: workflow run step referencing a missing script is rejected', 1, ['references missing script', 'dev/sync-mirror-missing-485.mjs'], 485);
 }
 
-// Control 486: the coordinator's phase wiring is pinned by dev/validate.mjs. Flipping the core
-// phase's nested-fixture escape hatch to '0' would silently re-nest the fixture suite inside the
-// core validator process — the exact topology the sequential coordinator exists to avoid.
+// Control 486: the coordinator's phase wiring is pinned by dev/validate.mjs, and the pin covers
+// the actual spawn wiring, not just the declaration. Flipping the core phase's nested-fixture
+// escape hatch to '0' would silently re-nest the fixture suite inside the core validator process,
+// and deleting the ...phase.env spread from the spawnSync options would stop the per-phase values
+// from reaching the child at all — both restore the exact single-process topology the sequential
+// coordinator exists to avoid, so one mutated copy applies both and both errors must fire.
 observeControls(486);
 {
   const result = runValidateAgainstMutatedFiles(['dev/validate-all.mjs'], (source) => {
@@ -4385,9 +4439,14 @@ observeControls(486);
     const envAnchor = "RUST_INTEL_SKIP_NESTED_FIXTURES: '1'";
     const envIndex = source.indexOf(envAnchor, phaseStart);
     if (envIndex < 0) return null;
-    return source.slice(0, envIndex) + source.slice(envIndex).replace(envAnchor, "RUST_INTEL_SKIP_NESTED_FIXTURES: '0'");
+    const spreadAnchor = 'env: { ...process.env, ...phase.env },';
+    const spreadIndex = source.indexOf(spreadAnchor);
+    if (spreadIndex < 0) return null;
+    return source.slice(0, envIndex)
+      + source.slice(envIndex, spreadIndex).replace(envAnchor, "RUST_INTEL_SKIP_NESTED_FIXTURES: '0'")
+      + source.slice(spreadIndex).replace(spreadAnchor, 'env: { ...process.env },');
   });
-  expectFixture(result, 'Control 486: coordinator core-phase nested-fixture escape hatch mutation is rejected', 1, ["dev/validate-all.mjs phase 'core'"], 486);
+  expectFixture(result, 'Control 486: coordinator phase-wiring mutations (escape hatch and env spread) are rejected', 1, ["dev/validate-all.mjs phase 'core'", '...phase.env'], 486);
 }
 
 for (const fixture of cases) {

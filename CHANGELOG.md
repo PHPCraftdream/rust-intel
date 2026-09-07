@@ -176,13 +176,15 @@ version bump, tag, push, or publication is claimed.
 
 **Round-43 fixing disposition (implemented; ordinary Windows validation re-run locally).**
 The round-43 review (`docs/reviews/latest-commits-review-round-43-2026-09-07-1144.md`) is disposed
-as follows, applied in one uncommitted working tree. P2-1: a validator check now extracts every
+as follows, committed as `6bc997b`. P2-1: a validator check now extracts every
 `node <path>` / `node --check <path>` argument from workflow run steps and asserts the file
 exists, with regression control 485. P3-1: control 401's input embeds a causal marker —
 `';completeCurrentControlScope(902, true)'` after 1,999,961 filler units, exactly 2,000,000 code
 units — and requires `{inputLength: 2000000, ids: [902]}`; the size-conditional facade the review
-demonstrated was re-tested against the new observation and is rejected, so the anti-vacuity gate
-is now enforced causally rather than by companion shape alone. P3-A: `dev/validate-all.mjs`
+demonstrated was re-tested against the new observation and is rejected. That closed the review's
+specific facade, not the class: round 44's review demonstrated an early return placed above the
+marker line that still passed all three gates, and the round-44 fixing pass (below) closes the
+class. P3-A: `dev/validate-all.mjs`
 joins `runtimeGuardContracts`, its phase wiring is source-pinned with negative control 486, and
 `package.json`'s `validate` script plus the three workflow invocations are pinned to the
 coordinator path. P3-B: the registry tallies actual validator/focused child spawns against the
@@ -193,13 +195,49 @@ on a malformed value instead of silently restoring the 20-minute default, and th
 the ledger, and the README Layout/Status text now credit `49dd4f0` with its actual contents, move
 the coordinator attribution off `14a672a`, state one anti-vacuity disposition, and document
 `RUST_INTEL_SKIP_NESTED_FIXTURES` and `RUST_INTEL_VALIDATE_TIMEOUT_MS`. P2-2 remains an open
-evidence item, not a closure claim: at the reviewed head on Node v24.12.0 / Windows 10.0.19045
-the fault did not reproduce in three attempts — one progress-instrumented fixture run (246.310 s,
-484/484 controls, peak heap ≈21.2 MB, last live control 460) and two ordinary coordinator runs
-(276.451 s, 285.209 s), all exit 0 — so the coordinator stays a mitigation whose effect on the
-original fault is unconfirmed, and the `windows-validator` lane's first real CI run remains the
-required proof. Independent HS review and exact-head CI remain release gates; no version bump,
+evidence item, not a closure claim: at the reviewed head (`49dd4f0`, before this fixing pass
+landed) on Node v24.12.0 / Windows 10.0.19045 the fault did not reproduce in three attempts — one
+progress-instrumented fixture run (246.310 s, 484/484 controls, peak heap ≈21.2 MB, last live
+control 460) and two ordinary `npm run validate` coordinator runs (276.451 s, 285.209 s), all
+exit 0. All three runs predate this fixing pass, and no measurement exists at `6bc997b`, whose
+fixture workload is materially larger; the `6bc997b` commit body's '486/486 controls at this
+head' figure for the same 246.310 s run is wrong for the same reason and is superseded by this
+record. The coordinator stays a mitigation whose effect on the original fault is unconfirmed, and
+the `windows-validator` lane's first real CI run remains the required proof. Independent HS review and exact-head CI remain release gates; no version bump,
 tag, push, or publication is claimed.
+
+**Round-44 fixing disposition (implemented; ordinary Windows validation re-run locally).**
+The round-44 review (`docs/reviews/latest-commits-review-round-44-2026-09-07-1418.md`) is disposed
+as follows, in one working tree on top of `6bc997b`; commit, push, bump, tag, and publication
+remain separate, explicit, human-authorized actions. P3-1: control 401's marker id is now chosen
+at run time and passed to the focused child in argv, the expected observation is derived from
+that id and additionally requires the marker's source index, control 458 replaces its whole-file
+substring search with an anchored contract — the scanner call must be the first statement of the
+shared observation function, preceded only by whitespace or comments — and control 401 gains
+measured work-was-done floors on the focused child's peak heap and peak RSS. Re-tested
+adversarially: the round-44 early-return facade is rejected twice over (runtime-id oracle and
+anchored contract), and a stronger argv-forging facade that defeats the runtime-id oracle is
+still rejected by the anchored contract and the memory floors; the fixture suite exits non-zero
+with either facade in place and passes 486/486 without them. P3-4: `dev/validate.mjs` now pins
+the coordinator's actual spawn wiring (`env: { ...process.env, ...phase.env }` must reach the
+`spawnSync` options), anchors each phase contract to its own object, pins core-before-fixtures
+order, and control 486 applies both wiring mutations to one mutated copy and requires both
+rejections. P3-A: the three CI lanes that run the coordinator are raised to 50-minute job
+timeouts (`repository-checks` 30→50, `windows-validator` 30→50, `node-floor` 20→50) so the
+coordinator's worst case — two sequential 20-minute phases — and its attributed ETIMEDOUT
+diagnostic are reachable on every lane; `dev/validate.mjs` now pins each lane's `timeout-minutes`
+at or above two per-phase defaults plus setup margin and treats a workflow-level
+`RUST_INTEL_VALIDATE_TIMEOUT_MS` override as an error (the publish job's existing 45-minute
+timeout satisfies the pinned minimum). P2-1: the three Windows non-reproduction runs are
+attributed to one tree, `49dd4f0`, in all release records, the fixture-only progress run is no
+longer described as an ordinary `npm run validate` run, and the absence of any measurement at
+`6bc997b` is stated. P3-2/P3-3: the README credits `49dd4f0` with the coordinator's creation,
+and this changelog and the ledger now describe the round-43 fixing pass as committed (`6bc997b`)
+instead of uncommitted. Fresh evidence for the open Windows gate: ordinary `npm run validate` on
+this round-44 fixing tree (Node v24.12.0, Windows 10.0.19045) passed in 368 s with exit 0 and
+486/486 controls. This is local non-reproduction evidence for the current fixing state, not a
+demonstrated fix; independent HS review and exact-head CI remain release gates, and no version
+bump, tag, push, or publication is claimed.
 
 ## [0.6.0] — 2026-08-19
 

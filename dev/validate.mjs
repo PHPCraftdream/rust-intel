@@ -2156,14 +2156,63 @@ for (const [file, source, needle] of [
 // Pin the coordinator's phase wiring: the core phase must enter with the nested-fixture escape
 // hatch set and the fixtures phase must not. Flipping the core value would silently re-nest the
 // fixture suite inside the core validator process — the topology the coordinator exists to avoid.
+// Each phase's contract is matched inside that phase's own object only: a whole-file lazy regex
+// can match a value across the phases-array boundary, so a swapped value would satisfy the wrong
+// arm's contract. The core phase must also be declared first.
 const coordinatorSource = stripJsComments(fs.readFileSync(path.join(root, 'dev/validate-all.mjs'), 'utf8'));
+const corePhaseIndex = coordinatorSource.indexOf("name: 'core',");
+const fixturesPhaseIndex = coordinatorSource.indexOf("name: 'fixtures',");
+if (corePhaseIndex < 0 || fixturesPhaseIndex <= corePhaseIndex) {
+  errors.push("dev/validate-all.mjs must declare the core phase before the fixtures phase");
+}
 for (const [phase, scriptName, skipValue] of [
   ['core', 'validate.mjs', '1'],
   ['fixtures', 'validate-fixtures.mjs', '0'],
 ]) {
-  const phaseContract = new RegExp(`name: '${phase}',[\\s\\S]*?script: path\\.join\\(root, 'dev', '${scriptName.replace(/\./gu, '\\.')}'\\),[\\s\\S]*?RUST_INTEL_SKIP_NESTED_FIXTURES: '${skipValue}'`);
-  if (!phaseContract.test(coordinatorSource)) {
+  const phaseStart = coordinatorSource.indexOf(`name: '${phase}',`);
+  const nextPhaseIndex = coordinatorSource.indexOf("name: '", phaseStart + 1);
+  const phaseSource = phaseStart < 0 ? '' : coordinatorSource.slice(phaseStart, nextPhaseIndex < 0 ? coordinatorSource.length : nextPhaseIndex);
+  const phaseContract = new RegExp(`script: path\\.join\\(root, 'dev', '${scriptName.replace(/\./gu, '\\.')}'\\),[\\s\\S]*?RUST_INTEL_SKIP_NESTED_FIXTURES: '${skipValue}'`);
+  if (!phaseContract.test(phaseSource)) {
     errors.push(`dev/validate-all.mjs phase '${phase}' must run dev/${scriptName} with RUST_INTEL_SKIP_NESTED_FIXTURES: '${skipValue}'`);
+  }
+}
+// Pin the coordinator's actual spawn wiring, not just the phase declaration: if the spawnSync
+// options stopped spreading ...phase.env last, the per-phase RUST_INTEL_SKIP_NESTED_FIXTURES
+// values above would silently never reach the child processes — the core phase would re-nest the
+// full fixture suite inside itself while every declaration-level pin still matched.
+if (!/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.phase\.env\s*\}/u.test(coordinatorSource)) {
+  errors.push('dev/validate-all.mjs must pass each phase environment to its child via env: { ...process.env, ...phase.env }');
+}
+// The coordinator's per-phase ETIMEDOUT attribution is reachable only if the CI job outlives the
+// coordinator's worst case: two sequential phases, each capped by RUST_INTEL_VALIDATE_TIMEOUT_MS.
+// Pin every coordinator lane's job timeout above two per-phase defaults plus setup margin so the
+// budgets cannot silently drift apart. A job-level override of RUST_INTEL_VALIDATE_TIMEOUT_MS
+// would invalidate that relationship, so its presence in a workflow is itself an error.
+const timeoutDefaultMatch = /let timeoutMs = (\d+) \* 60 \* 1000;/u.exec(coordinatorSource);
+const timeoutDefaultMinutes = timeoutDefaultMatch ? Number(timeoutDefaultMatch[1]) : NaN;
+if (!Number.isSafeInteger(timeoutDefaultMinutes) || timeoutDefaultMinutes <= 0) {
+  errors.push('dev/validate-all.mjs must declare its per-phase timeout default as `let timeoutMs = <minutes> * 60 * 1000;`');
+} else {
+  const minimumJobTimeoutMinutes = 2 * timeoutDefaultMinutes + 5;
+  for (const [file, source, job] of [
+    ['.github/workflows/ci.yml', ciWorkflow, 'repository-checks'],
+    ['.github/workflows/ci.yml', ciWorkflow, 'windows-validator'],
+    ['.github/workflows/ci.yml', ciWorkflow, 'node-floor'],
+    ['.github/workflows/npm-publish.yml', publishWorkflow, 'publish'],
+  ]) {
+    const jobLines = yamlJobSection(source, job);
+    const timeoutLine = jobLines ? jobLines.find((line) => /^ {4}timeout-minutes:/.test(line)) : null;
+    const timeoutMatch = timeoutLine ? /^ {4}timeout-minutes:\s*(\d+)\s*$/u.exec(timeoutLine) : null;
+    const jobTimeoutMinutes = timeoutMatch ? Number(timeoutMatch[1]) : NaN;
+    if (!Number.isSafeInteger(jobTimeoutMinutes) || jobTimeoutMinutes < minimumJobTimeoutMinutes) {
+      errors.push(`${file} job ${job} timeout-minutes must be an integer of at least ${minimumJobTimeoutMinutes} (the coordinator's worst case is 2 x ${timeoutDefaultMinutes} minutes plus setup margin)`);
+    }
+  }
+}
+for (const [file, source] of [['.github/workflows/ci.yml', ciWorkflow], ['.github/workflows/npm-publish.yml', publishWorkflow]]) {
+  if (source.includes('RUST_INTEL_VALIDATE_TIMEOUT_MS')) {
+    errors.push(`${file} must not set RUST_INTEL_VALIDATE_TIMEOUT_MS: a job-level override invalidates the pinned coordinator-vs-job timeout relationship`);
   }
 }
 

@@ -9,5 +9,6 @@ export function observeLiteralTrueCompletion(source) {
     kind: 'diagnostics',
     inputLength: source.length,
     ids: diagnostics.map(({ id }) => id),
+    indexes: diagnostics.map(({ index }) => index),
   };
 }

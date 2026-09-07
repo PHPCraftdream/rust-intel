@@ -47,13 +47,17 @@ function checkControl(id) {
   }
   if (id === 401) {
     try {
-      // The marker makes the observation causally depend on the full-length scan: ids [902] can
-      // only come from completing the scan of the marker itself, so neither a constant nor a
-      // size-conditional branch in the shared observation module can produce the expected result
-      // for free. The ';' separator is load-bearing (a completion call directly after an ordinary
-      // word token is suppressed as non-canonical), and the filler keeps the total at exactly
-      // 2,000,000 code units, one unit below the deterministic scan budget (control 402).
-      const marker = ';completeCurrentControlScope(902, true)';
+      // The parent chooses the marker id at run time and passes it in argv: the expected
+      // observation — ids [markerId] at the marker's source index — is unknowable from this
+      // module's source, so neither a constant nor a source-length-gated early return in the
+      // shared observation module can satisfy it without performing the full-length scan. The
+      // ';' separator is load-bearing (a completion call directly after an ordinary word token
+      // is suppressed as non-canonical), and the filler keeps the total at exactly 2,000,000
+      // code units, one unit below the deterministic scan budget (control 402).
+      const canonicalMarkerId = /^(?:0|[1-9]\d*)$/u.test(process.argv[3] || '') ? Number(process.argv[3]) : NaN;
+      const markerId = Number.isSafeInteger(canonicalMarkerId) && canonicalMarkerId >= 1 ? canonicalMarkerId : NaN;
+      if (!Number.isSafeInteger(markerId)) return { ok: false, observation: { kind: 'missing-or-invalid-marker-id' } };
+      const marker = `;completeCurrentControlScope(${markerId}, true)`;
       const fillerLength = 2_000_000 - marker.length;
       const observation = observeLiteralTrueCompletion('x'.repeat(fillerLength) + marker);
       const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
@@ -61,8 +65,10 @@ function checkControl(id) {
       return {
         ok: observation.inputLength === 2_000_000
           && observation.ids.length === 1
-          && observation.ids[0] === 902
-          && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901] }),
+          && observation.ids[0] === markerId
+          && observation.indexes.length === 1
+          && observation.indexes[0] === fillerLength + 1
+          && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901], indexes: [0] }),
         observation: combined,
       };
     } catch (error) {
