@@ -49,7 +49,15 @@ function scanLexical(source) {
   let previousWord = '';
   let previousWasDot = false;
   let previousWasProperty = false;
-  let pendingClassDeclaration = false;
+  // A class/function body closes with a different slash role depending on whether its value is
+  // a declaration statement or an expression.  Keep that role attached to the construct rather
+  // than inferring it from the `)`/identifier immediately before the body: both forms have the
+  // same surface tokens, but `function () {} / value` is division while `function f() {} /re/` is
+  // a regexp statement.
+  let pendingClassBodyRole = null;
+  let pendingFunctionBodyRole = null;
+  let previousWordBeforeToken = '';
+  let previousTokenBeforeWord = '';
   let previousToken = '';
   let operations = 0;
   let index = 0;
@@ -60,6 +68,15 @@ function scanLexical(source) {
   const push = (entry) => {
     if (stack.length >= MAX_LEXICAL_DEPTH) throw new Error('JavaScript lexical nesting exceeded its deterministic budget');
     stack.push(entry);
+  };
+  const declarationOrExpression = (token, word, tokenBeforeWord, wordBeforeWord, enclosingBlock = false) => {
+    if (word === 'export' || (word === 'default' && wordBeforeWord === 'export')) return 'declaration';
+    if (word === 'async') {
+      if (wordBeforeWord === 'export' || wordBeforeWord === 'default') return 'declaration';
+      return declarationOrExpression(tokenBeforeWord, wordBeforeWord, '', '', enclosingBlock);
+    }
+    if (token === '' || token === ';' || token === '}' || (token === '{' && enclosingBlock)) return 'declaration';
+    return 'expression';
   };
   const skipQuoted = (quote) => {
     while (index < source.length) {
@@ -161,10 +178,33 @@ function scanLexical(source) {
       while (index < source.length && isIdentifierContinue(source[index])) { index += 1; step(); }
       const word = source.slice(start, index);
       const propertyName = previousWasDot;
+      const tokenBeforeWord = previousToken;
+      const wordBeforeWord = previousWord;
+      const tokenBeforePreviousWord = previousTokenBeforeWord;
+      const wordBeforePreviousWord = previousWordBeforeToken;
       previousWasDot = false;
       previousWasProperty = propertyName;
+      previousTokenBeforeWord = tokenBeforeWord;
+      previousWordBeforeToken = wordBeforeWord;
       previousWord = word;
-      if (word === 'class' && !propertyName) pendingClassDeclaration = true;
+      if (word === 'class' && !propertyName) {
+        pendingClassBodyRole = declarationOrExpression(
+          tokenBeforeWord,
+          wordBeforeWord,
+          tokenBeforePreviousWord,
+          wordBeforePreviousWord,
+          stack.at(-1)?.type === 'brace' && stack.at(-1).block,
+        );
+      }
+      if (word === 'function' && !propertyName) {
+        pendingFunctionBodyRole = declarationOrExpression(
+          tokenBeforeWord,
+          wordBeforeWord,
+          tokenBeforePreviousWord,
+          wordBeforePreviousWord,
+          stack.at(-1)?.type === 'brace' && stack.at(-1).block,
+        );
+      }
       canStartRegex = !propertyName && isExpressionPrefixKeyword(word);
       previousToken = 'word';
       continue;
@@ -200,18 +240,31 @@ function scanLexical(source) {
     }
 
     if (character === '(') {
-      push({ type: 'paren', control: !previousWasProperty && isControlKeyword(previousWord) });
+      push({
+        type: 'paren',
+        control: !previousWasProperty && isControlKeyword(previousWord),
+        functionRole: !previousWasProperty && pendingFunctionBodyRole,
+      });
+      pendingFunctionBodyRole = null;
       canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '('; index += 1; continue;
     }
     if (character === '[') {
       push({ type: 'bracket' }); canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '['; index += 1; continue;
     }
     if (character === '{') {
+      const bodyRole = pendingClassBodyRole || pendingFunctionBodyRole;
       const block = previousWord === 'else' || previousWord === 'do' || previousWord === 'try'
-        || previousWord === 'catch' || previousWord === 'finally' || pendingClassDeclaration || previousToken === ')'
+        || previousWord === 'catch' || previousWord === 'finally' || bodyRole !== null || previousToken === ')'
         || previousToken === '}' || previousToken === ';' || previousToken === ':' || previousToken === '=>'
         || (previousToken === '' && stack.length === 0);
-      push({ type: 'brace', block }); pendingClassDeclaration = false; canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '{'; index += 1; continue;
+      push({
+        type: 'brace',
+        block,
+        closeCanStartRegex: bodyRole === 'expression' ? false : block,
+      });
+      pendingClassBodyRole = null;
+      pendingFunctionBodyRole = null;
+      canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '{'; index += 1; continue;
     }
     if (character === ')' || character === ']' || character === '}') {
       const expected = character === ')' ? 'paren' : character === ']' ? 'bracket' : 'brace';
@@ -225,8 +278,11 @@ function scanLexical(source) {
       }
       stack.pop();
       if (entry?.type === 'template') { mode = entry.returnMode; canStartRegex = false; }
-      else if (character === ')') canStartRegex = Boolean(entry?.control);
-      else if (character === '}') canStartRegex = Boolean(entry?.block);
+      else if (character === ')') {
+        canStartRegex = Boolean(entry?.control);
+        pendingFunctionBodyRole = entry?.functionRole || null;
+      }
+      else if (character === '}') canStartRegex = entry?.closeCanStartRegex ?? Boolean(entry?.block);
       else canStartRegex = false;
       previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = character; index += 1; continue;
     }

@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 414 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 422 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 371 spawn a validator child and 38 are in-process (the junction alias and direct oracles); there
+// 372 spawn a validator child and 50 are in-process (the junction alias and direct oracles); there
 // are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
 // probes (B5/B26). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -72,7 +72,7 @@ const failures = [];
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 414;
+const CONTROL_REGISTRY_TOTAL = 422;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -3953,6 +3953,46 @@ for (const [number, replacement, label] of completionLoopMutations) {
   const passed = violations.length === 1 && violations[0] === null;
   if (!passed) failures.push(`Control ${number}: actual-loop ${label} mutation was not rejected (got ${JSON.stringify(violations)})`);
   completeCurrentControlScope(number, passed);
+}
+
+// Controls 415-422: a function/class expression closes an expression, so the following slash is
+// division and a live helper/root mutation must remain visible.  The paired declaration forms
+// close a statement, so their following slash starts a regexp and the same spelling is masked.
+// These probes exercise anonymous and named functions/classes, then mutate the real completion
+// loop and workflow arrays to keep the regression at the actual source gates rather than in
+// isolated lexer examples.
+observeControls({ start: 415, end: 422 });
+for (const [number, source, expected] of [
+  [415, 'const fn415 = function () {} / completeCurrentControlScope(415, true) / 2;', [415]],
+  [416, 'const fn416 = function named416() {} / completeCurrentControlScope(416, true) / 2;', [416]],
+  [417, 'const class417 = class {} / completeCurrentControlScope(417, true) / 2;', [417]],
+  [418, 'const class418 = class Named418 {} / completeCurrentControlScope(418, true) / 2;', [418]],
+  [419, 'function declared419() {} / completeCurrentControlScope(419, true) / 2;', []],
+  [420, 'class Declared420 {} / completeCurrentControlScope(420, true) / 2;', []],
+]) {
+  const actual = literalTrueCompletionDiagnostics(source).map(({ id }) => id);
+  const passed = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!passed) failures.push(`Control ${number}: function/class declaration-expression slash role mismatch (got ${JSON.stringify(actual)})`);
+  completeCurrentControlScope(number, passed);
+}
+{
+  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
+    + fixtureSource.slice(completionMutationMarkerIndex).replace(
+      completionMutationMarker,
+      'const expression421 = function () {} / completeCurrentControlScope(number, true) / 2;',
+    );
+  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
+  const passed = violations.length === 1 && violations[0] === null;
+  if (!passed) failures.push(`Control 421: actual-loop function-expression mutation was not rejected (got ${JSON.stringify(violations)})`);
+  completeCurrentControlScope(421, passed);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'MODULES',
+    'const expression422 = class Named422 {} / MODULES.push({}) / 2;',
+  ));
+  expectFixture(result, 'Control 422: actual workflow class-expression mutation is rejected', 1, ['workflow'], 422);
 }
 
 for (const fixture of cases) {
