@@ -13,7 +13,9 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureSource = fs.readFileSync(path.join(root, 'dev', 'validate-fixtures.mjs'), 'utf8');
-const controlId = Number.parseInt(process.argv[2] || '', 10);
+const rawControlId = process.argv[2] || '';
+const canonicalControlId = /^(?:0|[1-9]\d*)$/u.test(rawControlId) ? Number(rawControlId) : NaN;
+const controlId = Number.isSafeInteger(canonicalControlId) ? canonicalControlId : NaN;
 const supportedControls = new Set([399, 400, 401, 402, 409, 410, 411, 412, 413, 414, 421, 429, 439, 445, 446]);
 
 function completionMutation(replacement) {
@@ -30,33 +32,38 @@ function checkControl(id) {
   if (id === 399) {
     try {
       literalTrueCompletionDiagnostics('('.repeat(100_001));
-      return false;
-    } catch {
-      return true;
+      return { ok: false, observation: { kind: 'unexpected-success' } };
+    } catch (error) {
+      const observation = { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) };
+      return { ok: observation.message === 'JavaScript lexical nesting exceeded its deterministic budget', observation };
     }
   }
   if (id === 400) {
     try {
       literalTrueCompletionDiagnostics('('.repeat(50_000) + ']'.repeat(50_000));
-      return false;
+      return { ok: false, observation: { kind: 'unexpected-success' } };
     } catch (error) {
-      return /delimiter mismatch/u.test(error.message);
+      const observation = { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) };
+      return { ok: observation.message === 'JavaScript lexical delimiter mismatch', observation };
     }
   }
   if (id === 401) {
     try {
-      literalTrueCompletionDiagnostics('x'.repeat(2_000_000));
-      return true;
-    } catch {
-      return false;
+      const inputLength = 2_000_000;
+      const diagnostics = literalTrueCompletionDiagnostics('x'.repeat(inputLength));
+      const observation = { kind: 'diagnostics', inputLength, ids: diagnostics.map(({ id: violationId }) => violationId) };
+      return { ok: observation.ids.length === 0, observation };
+    } catch (error) {
+      return { ok: false, observation: { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) } };
     }
   }
   if (id === 402) {
     try {
       literalTrueCompletionDiagnostics('x'.repeat(2_000_001));
-      return false;
+      return { ok: false, observation: { kind: 'unexpected-success' } };
     } catch (error) {
-      return /deterministic budget/u.test(error.message);
+      const observation = { kind: 'error', name: error?.name || 'Error', message: error?.message || String(error) };
+      return { ok: observation.message === 'JavaScript lexical scan exceeded its deterministic budget', observation };
     }
   }
 
@@ -74,25 +81,46 @@ function checkControl(id) {
     446: 'const fieldMutation446 = class { class = {} / completeCurrentControlScope(number, true) / 2; };',
   };
   const mutated = completionMutation(replacements[id]);
-  if (mutated === null) return false;
+  if (mutated === null) return { ok: false, observation: { kind: 'mutation-not-applied' } };
   const violations = literalTrueCompletionViolations(mutated);
-  return violations.length === 1 && violations[0] === null;
+  const observation = { kind: 'completion-violations', ids: violations };
+  return { ok: observation.ids.length === 1 && observation.ids[0] === null, observation };
 }
 
 if (!supportedControls.has(controlId)) {
-  console.error(`ERROR: unsupported lexer probe control ${process.argv[2] || '<missing>'}`);
+  console.error(`ERROR: unsupported lexer probe control ${rawControlId || '<missing>'}`);
   process.exit(2);
 }
 
-let passed = false;
+const initialMemory = process.memoryUsage();
+let result;
 try {
-  passed = checkControl(controlId);
+  result = checkControl(controlId);
 } catch (error) {
   console.error(`ERROR: lexer probe ${controlId} threw ${error?.name || 'Error'}: ${error?.message || error}`);
   process.exit(1);
 }
-if (!passed) {
+
+// The parent independently validates controlId and observation.  Do not emit a freely chosen
+// success sentence: a mutated predicate may still exit zero, but it cannot forge the semantic
+// observation expected for the selected control without failing that parent oracle.
+function telemetry(initialMemory) {
+  const memory = process.memoryUsage();
+  const usage = typeof process.resourceUsage === 'function' ? process.resourceUsage() : null;
+  const maxRss = Number.isFinite(usage?.maxRSS) ? usage.maxRSS * 1024 : null;
+  return {
+    source: 'child',
+    terminalSample: true,
+    heapUsed: memory.heapUsed,
+    rss: memory.rss,
+    peakHeapUsed: Math.max(initialMemory.heapUsed, memory.heapUsed),
+    peakHeapSource: 'terminal-boundary-sample',
+    peakRss: maxRss === null ? Math.max(initialMemory.rss, memory.rss) : Math.max(initialMemory.rss, memory.rss, maxRss),
+    peakRssSource: maxRss === null ? 'boundary-sample' : 'process.resourceUsage.maxRSS',
+  };
+}
+console.log(JSON.stringify({ controlId, observation: result.observation, telemetry: telemetry(initialMemory) }));
+if (!result.ok) {
   console.error(`ERROR: lexer probe ${controlId} did not match its deterministic oracle`);
   process.exit(1);
 }
-console.log(`lexer probe passed (control ${controlId})`);

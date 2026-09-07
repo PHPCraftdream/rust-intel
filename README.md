@@ -88,7 +88,9 @@ matrix for installer interruption/restart behavior. Its current-Bash and Node re
 same- and cross-operation execution evidence; cross-operation cases use a clean opposite-operation
 expected side plus a subject-only corruption calibration. These results do not by themselves
 establish failed-list propagation, timeout coverage, or the full Bash 3.2/PowerShell runtime
-contract.
+contract. Focused lexer children return JSON containing the control ID, semantic observation, and
+child-owned heap/RSS telemetry; the parent validates the observation independently, and a fatal or
+killed child is reported as having no terminal sample.
 
 ```
 rust-intel/
