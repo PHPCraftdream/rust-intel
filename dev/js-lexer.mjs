@@ -53,14 +53,12 @@ function scanLexical(source) {
   // a declaration statement or an expression.  Keep that role attached to the construct rather
   // than inferring it from the `)`/identifier immediately before the body: both forms have the
   // same surface tokens, but `function () {} / value` is division while `function f() {} /re/` is
-  // a regexp statement.  Class bodies are keyed by the delimiter depth at which their complete
-  // header started.  This matters for `class extends mixin({}) {}` and
-  // `class extends (class {}) {}`: braces in the heritage expression belong to nested delimiter
-  // frames and must not consume the outer class's pending body role.
-  // One short stack per delimiter depth keeps lookup and removal O(1) even for adversarial
-  // source containing many unfinished class keywords; do not scan all pending constructs here.
-  const pendingClassConstructs = new Map();
-  let pendingFunctionBodyRole = null;
+  // a regexp statement.  Keep one ordered pending-construct stack per delimiter depth for both
+  // classes and functions. In `class extends function() {}` the function owns the first brace,
+  // while the outer class owns the later one; nested function-body braces leave that class pending.
+  // One short stack per depth keeps lookup and removal O(1) even for adversarial source; do not
+  // scan all pending constructs here.
+  const pendingConstructs = new Map();
   let previousWordBeforeToken = '';
   let previousTokenBeforeWord = '';
   let previousToken = '';
@@ -193,8 +191,9 @@ function scanLexical(source) {
       previousWordBeforeToken = wordBeforeWord;
       previousWord = word;
       if (word === 'class' && !propertyName) {
-        const constructs = pendingClassConstructs.get(stack.length) || [];
+        const constructs = pendingConstructs.get(stack.length) || [];
         constructs.push({
+          type: 'class',
           bodyRole: declarationOrExpression(
             tokenBeforeWord,
             wordBeforeWord,
@@ -203,16 +202,21 @@ function scanLexical(source) {
             stack.at(-1)?.type === 'brace' && stack.at(-1).block,
           ),
         });
-        pendingClassConstructs.set(stack.length, constructs);
+        pendingConstructs.set(stack.length, constructs);
       }
       if (word === 'function' && !propertyName) {
-        pendingFunctionBodyRole = declarationOrExpression(
-          tokenBeforeWord,
-          wordBeforeWord,
-          tokenBeforePreviousWord,
-          wordBeforePreviousWord,
-          stack.at(-1)?.type === 'brace' && stack.at(-1).block,
-        );
+        const constructs = pendingConstructs.get(stack.length) || [];
+        constructs.push({
+          type: 'function',
+          bodyRole: declarationOrExpression(
+            tokenBeforeWord,
+            wordBeforeWord,
+            tokenBeforePreviousWord,
+            wordBeforePreviousWord,
+            stack.at(-1)?.type === 'brace' && stack.at(-1).block,
+          ),
+        });
+        pendingConstructs.set(stack.length, constructs);
       }
       canStartRegex = !propertyName && isExpressionPrefixKeyword(word);
       previousToken = 'word';
@@ -249,24 +253,26 @@ function scanLexical(source) {
     }
 
     if (character === '(') {
+      const constructs = pendingConstructs.get(stack.length);
+      const functionConstruct = constructs?.at(-1)?.type === 'function' ? constructs.pop() : null;
+      if (constructs?.length === 0) pendingConstructs.delete(stack.length);
       push({
         type: 'paren',
         control: !previousWasProperty && isControlKeyword(previousWord),
-        functionRole: !previousWasProperty && pendingFunctionBodyRole,
+        functionRole: !previousWasProperty && functionConstruct?.bodyRole,
       });
-      pendingFunctionBodyRole = null;
       canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '('; index += 1; continue;
     }
     if (character === '[') {
       push({ type: 'bracket' }); canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '['; index += 1; continue;
     }
     if (character === '{') {
-      // Only a class construct at the current delimiter depth can own this brace.  A brace in
-      // `extends mixin({})`, an object literal, or a nested class is therefore left on its own
+      // Only the most recent construct at the current delimiter depth can own this brace. A brace
+      // in `extends mixin({})`, an object literal, or a nested class is therefore left on its own
       // frame; the outer class role is consumed by the later body brace.
-      const constructs = pendingClassConstructs.get(stack.length);
-      const classConstruct = constructs?.at(-1) || null;
-      const bodyRole = classConstruct?.bodyRole || pendingFunctionBodyRole;
+      const constructs = pendingConstructs.get(stack.length);
+      const construct = constructs?.at(-1) || null;
+      const bodyRole = construct?.bodyRole || null;
       const block = previousWord === 'else' || previousWord === 'do' || previousWord === 'try'
         || previousWord === 'catch' || previousWord === 'finally' || bodyRole !== null || previousToken === ')'
         || previousToken === '}' || previousToken === ';' || previousToken === ':' || previousToken === '=>'
@@ -276,11 +282,10 @@ function scanLexical(source) {
         block,
         closeCanStartRegex: bodyRole === 'expression' ? false : block,
       });
-      if (classConstruct) {
+      if (construct) {
         constructs.pop();
-        if (constructs.length === 0) pendingClassConstructs.delete(stack.length);
+        if (constructs.length === 0) pendingConstructs.delete(stack.length);
       }
-      pendingFunctionBodyRole = null;
       canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '{'; index += 1; continue;
     }
     if (character === ')' || character === ']' || character === '}') {
@@ -297,7 +302,11 @@ function scanLexical(source) {
       if (entry?.type === 'template') { mode = entry.returnMode; canStartRegex = false; }
       else if (character === ')') {
         canStartRegex = Boolean(entry?.control);
-        pendingFunctionBodyRole = entry?.functionRole || null;
+        if (entry?.functionRole) {
+          const constructs = pendingConstructs.get(stack.length) || [];
+          constructs.push({ type: 'function', bodyRole: entry.functionRole });
+          pendingConstructs.set(stack.length, constructs);
+        }
       }
       else if (character === '}') canStartRegex = entry?.closeCanStartRegex ?? Boolean(entry?.block);
       else canStartRegex = false;
