@@ -68,6 +68,30 @@ const detectors = new Map([
 ]);
 const failures = [];
 
+// The ordinary fixture output stays one concise line.  Set RUST_INTEL_FIXTURE_PROGRESS=1 when
+// diagnosing a slow or killed run: each live control scope and child probe then emits a bounded
+// attribution line with the last completed control and current heap/RSS.  Nested fixture copies
+// disable this flag below so a parent probe never retains a recursively multiplied trace.
+const fixtureProgress = process.env.RUST_INTEL_FIXTURE_PROGRESS === '1';
+let activeControlScope = null;
+let peakHeapUsed = 0;
+let peakRss = 0;
+const progressMemory = () => {
+  if (!fixtureProgress) return '';
+  const { heapUsed, rss } = process.memoryUsage();
+  peakHeapUsed = Math.max(peakHeapUsed, heapUsed);
+  peakRss = Math.max(peakRss, rss);
+  return ` heap=${heapUsed} rss=${rss} peakHeap=${peakHeapUsed} peakRss=${peakRss}`;
+};
+const controlDescription = (value) => Number.isSafeInteger(value)
+  ? String(value)
+  : value && Number.isSafeInteger(value.start) && Number.isSafeInteger(value.end)
+    ? `${value.start}-${value.end}`
+    : JSON.stringify(value);
+const progress = (message) => {
+  if (fixtureProgress) console.error(`[fixture-progress] ${message}${progressMemory()}`);
+};
+
 // Runtime control registry. The executable registry is deliberately independent of source labels:
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
@@ -153,11 +177,14 @@ if (scopeHeaderTotal !== CONTROL_REGISTRY_TOTAL) {
 }
 
 function observeControls(value) {
+  activeControlScope = controlDescription(value);
+  progress(`start controls=${activeControlScope}`);
   controlRegistry.register(value);
 }
 
 function completeCurrentControlScope(controlId, outcome) {
   controlRegistry.complete(controlId, outcome);
+  progress(`complete control=${controlId} outcome=${Boolean(outcome)}`);
 }
 
 // Structural contract: a fixture may not cite a category that has been renamed away or that no
@@ -269,17 +296,20 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
       fs.writeFileSync(filePath, mutated);
     }
     const script = spawnOptions.script || 'dev/validate.mjs';
-    const run = spawnSync(process.execPath, [path.join(tmpRoot, ...script.split('/'))], {
+    const childPath = path.join(tmpRoot, ...script.split('/'));
+    progress(`spawn command=${JSON.stringify([process.execPath, childPath])} controls=${activeControlScope || 'unknown'} timeout=${spawnOptions.timeoutMs ?? 30_000}`);
+    const run = spawnSync(process.execPath, [childPath], {
       encoding: 'utf8',
       timeout: spawnOptions.timeoutMs ?? 30_000,
       env: {
         ...process.env,
         RUST_INTEL_SKIP_NESTED_FIXTURES: '1',
+        RUST_INTEL_FIXTURE_PROGRESS: '0',
         ...(spawnOptions.env || {}),
       },
     });
     const error = run.error || null;
-    return {
+    const result = {
       skipped: false,
       status: run.status,
       signal: run.signal,
@@ -288,6 +318,8 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
       executionFailure: Boolean(error || run.signal || run.status === null),
       output: `${run.stdout || ''}${run.stderr || ''}`,
     };
+    progress(`child command=${JSON.stringify([process.execPath, childPath])} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} outputBytes=${Buffer.byteLength(result.output)}`);
+    return result;
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -4162,4 +4194,5 @@ if (failures.length) {
   console.error(failures.map((failure) => `ERROR: ${failure}`).join('\n'));
   process.exit(1);
 }
+progress(`finished controls=${observedControls.size}`);
 console.log(`fixture validation passed (${cases.length} cases; ${observedControls.size} controls executed)`);
