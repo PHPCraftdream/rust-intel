@@ -6,9 +6,13 @@ export function isJsLineTerminator(character) {
   return character === '\n' || character === '\r' || character === '\u2028' || character === '\u2029';
 }
 
-const lexicalCache = new Map();
 const MAX_LEXICAL_OPERATIONS = 2_000_000;
 const MAX_LEXICAL_DEPTH = 100_000;
+// Keep at most the latest scan.  The fixture runner invokes the lexer repeatedly on large,
+// short-lived mutated sources; an unbounded source->mask Map retained every one of those masks
+// until process exit and made the full control workload run out of memory.
+let lexicalCacheSource = null;
+let lexicalCacheResult = null;
 
 function isIdentifierStart(character) {
   return character !== undefined && /[A-Za-z_$\p{ID_Start}]/u.test(character);
@@ -31,8 +35,7 @@ function isExpressionPrefixKeyword(word) {
 }
 
 function scanLexical(source) {
-  const cached = lexicalCache.get(source);
-  if (cached) return cached;
+  if (source === lexicalCacheSource && lexicalCacheResult) return lexicalCacheResult;
   const regexStarts = new Uint8Array(source.length);
   const masked = source.split('');
   const blank = (position) => {
@@ -190,7 +193,13 @@ function scanLexical(source) {
       previousTokenBeforeWord = tokenBeforeWord;
       previousWordBeforeToken = wordBeforeWord;
       previousWord = word;
-      if (word === 'class' && !propertyName) {
+      // `class` and `function` are valid public class-element names.  At the class-body
+      // element depth they are IdentifierName tokens, not construct keywords; otherwise a
+      // field initializer such as `function = {} / value` leaves a false pending construct and
+      // masks the division as a regexp.  A nested method/static-block body is not classBody, so
+      // real declarations there still use the normal construct tracking below.
+      const classElementName = stack.at(-1)?.type === 'brace' && stack.at(-1).classBody;
+      if (word === 'class' && !propertyName && !classElementName) {
         const constructs = pendingConstructs.get(stack.length) || [];
         constructs.push({
           type: 'class',
@@ -204,7 +213,7 @@ function scanLexical(source) {
         });
         pendingConstructs.set(stack.length, constructs);
       }
-      if (word === 'function' && !propertyName) {
+      if (word === 'function' && !propertyName && !classElementName) {
         const constructs = pendingConstructs.get(stack.length) || [];
         constructs.push({
           type: 'function',
@@ -280,6 +289,7 @@ function scanLexical(source) {
       push({
         type: 'brace',
         block,
+        classBody: construct?.type === 'class' && bodyRole !== null,
         closeCanStartRegex: bodyRole === 'expression' ? false : block,
       });
       if (construct) {
@@ -327,7 +337,8 @@ function scanLexical(source) {
     index += ['=>', '&&', '||', '??', '**', '==', '!=', '<=', '>=', '<<', '>>', '?.'].includes(two) ? 2 : 1;
   }
   const result = { regexStarts, masked: masked.join(''), lineCommentRanges };
-  lexicalCache.set(source, result);
+  lexicalCacheSource = source;
+  lexicalCacheResult = result;
   return result;
 }
 

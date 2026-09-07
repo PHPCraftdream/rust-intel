@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 440 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 449 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
@@ -72,7 +72,7 @@ const failures = [];
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 440;
+const CONTROL_REGISTRY_TOTAL = 449;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -4072,6 +4072,65 @@ for (const [number, source, expected] of [
     'const expression440 = class extends function Named440() { { value: 1; } } {} / AUDIT_UNITS.push({}) / 2;',
   ));
   expectFixture(result, 'Control 440: actual workflow direct function heritage mutation is rejected', 1, ['workflow'], 440);
+}
+
+// Controls 441-444: `class` and `function` remain valid public class-element names.  They must
+// not be pushed onto the construct stack merely because their spelling matches a keyword: the
+// expression twins expose a following division/helper, while declaration twins retain the
+// declaration-close regexp role used by the preceding construct controls.
+observeControls({ start: 441, end: 444 });
+for (const [number, source, expected] of [
+  [441, 'const expression441 = class { function = 1; } / completeCurrentControlScope(441, true) / 2;', [441]],
+  [442, 'class Declaration442 { function = 1; } / completeCurrentControlScope(442, true) / 2;', []],
+  [443, 'const expression443 = class { class = 1; } / completeCurrentControlScope(443, true) / 2;', [443]],
+  [444, 'class Declaration444 { class = 1; } / completeCurrentControlScope(444, true) / 2;', []],
+]) {
+  const actual = literalTrueCompletionViolations(source);
+  const passed = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!passed) failures.push(`Control ${number}: keyword-named class field slash role mismatch (got ${JSON.stringify(actual)})`);
+  completeCurrentControlScope(number, passed);
+}
+
+// Controls 445-446: mutate the real completion loop with each keyword-named field spelling.  A
+// scanner that still treats the field as a construct hides the literal-true helper as a regexp.
+observeControls({ start: 445, end: 446 });
+for (const [number, keyword] of [[445, 'function'], [446, 'class']]) {
+  const replacement = `const fieldMutation${number} = class { ${keyword} = {} / completeCurrentControlScope(number, true) / 2; };`;
+  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
+    + fixtureSource.slice(completionMutationMarkerIndex).replace(completionMutationMarker, replacement);
+  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
+  const passed = violations.length === 1 && violations[0] === null;
+  if (!passed) failures.push(`Control ${number}: actual-loop ${keyword}-field mutation was not rejected (got ${JSON.stringify(violations)})`);
+  completeCurrentControlScope(number, passed);
+}
+
+// Controls 447-448: the same field spellings must remain visible when inserted into the live
+// workflow roots.  This protects the mutation gate from passing only because an isolated fixture
+// string happened to exercise the corrected lexer path.
+observeControls({ start: 447, end: 448 });
+for (const [number, keyword, rootName] of [[447, 'function', 'MODULES'], [448, 'class', 'AUDIT_UNITS']]) {
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    rootName,
+    `const fieldMutation${number} = class { ${keyword} = {} / ${rootName}.push({}) / 2; };`,
+  ));
+  expectFixture(result, `Control ${number}: actual workflow ${keyword}-field mutation is rejected`, 1, ['workflow'], number);
+}
+
+// Control 449: lexical scans may retain only one source/result pair, never an unbounded
+// source->mask Map.  This source-level invariant is deterministic and catches a future
+// reintroduction of the retention that made the 440-control child workload OOM.
+observeControls(449);
+{
+  const lexerSource = fs.readFileSync(path.join(root, 'dev', 'js-lexer.mjs'), 'utf8');
+  const scanStart = lexerSource.indexOf('function scanLexical');
+  const modulePrelude = scanStart < 0 ? lexerSource : lexerSource.slice(0, scanStart);
+  const hasUnboundedLexicalCache = /new Map\s*\(\)/u.test(modulePrelude);
+  const hasBoundedLexicalCache = /let lexicalCacheSource\s*=\s*null/u.test(modulePrelude)
+    && /let lexicalCacheResult\s*=\s*null/u.test(modulePrelude);
+  const passed = scanStart >= 0 && !hasUnboundedLexicalCache && hasBoundedLexicalCache;
+  if (!passed) failures.push('Control 449: JavaScript lexical helper cache is not a bounded one-entry cache');
+  completeCurrentControlScope(449, passed);
 }
 
 for (const fixture of cases) {
