@@ -30,17 +30,15 @@ first-journal, one-forward-replacement, sparse-index, and exact release-calibrat
 round-37 fixing pass makes backup restoration restartable through explicit journal states and
 adds a separate `dev/test-installer-recovery.mjs` boundary-matrix helper. The round-38 fixing pass
 implemented the reported rollback-depth, restore-hook-index, fresh-fixture, concrete-inventory,
-sibling-cleanup, and brace-bearing `extends` cases. Round 39 nevertheless found that the broader
-release contract remains incomplete: POSIX process substitution can hide a failed generated
-inventory; Bash and PowerShell do not recover the opposite operation's transaction namespace; the
-Bash-uninstall cleanup oracle and replacement inventory are not independent; child and job
-timeouts are absent; Bash 3.2 runs only a smoke boundary; and direct function heritage can still
-hide live lexer mutations. Node and current-Bash same-operation matrices pass locally, but that
-evidence does not close the listed gaps or pending PowerShell runtime coverage. The documented
-Windows contract remains process interruption, not sudden-power-loss durability; caught-error
-rollback retains ambiguous states for manual recovery instead of silently deleting or guessing at
-owned paths. No current-head CI result, version bump, tag, push, or publication is implied by this
-unreleased entry.
+sibling-cleanup, and brace-bearing `extends` cases. The round-39 fixing pass (`f5a655e`, `1363cc8`,
+and `7042ce8`) then implements direct function-heritage ordering, checked POSIX inventories,
+cross-operation transaction recovery, operation-correct cleanup, independently declared
+replacement inventory, finite child/release-version timeouts, and generated Bash 3.2/PowerShell
+matrix execution. This fixing head has not yet received an independent HS follow-up, so it is not a
+closure or release-readiness claim. The documented Windows contract remains process interruption,
+not sudden-power-loss durability; caught-error rollback retains ambiguous states for manual recovery
+instead of silently deleting or guessing at owned paths. No current-head CI result, version bump,
+tag, push, or publication is implied by this unreleased entry.
 
 > Every `docs/reviews/*.md` citation below points to a file tracked in this **repository** (stable via a commit-pinned link, e.g. `https://github.com/PHPCraftdream/rust-intel/tree/1591d39/docs/reviews`) — not to a file included in the **npm package**: `docs/reviews/` is not in `package.json`'s `files` allowlist, so clone or browse the repository for the underlying reports. The package also explicitly lists the two license files, while npm includes package metadata, README, and applicable license files under its standard package rules.
 
@@ -104,6 +102,17 @@ cleanup oracles, finite child/job timeouts, full Bash 3.2 coverage, and PowerShe
 remain open. Full Node and current-Bash same-operation matrices pass locally, but they are not a
 release gate for those missing dimensions. No current-head CI result, version bump, tag, push, or
 publication is claimed.
+
+**Round-39 fixing disposition (current, pending independent review).** `f5a655e` adds ordered
+same-depth class/function heritage tracking and controls 423–440, bringing the fixture suite to
+440 controls (374 child-process and 66 in-process). `1363cc8` adds checked POSIX inventory
+materialization, cross-operation transaction recovery for Bash/PowerShell, operation-correct
+cleanup, finite child/release-version subprocess timeouts, CI job timeouts/sharding, and generated
+Bash 3.2/PowerShell matrix execution. `7042ce8` makes replacement-hook inventory checks
+independent of the hook used to seed them. `419fe32` records the pre-fix round-39 release state.
+These commits address the round-39 P2/P3 implementation findings, but the current fixing head is
+not yet independently HS-reviewed; no closure, current-head CI, version bump, tag, push, or
+publication is claimed until that follow-up is complete.
 
 ## [0.6.0] — 2026-08-19
 
