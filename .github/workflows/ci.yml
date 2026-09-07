@@ -53,6 +53,7 @@ jobs:
           node --check dev/semver.mjs
           node --check dev/sync-mirror.mjs
           node --check dev/snapshot-install.mjs
+          node --check dev/test-installer-recovery.mjs
           node --check skill/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
@@ -125,41 +126,90 @@ jobs:
           node dev/snapshot-install.mjs "$target" > "$root/after.json"; cmp "$root/known-good.json" "$root/after.json"
           node bin/install-codex.js --user-dir "$target" --uninstall
           test ! -e "$target/rust-intel"; test "$(cat "$target/other/sibling.md")" = keep
-      - name: Smoke-test abrupt installer restart recovery
+      - name: Exhaustively test POSIX installer transaction boundaries
         shell: bash
         run: |
           set -euo pipefail
-          root="$(mktemp -d)"; trap 'rm -rf "$root"' EXIT
-          target="$root/claude"
-          mkdir -p "$target/skills/rust-intel" "$target/commands"
-          printf 'old\n' > "$target/skills/rust-intel/SKILL.md"
-          printf 'keep\n' > "$target/commands/keep.md"
-          if RUST_INTEL_INSTALL_ABORT_AT=after-backup-journal-5 CLAUDE_CONFIG_DIR="$target" node bin/install.js --user; then
-            echo 'abrupt Node install exit was accepted' >&2; exit 1
-          else
-            test "$?" -eq 86
-          fi
-          CLAUDE_CONFIG_DIR="$target" node bin/install.js --user
-          test -f "$target/skills/rust-intel/SKILL.md"
-          CLAUDE_CONFIG_DIR="$target" node bin/install.js --user --uninstall
-          mkdir -p "$target/skills/rust-intel"
-          printf 'old\n' > "$target/skills/rust-intel/SKILL.md"
-          if RUST_INTEL_INSTALL_ABORT_AT=after-backup-journal-0 CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh; then
-            echo 'abrupt Bash install exit was accepted' >&2; exit 1
-          else
-            test "$?" -eq 86
-          fi
-          CLAUDE_CONFIG_DIR="$target" ./rust-cc-install.sh
-          test -f "$target/skills/rust-intel/SKILL.md"
-          CLAUDE_CONFIG_DIR="$target" ./rust-cc-uninstall.sh
-          codex="$root/codex"; mkdir -p "$codex/rust-intel"; printf 'old\n' > "$codex/rust-intel/SKILL.md"
-          if RUST_INTEL_INSTALL_ABORT_AT=after-backup-journal-0 node bin/install-codex.js --user-dir "$codex"; then
-            echo 'abrupt Codex install exit was accepted' >&2; exit 1
-          else
-            test "$?" -eq 86
-          fi
-          node bin/install-codex.js --user-dir "$codex"
-          node bin/install-codex.js --user-dir "$codex" --uninstall
+          helper="$GITHUB_WORKSPACE/dev/test-installer-recovery.mjs"
+          run_case() { node "$helper" "$1" "$2" "$3" "$4"; }
+
+          # The record order is deliberately explicit: Node Claude puts removals first, while
+          # the shell installers keep the public owned inventory order. Every listed boundary is
+          # required to exit exactly 86 and then produce the clean-run byte snapshot, including
+          # unrelated siblings. The sparse cases prove that compact backup counts cannot alias a
+          # nonzero owned record.
+          node_claude_backup=(0 1 2 3 4)
+          node_claude_replacements=(5 6 7 8)
+          node_codex_backup=(0)
+          node_codex_replacements=(0)
+          shell_backup=(0 1 2 3 4 5 6 7 8)
+          shell_replacements=(0 1 2 3)
+
+          install_matrix() {
+            local surface="$1" sparse_index="$2" replacement_index="$3"
+            local -a backups replacements
+            case "$surface" in
+              node-claude) backups=("${node_claude_backup[@]}"); replacements=("${node_claude_replacements[@]}" ) ;;
+              node-codex) backups=("${node_codex_backup[@]}"); replacements=("${node_codex_replacements[@]}" ) ;;
+              bash) backups=("${shell_backup[@]}"); replacements=("${shell_replacements[@]}" ) ;;
+              *) echo "unknown POSIX surface: $surface" >&2; return 1 ;;
+            esac
+            for boundary in before-journal after-journal before-commit after-commit before-cleanup after-cleanup; do
+              run_case "$surface" install upgrade "$boundary"
+            done
+            for index in "${backups[@]}"; do
+              for phase in before-backup after-backup-journal after-backup-rename; do
+                run_case "$surface" install upgrade "${phase}-${index}"
+              done
+            done
+            for index in "${replacements[@]}"; do
+              for phase in before-replacement after-replacement-journal after-replacement-rename; do
+                run_case "$surface" install upgrade "${phase}-${index}"
+              done
+            done
+            for boundary in before-journal after-journal before-commit after-commit before-cleanup after-cleanup; do
+              run_case "$surface" install fresh "$boundary"
+            done
+            if [[ "$surface" != node-codex ]]; then
+              for phase in before-backup after-backup-journal after-backup-rename; do
+                run_case "$surface" install sparse "${phase}-${sparse_index}"
+              done
+              for phase in before-replacement after-replacement-journal after-replacement-rename; do
+                run_case "$surface" install sparse "${phase}-${replacement_index}"
+              done
+            fi
+          }
+
+          uninstall_matrix() {
+            local surface="$1" sparse_index="$2"
+            local -a backups
+            case "$surface" in
+              node-claude) backups=("${node_claude_backup[@]}" ) ;;
+              node-codex) backups=("${node_codex_backup[@]}" ) ;;
+              bash) backups=("${shell_backup[@]}" ) ;;
+              *) echo "unknown POSIX surface: $surface" >&2; return 1 ;;
+            esac
+            for boundary in before-journal after-journal before-commit after-commit before-cleanup after-cleanup; do
+              run_case "$surface" uninstall upgrade "$boundary"
+            done
+            for index in "${backups[@]}"; do
+              for phase in before-backup after-backup-journal after-backup-rename; do
+                run_case "$surface" uninstall upgrade "${phase}-${index}"
+              done
+            done
+            if [[ "$surface" != node-codex ]]; then
+              for phase in before-backup after-backup-journal after-backup-rename; do
+                run_case "$surface" uninstall sparse "${phase}-${sparse_index}"
+              done
+            fi
+          }
+
+          install_matrix node-claude 1 5
+          uninstall_matrix node-claude 5
+          install_matrix node-codex 0 0
+          uninstall_matrix node-codex 0
+          install_matrix bash 5 0
+          uninstall_matrix bash 5
       - name: Installer overlap-guard execution tests
         shell: bash
         run: |
@@ -332,6 +382,37 @@ jobs:
           & $uninstall
           if (Test-Path -LiteralPath (Join-Path $target 'skills\rust-intel')) { throw 'PowerShell uninstall left skill files' }
           if (-not (Test-Path -LiteralPath (Join-Path $target 'commands\keep.md'))) { throw 'PowerShell uninstall removed unrelated sibling' }
+      - name: Exhaustively test PowerShell transaction boundaries
+        shell: pwsh
+        run: |
+          $helper = Join-Path $env:GITHUB_WORKSPACE 'dev\test-installer-recovery.mjs'
+          $backupIndices = 0..8
+          $replacementIndices = 0..3
+          function Invoke-RecoveryCase([string]$operation, [string]$mode, [string]$boundary) {
+            & node $helper 'powershell' $operation $mode $boundary
+            if ($LASTEXITCODE -ne 0) { throw "PowerShell $operation $mode $boundary recovery case failed with exit $LASTEXITCODE" }
+          }
+          foreach ($boundary in 'before-journal','after-journal','before-commit','after-commit','before-cleanup','after-cleanup') {
+            Invoke-RecoveryCase 'install' 'upgrade' $boundary
+            Invoke-RecoveryCase 'uninstall' 'upgrade' $boundary
+            Invoke-RecoveryCase 'install' 'fresh' $boundary
+          }
+          foreach ($index in $backupIndices) {
+            foreach ($phase in 'before-backup','after-backup-journal','after-backup-rename') {
+              Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
+              Invoke-RecoveryCase 'uninstall' 'upgrade' "$phase-$index"
+            }
+          }
+          foreach ($index in $replacementIndices) {
+            foreach ($phase in 'before-replacement','after-replacement-journal','after-replacement-rename') {
+              Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
+              Invoke-RecoveryCase 'install' 'fresh' "$phase-$index"
+            }
+          }
+          foreach ($phase in 'before-backup','after-backup-journal','after-backup-rename') {
+            Invoke-RecoveryCase 'install' 'sparse' "$phase-5"
+            Invoke-RecoveryCase 'uninstall' 'sparse' "$phase-5"
+          }
 
   bash-floor:
     name: Bash 3.2 installer floor
@@ -363,3 +444,5 @@ jobs:
           CLAUDE_CONFIG_DIR="$target" ./rust-cc-uninstall.sh
           test ! -e "$target/skills/rust-intel"
           test "$(cat "$target/commands/keep.md")" = unrelated
+          # Exercise a real child interruption and restart under the oldest advertised shell.
+          node dev/test-installer-recovery.mjs bash install sparse after-backup-rename-5
