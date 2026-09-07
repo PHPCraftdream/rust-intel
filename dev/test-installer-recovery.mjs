@@ -32,6 +32,7 @@ if (mode === 'fresh' && operation === 'uninstall') {
 const repo = path.resolve(import.meta.dirname, '..');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rust-intel-recovery-'));
 let invocation = 0;
+const crossOracleCorruptions = [];
 
 function write(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -281,6 +282,22 @@ function assertCleanTransactionParent(target, sibling) {
   }
 }
 
+// This is a harness-only corruption marker.  It is deliberately inserted after the interrupted
+// operation and before its recovery restart, then removed by the harness after the restart.  The
+// marker is not part of the installer contract; its purpose is to calibrate the cross-operation
+// oracle: the clean expected operation must never execute this hook, while a regression to the
+// old self-replaying expected path would leave a second, observable invocation here.
+function injectCrossOracleCorruption(target, boundary) {
+  if (!crossMode) return;
+  const marker = path.join(target, '.rust-intel-cross-oracle-corruption');
+  write(marker, `deterministic corruption at ${boundary}\n`);
+  crossOracleCorruptions.push({ marker, target, boundary });
+}
+
+function clearCrossOracleCorruption() {
+  for (const { marker } of crossOracleCorruptions) fs.rmSync(marker, { force: true });
+}
+
 function interruptAtBoundary(target, inventory, boundary, labelPrefix) {
   const restoreBoundary = /^(before-restore|after-restore-rename|after-restore-status)-/.test(boundary);
   const rollbackBoundary = /^(before-rollback|after-rollback)-/.test(boundary);
@@ -306,6 +323,7 @@ function interruptAtBoundary(target, inventory, boundary, labelPrefix) {
     const second = run(target, boundary === afterRestoreStatus ? boundary : secondBoundary);
     assertStatus(second, 86, `${labelPrefix} second restore interruption`);
     assertHook(second, boundary === afterRestoreStatus ? boundary : secondBoundary, `${labelPrefix} second restore interruption`);
+    injectCrossOracleCorruption(target, boundary);
     return;
   }
   const index = Number(boundary.match(/(\d+)$/)?.[1]);
@@ -315,6 +333,7 @@ function interruptAtBoundary(target, inventory, boundary, labelPrefix) {
   const interrupted = run(target, boundary, rollbackBoundary ? position + 1 : undefined);
   assertStatus(interrupted, 86, labelPrefix);
   assertHook(interrupted, boundary, labelPrefix);
+  injectCrossOracleCorruption(target, boundary);
 }
 
 try {
@@ -357,6 +376,7 @@ try {
       assertStatus(probe, 0, `nonexistent abort boundary ${boundary}`);
       throw new Error(`${surface} ${operation} ${mode} ${boundary}: boundary is not reachable; coverage case rejected`);
     }
+    const corruptionStart = crossOracleCorruptions.length;
     let expected;
     if (crossMode) {
       // The expected side is an independent semantic oracle: apply only the clean opposite
@@ -369,18 +389,18 @@ try {
       expected = snapshot(expectedTarget);
     } else expected = snapshot(expectedTarget);
     interruptAtBoundary(actualTarget, actualInventory, boundary, `${surface} ${operation} ${mode} ${boundary}`);
+    const injected = crossOracleCorruptions.slice(corruptionStart);
+    if (crossMode && (injected.length !== 1 || injected[0].target !== actualTarget || !present(injected[0].marker))) {
+      clearCrossOracleCorruption();
+      throw new Error(`${surface} ${operation}: cross-operation corruption hook did not run exactly once on the subject side`);
+    }
     const restarted = run(actualTarget, undefined, undefined, crossMode ? oppositeOperation : operation);
     assertStatus(restarted, 0, `${surface} ${operation} ${mode} ${boundary} ${crossMode ? 'cross-' : ''}restart`);
+    clearCrossOracleCorruption();
     const actualSnapshot = snapshot(actualTarget);
     if (actualSnapshot !== expected) throw new Error(`${surface} ${operation} ${mode} ${boundary}: restart did not produce clean-operation inventory\nexpected=${expected}\nactual=${actualSnapshot}`);
-    if (crossMode) {
-      // A deterministic mutation must be visible to the full-tree oracle. This counterfactual
-      // guards against an expected side that accidentally replays the subject's recovery path.
-      const corruption = path.join(actualTarget, '.rust-intel-recovery-counterfactual');
-      write(corruption, 'deterministic corruption\n');
-      const corruptedSnapshot = snapshot(actualTarget);
-      fs.rmSync(corruption, { force: true });
-      if (corruptedSnapshot === expected) throw new Error(`${surface} ${operation}: cross-operation oracle accepted deterministic recovery corruption`);
+    if (crossMode && (injected.length !== 1 || injected[0].target !== actualTarget)) {
+      throw new Error(`${surface} ${operation}: cross-operation oracle corruption was also applied to the expected side`);
     }
     for (const prefix of expectedTransactionPrefixes()) {
       const negativeTransaction = path.join(path.dirname(actualTarget), `${prefix}negative`);

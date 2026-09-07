@@ -134,6 +134,11 @@ code-only budget probes. The former cumulative-cache retention is fixed; clean o
 and exact-head CI evidence remain release gates. No current-head CI, version bump, tag, push, or
 publication is claimed.
 
+The round-40 mitigation state is intentionally qualified: the lazy code-only mask and focused
+lexer children bound cumulative retention and keep parser-heavy probes out of the long-lived
+fixture process, but the progress trace samples the parent and cannot prove the focused child's
+peak memory. A clean ordinary validator run and exact-head CI remain release gates.
+
 ## [0.6.0] — 2026-08-19
 
 **New category: §C12/§C12a — reinventing a solved problem instead of reaching for a world-recognized crate.** **MINOR:** a new numbered category (with a lettered infrastructure-tier sub-section), a new §A1 bullet, two trigger rows, one 🔴 escalation. Numbered category count **58 → 59**.
