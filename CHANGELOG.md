@@ -94,7 +94,7 @@ This release also closes out two prior commits that shipped without a changelog 
 
 **Rounds 20–21's two validator-conformance P3s are closed in the net architecture.** The anchored contract's shared `projectFenceOpener` feeds the fence mask, and invalid backtick-info lines are body-width failures rather than table-boundary false negatives; no standalone table-boundary detector remains. The NBSP arbitrary-table delimiter case is moot because non-anchored tables are outside the anchored contract, while surviving delimiter normalization still treats only the cmark-gfm ASCII whitespace class as table space. See `docs/reviews/latest-commits-review-round-20-2026-09-04-1206.md` findings 1–2 and `docs/reviews/latest-commits-review-round-21-2026-09-04-1228.md` carried P3 findings 1–2.
 
-**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, tracks class-body roles across brace-bearing `extends` expressions, and distinguishes keyword-named class fields with a bounded lexical cache. Function/class-expression division, direct function-heritage ordering, and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–449; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 449 controls, with 391 child-process controls and 58 in-process controls; resource-heavy lexer probes run in focused short-lived children with a lower bounded heap cap, and the 440-control/374-child/66-in-process split is historical to the round-40 review base at `8b2d576`. Installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
+**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, tracks class-body roles across brace-bearing `extends` expressions, and distinguishes keyword-named class fields with a bounded lexical cache. Function/class-expression division, direct function-heritage ordering, class-field initializer roles, and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–460; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 460 controls, with 397 child-process controls (380 validator-entrypoint and 17 focused lexer/helper children) and 63 in-process controls; the 449-control/391-child/58-in-process split is historical to the round-41 review base at `b907ded`. Installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Focused lexer children emit child-owned heap/RSS telemetry only with a terminal JSON sample; fatal or killed children have no terminal sample. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
 
 **Round-38 fixing disposition.** `2948c85` tracks class-body roles across brace-bearing `extends`
 expressions and adds the corresponding causal controls; `5d9e8a8` implements the reported installer
@@ -125,9 +125,9 @@ closes blank-only POSIX inventory acceptance and replaces the self-replaying cro
 single-prefix debris oracles with independent clean-operation and complete-prefix checks.
 `090844b` distinguishes keyword-named class fields and bounds the lexical cache, adding controls
 441–449. `81b5d60` adds the measured 45-minute timeout to `.github/workflows/npm-publish.yml`,
-corrects round-39 provenance, and qualifies the release-facing summaries. The current fixture
-header is 449 controls (391 child-process and 58 in-process); 440/374/66 remains historical to
-the round-40 review base at `8b2d576`. `7de2c56` adds opt-in per-control progress/peak-memory
+corrects round-39 provenance, and qualifies the release-facing summaries. The fixture header was
+449 controls (391 child-process and 58 in-process) at this historical disposition; 440/374/66
+remains historical to the round-40 review base at `8b2d576`. `7de2c56` adds opt-in per-control progress/peak-memory
 attribution and moves the resource-heavy lexer probes into focused short-lived children. The
 scanner's lazy typed UTF-16 mask avoids an unnecessary multi-million-element object allocation on
 code-only budget probes. The former cumulative-cache retention is fixed; clean ordinary validator
@@ -138,6 +138,19 @@ The round-40 mitigation state is intentionally qualified: the lazy code-only mas
 lexer children bound cumulative retention and keep parser-heavy probes out of the long-lived
 fixture process, but the progress trace samples the parent and cannot prove the focused child's
 peak memory. A clean ordinary validator run and exact-head CI remain release gates.
+
+**Round-41 fixing disposition (implemented, pending clean proof and HS follow-up).** `9a675f8`
+adds a bounded negative that would fail if the cross-operation oracle regressed to self-replay.
+`c5b959f` tracks class-element positions so genuine function expressions in field initializers
+remain visible, and adds controls 449–457 for ordinary/static fields, workflow mutations, and the
+bounded-cache invariant. `322a034` makes focused helper outcomes structured and canonical, adding
+controls 458–460 while preserving child-owned terminal heap/RSS samples and treating fatal or
+killed children as having no terminal sample. The current
+fixture header is 460 controls: 397 child-process controls (380 validator-entrypoint and 17 focused
+lexer/helper children) plus 63 in-process controls; the 449-control/391-child/58-in-process split
+is historical to `b907ded`. A clean ordinary `npm run validate`, clean Node recovery-matrix
+memory evidence, independent HS review, and exact-head CI remain required; no current-head CI,
+version bump, tag, push, or publication is claimed.
 
 ## [0.6.0] — 2026-08-19
 

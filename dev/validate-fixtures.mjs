@@ -319,6 +319,8 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
       timedOut: error?.code === 'ETIMEDOUT',
       error: error ? `${error.code || error.name || 'spawn error'}: ${error.message}` : null,
       executionFailure: Boolean(error || run.signal || run.status === null),
+      stdout: run.stdout || '',
+      stderr: run.stderr || '',
       output: `${run.stdout || ''}${run.stderr || ''}`,
     };
     progress(`child command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} outputBytes=${Buffer.byteLength(result.output)}`);
@@ -4208,7 +4210,7 @@ observeControls(458);
 {
   const helperContract = [
     /const canonicalControlId = \/\^\(\?:0\|\[1-9\]\\d\*\)\$\/u\.test\(rawControlId\)/u,
-    /JSON\.stringify\(\{ controlId, observation: result\.observation, telemetry: telemetry\(\) \}\)/u,
+    /JSON\.stringify\(\{ controlId, observation: result\.observation, telemetry: telemetry\(initialMemory\) \}\)/u,
     /terminalSample: true/u,
     /source: 'child'/u,
   ];
