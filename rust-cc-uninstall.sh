@@ -69,12 +69,14 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
 fi
 
 abrupt_abort() {
-    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
+    if [[ -n "${RUST_INTEL_INSTALL_ABORT_LOG:-}" ]]; then printf '%s\n' "$1" >> "$RUST_INTEL_INSTALL_ABORT_LOG"; fi
+    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then trap - EXIT; exit 86; fi
     return 0
 }
 
 write_recovery_status() {
-    local journal="$1" index="$2" status="$3" temporary="$journal.tmp"
+    local journal="$1" index="$2" status="$3"
+    local temporary="$journal.tmp"
     awk -v wanted="$index" -v replacement="$status" 'BEGIN { FS = OFS = "\t" } $1 == "record" && $2 == wanted { $3 = replacement } { print }' "$journal" > "$temporary"
     mv -- "$temporary" "$journal"
 }

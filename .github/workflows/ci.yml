@@ -132,107 +132,18 @@ jobs:
           set -euo pipefail
           helper="$GITHUB_WORKSPACE/dev/test-installer-recovery.mjs"
           run_case() { node "$helper" "$1" "$2" "$3" "$4"; }
-
-          # The record order is deliberately explicit: Node Claude puts removals first, while
-          # the shell installers keep the public owned inventory order. Every listed boundary is
-          # required to exit exactly 86 and then produce the clean-run byte snapshot, including
-          # unrelated siblings. The sparse cases prove that compact backup counts cannot alias a
-          # nonzero owned record.
-          node_claude_backup=(0 1 2 3 4)
-          node_claude_replacements=(5 6 7 8)
-          node_codex_backup=(0)
-          node_codex_replacements=(0)
-          shell_backup=(0 1 2 3 4 5 6 7 8)
-          shell_replacements=(0 1 2 3)
-
-          install_matrix() {
-            local surface="$1" sparse_index="$2" replacement_index="$3"
-            local -a backups replacements
-            case "$surface" in
-              node-claude) backups=("${node_claude_backup[@]}"); replacements=("${node_claude_replacements[@]}" ) ;;
-              node-codex) backups=("${node_codex_backup[@]}"); replacements=("${node_codex_replacements[@]}" ) ;;
-              bash) backups=("${shell_backup[@]}"); replacements=("${shell_replacements[@]}" ) ;;
-              *) echo "unknown POSIX surface: $surface" >&2; return 1 ;;
-            esac
-            for boundary in before-journal after-journal before-commit after-commit before-cleanup after-cleanup; do
-              run_case "$surface" install upgrade "$boundary"
-            done
-            for index in "${backups[@]}"; do
-              for phase in before-backup after-backup-journal after-backup-rename; do
-                run_case "$surface" install upgrade "${phase}-${index}"
-              done
-              for phase in before-restore after-restore-rename after-restore-status; do
-                run_case "$surface" install upgrade "${phase}-${index}"
+          # The helper owns the concrete inventory and emits every reachable boundary after
+          # inspecting the fixture. This keeps CI in lockstep with the implementation order.
+          for surface in node-claude node-codex bash; do
+            for operation in install uninstall; do
+              for mode in fresh upgrade sparse; do
+                [[ "$operation" == uninstall && "$mode" == fresh ]] && continue
+                while IFS= read -r boundary; do
+                  [[ -n "$boundary" ]] && run_case "$surface" "$operation" "$mode" "$boundary"
+                done < <(node "$helper" --list "$surface" "$operation" "$mode")
               done
             done
-            for index in "${replacements[@]}"; do
-              for phase in before-replacement after-replacement-journal after-replacement-rename; do
-                run_case "$surface" install upgrade "${phase}-${index}"
-              done
-              for phase in before-rollback after-rollback; do
-                run_case "$surface" install upgrade "${phase}-${index}"
-              done
-            done
-            for boundary in before-journal after-journal before-commit after-commit before-cleanup after-cleanup; do
-              run_case "$surface" install fresh "$boundary"
-            done
-            if [[ "$surface" != node-codex ]]; then
-              for phase in before-backup after-backup-journal after-backup-rename; do
-                run_case "$surface" install sparse "${phase}-${sparse_index}"
-              done
-              for phase in before-replacement after-replacement-journal after-replacement-rename; do
-                run_case "$surface" install sparse "${phase}-${replacement_index}"
-              done
-              for phase in before-restore after-restore-rename after-restore-status; do
-                run_case "$surface" install sparse "${phase}-${sparse_index}"
-              done
-              for phase in before-rollback after-rollback; do
-                run_case "$surface" install sparse "${phase}-${replacement_index}"
-              done
-            fi
-            for index in "${replacements[@]}"; do
-              for phase in before-rollback after-rollback; do
-                run_case "$surface" install fresh "${phase}-${index}"
-              done
-            done
-          }
-
-          uninstall_matrix() {
-            local surface="$1" sparse_index="$2"
-            local -a backups
-            case "$surface" in
-              node-claude) backups=("${node_claude_backup[@]}" ) ;;
-              node-codex) backups=("${node_codex_backup[@]}" ) ;;
-              bash) backups=("${shell_backup[@]}" ) ;;
-              *) echo "unknown POSIX surface: $surface" >&2; return 1 ;;
-            esac
-            for boundary in before-journal after-journal before-commit after-commit before-cleanup after-cleanup; do
-              run_case "$surface" uninstall upgrade "$boundary"
-            done
-            for index in "${backups[@]}"; do
-              for phase in before-backup after-backup-journal after-backup-rename; do
-                run_case "$surface" uninstall upgrade "${phase}-${index}"
-              done
-              for phase in before-restore after-restore-rename after-restore-status before-rollback after-rollback; do
-                run_case "$surface" uninstall upgrade "${phase}-${index}"
-              done
-            done
-            if [[ "$surface" != node-codex ]]; then
-              for phase in before-backup after-backup-journal after-backup-rename; do
-                run_case "$surface" uninstall sparse "${phase}-${sparse_index}"
-              done
-              for phase in before-restore after-restore-rename after-restore-status before-rollback after-rollback; do
-                run_case "$surface" uninstall sparse "${phase}-${sparse_index}"
-              done
-            fi
-          }
-
-          install_matrix node-claude 1 5
-          uninstall_matrix node-claude 5
-          install_matrix node-codex 0 0
-          uninstall_matrix node-codex 0
-          install_matrix bash 5 0
-          uninstall_matrix bash 5
+          done
       - name: Installer overlap-guard execution tests
         shell: bash
         run: |
@@ -409,47 +320,19 @@ jobs:
         shell: pwsh
         run: |
           $helper = Join-Path $env:GITHUB_WORKSPACE 'dev\test-installer-recovery.mjs'
-          $backupIndices = 0..8
-          $replacementIndices = 0..3
           function Invoke-RecoveryCase([string]$operation, [string]$mode, [string]$boundary) {
             & node $helper 'powershell' $operation $mode $boundary
             if ($LASTEXITCODE -ne 0) { throw "PowerShell $operation $mode $boundary recovery case failed with exit $LASTEXITCODE" }
           }
-          foreach ($boundary in 'before-journal','after-journal','before-commit','after-commit','before-cleanup','after-cleanup') {
-            Invoke-RecoveryCase 'install' 'upgrade' $boundary
-            Invoke-RecoveryCase 'uninstall' 'upgrade' $boundary
-            Invoke-RecoveryCase 'install' 'fresh' $boundary
-          }
-          foreach ($index in $backupIndices) {
-            foreach ($phase in 'before-backup','after-backup-journal','after-backup-rename') {
-              Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
-              Invoke-RecoveryCase 'uninstall' 'upgrade' "$phase-$index"
+          foreach ($operation in 'install','uninstall') {
+            foreach ($mode in 'fresh','upgrade','sparse') {
+              if ($operation -eq 'uninstall' -and $mode -eq 'fresh') { continue }
+              $boundaries = @(& node $helper '--list' 'powershell' $operation $mode)
+              if ($LASTEXITCODE -ne 0) { throw "PowerShell $operation $mode inventory generation failed" }
+              foreach ($boundary in $boundaries) {
+                if ($boundary.Trim()) { Invoke-RecoveryCase $operation $mode $boundary.Trim() }
+              }
             }
-            foreach ($phase in 'before-restore','after-restore-rename','after-restore-status') {
-              Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
-              Invoke-RecoveryCase 'uninstall' 'upgrade' "$phase-$index"
-            }
-            foreach ($phase in 'before-rollback','after-rollback') {
-              Invoke-RecoveryCase 'uninstall' 'upgrade' "$phase-$index"
-            }
-          }
-          foreach ($index in $replacementIndices) {
-            foreach ($phase in 'before-replacement','after-replacement-journal','after-replacement-rename') {
-              Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
-              Invoke-RecoveryCase 'install' 'fresh' "$phase-$index"
-            }
-            foreach ($phase in 'before-rollback','after-rollback') {
-              Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
-              Invoke-RecoveryCase 'install' 'fresh' "$phase-$index"
-            }
-          }
-          foreach ($phase in 'before-backup','after-backup-journal','after-backup-rename') {
-            Invoke-RecoveryCase 'install' 'sparse' "$phase-5"
-            Invoke-RecoveryCase 'uninstall' 'sparse' "$phase-5"
-          }
-          foreach ($phase in 'before-restore','after-restore-rename','after-restore-status','before-rollback','after-rollback') {
-            Invoke-RecoveryCase 'install' 'sparse' "$phase-5"
-            Invoke-RecoveryCase 'uninstall' 'sparse' "$phase-5"
           }
 
   bash-floor:

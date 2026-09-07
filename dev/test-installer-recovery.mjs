@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Exercise one installer transaction boundary and require an exact exit 86 followed by a
-// restart that produces the same complete byte inventory as a clean run.
+// Exercise installer transaction boundaries and require exact exit 86 followed by a clean
+// restart. The concrete inventory below is the single source for the CI matrix and assertions.
 'use strict';
 
 import fs from 'node:fs';
@@ -8,12 +8,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const [surface, operation, mode, boundary] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const listMode = args[0] === '--list';
+const [surface, operation, mode, boundary] = listMode ? args.slice(1) : args;
 const validSurfaces = new Set(['node-claude', 'node-codex', 'bash', 'powershell']);
 const validOperations = new Set(['install', 'uninstall']);
 const validModes = new Set(['fresh', 'upgrade', 'sparse']);
-if (!validSurfaces.has(surface) || !validOperations.has(operation) || !validModes.has(mode) || !boundary || process.argv.length !== 6) {
-  console.error('usage: node dev/test-installer-recovery.mjs <node-claude|node-codex|bash|powershell> <install|uninstall> <fresh|upgrade|sparse> <boundary>');
+if (!validSurfaces.has(surface) || !validOperations.has(operation) || !validModes.has(mode)
+    || (!listMode && (!boundary || args.length !== 4)) || (listMode && args.length !== 4)) {
+  console.error(listMode
+    ? 'usage: node dev/test-installer-recovery.mjs --list <surface> <operation> <mode>'
+    : 'usage: node dev/test-installer-recovery.mjs <surface> <operation> <mode> <boundary>');
   process.exit(2);
 }
 if (mode === 'fresh' && operation === 'uninstall') {
@@ -23,11 +28,51 @@ if (mode === 'fresh' && operation === 'uninstall') {
 
 const repo = path.resolve(import.meta.dirname, '..');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rust-intel-recovery-'));
+let invocation = 0;
 
-function write(relative, value) {
-  const file = path.join(relative);
+function write(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, value);
+}
+
+function ownedPaths(target) {
+  if (surface === 'node-codex') return [path.join(target, 'rust-intel')];
+  if (surface === 'node-claude' && operation === 'install') return [
+    path.join(target, 'commands', 'rust-intel-cc'),
+    path.join(target, 'commands', 'rust-audit.md'),
+    path.join(target, 'commands', 'rust-fix.md'),
+    path.join(target, 'commands', 'rust-plan.md'),
+    path.join(target, 'commands', 'rust-intel.md'),
+    path.join(target, 'skills', 'rust-intel'),
+    path.join(target, 'commands', 'rust-cc-audit.md'),
+    path.join(target, 'commands', 'rust-cc-fix.md'),
+    path.join(target, 'commands', 'rust-cc-plan.md'),
+  ];
+  return [
+    path.join(target, 'skills', 'rust-intel'),
+    path.join(target, 'commands', 'rust-cc-audit.md'),
+    path.join(target, 'commands', 'rust-cc-fix.md'),
+    path.join(target, 'commands', 'rust-cc-plan.md'),
+    path.join(target, 'commands', 'rust-intel-cc'),
+    path.join(target, 'commands', 'rust-audit.md'),
+    path.join(target, 'commands', 'rust-fix.md'),
+    path.join(target, 'commands', 'rust-plan.md'),
+    path.join(target, 'commands', 'rust-intel.md'),
+  ];
+}
+
+function transactionPrefixes() {
+  if (surface.startsWith('node-')) return ['.rust-intel-tx-'];
+  if (surface === 'bash') return ['.rust-intel-bash-tx.'];
+  return operation === 'install' ? ['.rust-intel-ps-tx-'] : ['.rust-intel-ps-uninstall-'];
+}
+
+function unrelatedSibling(target) {
+  const sibling = path.join(path.dirname(target), `.foreign-rust-intel-${surface}`);
+  write(path.join(sibling, 'stage', 'foreign.txt'), 'foreign\n');
+  write(path.join(sibling, 'backup', 'foreign.txt'), 'foreign\n');
+  write(path.join(sibling, 'journal'), 'foreign transaction\n');
+  return sibling;
 }
 
 function claudeFixture(target, sparse) {
@@ -44,6 +89,11 @@ function claudeFixture(target, sparse) {
 }
 
 function fixture(target) {
+  unrelatedSibling(target);
+  if (mode === 'fresh') {
+    write(path.join(target, 'other', 'sibling.md'), 'unrelated\n');
+    return;
+  }
   const sparse = mode === 'sparse';
   if (surface === 'node-codex') {
     if (!sparse) write(path.join(target, 'rust-intel', 'SKILL.md'), 'old-codex\n');
@@ -52,16 +102,85 @@ function fixture(target) {
   } else claudeFixture(target, sparse);
 }
 
+function present(value) {
+  try { fs.lstatSync(value); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
+function activeBackupIndices(target) {
+  return ownedPaths(target).flatMap((destination, index) => (present(destination) ? [index] : []));
+}
+
+function boundaryInventory(backups, replacements) {
+  const boundaries = new Set(['before-journal', 'after-journal', 'before-commit', 'after-commit', 'before-cleanup', 'after-cleanup']);
+  for (const index of backups) {
+    for (const phase of ['before-backup', 'after-backup-journal', 'after-backup-rename']) boundaries.add(`${phase}-${index}`);
+    for (const phase of ['before-restore', 'after-restore-rename', 'after-restore-status']) boundaries.add(`${phase}-${index}`);
+  }
+  for (const index of replacements) {
+    for (const phase of ['before-replacement', 'after-replacement-journal', 'after-replacement-rename']) boundaries.add(`${phase}-${index}`);
+  }
+  const rollback = operation === 'install' ? replacements : backups;
+  for (const index of rollback) for (const phase of ['before-rollback', 'after-rollback']) boundaries.add(`${phase}-${index}`);
+  return { boundaries, backups, replacements };
+}
+
+function replacementIndicesFromHooks(hooks) {
+  return [...new Set(hooks.flatMap((entry) => {
+    const match = entry.match(/^before-replacement-(\d+)$/);
+    return match ? [Number(match[1])] : [];
+  }))];
+}
+
+function declaredBoundaryTemplates() {
+  const source = surface.startsWith('node-')
+    ? fs.readFileSync(path.join(repo, 'bin', 'install-transaction.js'), 'utf8')
+    : fs.readFileSync(path.join(repo, operation === 'install' ? 'rust-cc-install.' : 'rust-cc-uninstall.') + (surface === 'bash' ? 'sh' : 'ps1'), 'utf8');
+  const match = source.match(/RUST_INTEL_ABORT_BOUNDARIES:\s*([^\r\n]+)/);
+  if (!match) throw new Error(`${surface} ${operation}: implementation boundary declaration is missing`);
+  return new Set(match[1].split(',').map((item) => item.trim()).filter(Boolean));
+}
+
+function assertBoundaryDeclarations(inventory) {
+  const declared = declaredBoundaryTemplates();
+  const rollbackCount = operation === 'install' ? inventory.replacements.length : inventory.backups.length;
+  const categoryIsReachable = (template) => {
+    const category = template.match(/^(?:before|after)-(backup|replacement|restore|rollback)/)?.[1];
+    if (category === 'backup' || category === 'restore') return inventory.backups.length > 0;
+    if (category === 'replacement') return inventory.replacements.length > 0;
+    if (category === 'rollback') return rollbackCount > 0;
+    return true;
+  };
+  for (const concrete of inventory.boundaries) {
+    const covered = [...declared].some((template) => {
+      if (!template.includes('{index}')) return template === concrete;
+      const prefix = template.slice(0, template.indexOf('{index}'));
+      return concrete.startsWith(prefix) && /^\d+$/.test(concrete.slice(prefix.length));
+    });
+    if (!covered) throw new Error(`${surface} ${operation}: matrix boundary ${concrete} is not declared by implementation`);
+  }
+  for (const template of declared) {
+    if (!categoryIsReachable(template)) continue;
+    if (!template.includes('{index}')) {
+      if (!inventory.boundaries.has(template)) throw new Error(`${surface} ${operation}: declared boundary ${template} is not covered by matrix`);
+      continue;
+    }
+    const prefix = template.slice(0, template.indexOf('{index}'));
+    if (![...inventory.boundaries].some((concrete) => concrete.startsWith(prefix) && /^\d+$/.test(concrete.slice(prefix.length)))) {
+      throw new Error(`${surface} ${operation}: declared concrete boundary ${template} is not covered by matrix`);
+    }
+  }
+}
+
 function command(target) {
   if (surface === 'node-claude') {
-    const args = [path.join(repo, 'bin', 'install.js'), '--user'];
-    if (operation === 'uninstall') args.push('--uninstall');
-    return [process.execPath, args, { CLAUDE_CONFIG_DIR: target }];
+    const commandArgs = [path.join(repo, 'bin', 'install.js'), '--user'];
+    if (operation === 'uninstall') commandArgs.push('--uninstall');
+    return [process.execPath, commandArgs, { CLAUDE_CONFIG_DIR: target }];
   }
   if (surface === 'node-codex') {
-    const args = [path.join(repo, 'bin', 'install-codex.js'), '--user-dir', target];
-    if (operation === 'uninstall') args.push('--uninstall');
-    return [process.execPath, args, {}];
+    const commandArgs = [path.join(repo, 'bin', 'install-codex.js'), '--user-dir', target];
+    if (operation === 'uninstall') commandArgs.push('--uninstall');
+    return [process.execPath, commandArgs, {}];
   }
   if (surface === 'bash') {
     const toPosix = (value) => process.platform === 'win32' && /^[A-Za-z]:[\\/]/.test(value)
@@ -74,98 +193,30 @@ function command(target) {
   return ['pwsh', ['-NoProfile', '-File', path.join(repo, operation === 'install' ? 'rust-cc-install.ps1' : 'rust-cc-uninstall.ps1')], { CLAUDE_CONFIG_DIR: target }];
 }
 
-// Keep the journal record order in one place. Node Claude intentionally journals its removals
-// before replacements; the other surfaces use their public owned inventory order. The source
-// declarations are checked against this generated inventory so a reachable hook cannot be added
-// without a matrix case.
-function operationInventory() {
-  const backup = surface === 'node-claude' && operation === 'install'
-    ? [0, 1, 2, 3, 4]
-    : surface === 'node-codex' ? [0] : [0, 1, 2, 3, 4, 5, 6, 7, 8];
-  const replacements = operation === 'install'
-    ? surface === 'node-claude' ? [5, 6, 7, 8] : surface === 'node-codex' ? [0] : [0, 1, 2, 3]
-    : [];
-  const activeBackup = mode === 'upgrade' ? backup : mode === 'sparse' ? (surface === 'node-codex' ? [] : [5]) : [];
-  return { backup, replacements, activeBackup };
-}
-
-function activeBackupForMode() { return operationInventory().activeBackup; }
-function replacementsForMode() { return operationInventory().replacements; }
-
-function boundaryInventory() {
-  const common = new Set(['before-journal', 'after-journal', 'before-commit', 'after-commit', 'before-cleanup', 'after-cleanup']);
-  const { replacements, activeBackup } = operationInventory();
-  for (const index of activeBackup) {
-    for (const phase of ['before-backup', 'after-backup-journal', 'after-backup-rename']) common.add(`${phase}-${index}`);
-  }
-  for (const index of replacements) {
-    for (const phase of ['before-replacement', 'after-replacement-journal', 'after-replacement-rename']) common.add(`${phase}-${index}`);
-  }
-  if (activeBackup.length > 0) {
-    for (const index of activeBackup) {
-      for (const phase of ['before-restore', 'after-restore-rename', 'after-restore-status']) common.add(`${phase}-${index}`);
-    }
-  }
-  const rollback = operation === 'install' ? replacements : activeBackup;
-  for (const index of rollback) {
-    for (const phase of ['before-rollback', 'after-rollback']) common.add(`${phase}-${index}`);
-  }
-  return common;
-}
-
-function declaredBoundaryTemplates() {
-  const source = surface.startsWith('node-')
-    ? fs.readFileSync(path.join(repo, 'bin', 'install-transaction.js'), 'utf8')
-    : fs.readFileSync(path.join(repo, operation === 'install' ? 'rust-cc-install.' : 'rust-cc-uninstall.') + (surface === 'bash' ? 'sh' : 'ps1'), 'utf8');
-  const match = source.match(/RUST_INTEL_ABORT_BOUNDARIES:\s*([^\r\n]+)/);
-  if (!match) throw new Error(`${surface} ${operation}: implementation boundary declaration is missing`);
-  return new Set(match[1].split(',').map((item) => item.trim()).filter(Boolean));
-}
-
-function assertBoundaryDeclarations() {
-  const declared = declaredBoundaryTemplates();
-  const inventory = boundaryInventory();
-  for (const boundary of inventory) {
-    const matches = [...declared].some((template) => template.includes('{index}')
-      ? template.replace('{index}', boundary.match(/(\d+)$/)?.[1] ?? '') === boundary
-      : template === boundary);
-    if (!matches) throw new Error(`${surface} ${operation}: matrix boundary ${boundary} is not declared by implementation`);
-  }
-  for (const template of declared) {
-    const indexTemplate = template.includes('{index}');
-    const index = indexTemplate ? (operationInventory().activeBackup[0] ?? operationInventory().replacements[0]) : null;
-    const boundary = indexTemplate ? template.replace('{index}', String(index ?? '')) : template;
-    const category = template.match(/^(?:before|after)-(backup|replacement|restore|rollback)/)?.[1];
-    const relevant = category === 'replacement' ? operation === 'install'
-      : category === 'restore' ? operationInventory().activeBackup.length > 0
-      : category === 'backup' ? operationInventory().activeBackup.length > 0
-      : category === 'rollback' ? (operation === 'install' ? operationInventory().replacements.length > 0 : operationInventory().activeBackup.length > 0)
-      : true;
-    if (relevant && (!indexTemplate ? !inventory.has(boundary) : ![...inventory].some((item) => item.startsWith(template.replace('{index}', ''))))) {
-      throw new Error(`${surface} ${operation}: declared reachable boundary ${template} is not covered by the matrix`);
-    }
-  }
-}
-
 function run(target, abortBoundary, failAfter) {
-  const [executable, args, variables] = command(target);
-  const env = { ...process.env, ...variables };
+  const [executableName, processArgs, variables] = command(target);
+  const logPath = path.join(root, `hooks-${invocation++}.log`);
+  fs.writeFileSync(logPath, '');
+  const env = { ...process.env, ...variables, RUST_INTEL_INSTALL_ABORT_LOG: logPath };
   if (abortBoundary) env.RUST_INTEL_INSTALL_ABORT_AT = abortBoundary;
   else delete env.RUST_INTEL_INSTALL_ABORT_AT;
   if (failAfter) env.RUST_INTEL_INSTALL_FAIL_AFTER = String(failAfter);
   else delete env.RUST_INTEL_INSTALL_FAIL_AFTER;
-  let executableToRun = executable;
-  let argsToRun = args;
+  let executable = executableName;
+  let argsForRun = processArgs;
   if (executable === 'wsl.exe') {
-    const forwarded = ['CLAUDE_CONFIG_DIR', 'RUST_INTEL_INSTALL_ABORT_AT', 'RUST_INTEL_INSTALL_FAIL_AFTER']
+    const toPosix = (value) => /^[A-Za-z]:[\\/]/.test(value)
+      ? `/mnt/${value[0].toLowerCase()}${value.slice(2).replaceAll('\\', '/')}` : value;
+    const forwarded = ['CLAUDE_CONFIG_DIR', 'RUST_INTEL_INSTALL_ABORT_AT', 'RUST_INTEL_INSTALL_FAIL_AFTER', 'RUST_INTEL_INSTALL_ABORT_LOG']
       .filter((name) => env[name] !== undefined)
-      .map((name) => `${name}='${String(env[name]).replaceAll("'", "'\\''")}'`);
+      .map((name) => `${name}='${String(name === 'RUST_INTEL_INSTALL_ABORT_LOG' ? toPosix(env[name]) : env[name]).replaceAll("'", "'\\''")}'`);
     const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
-    argsToRun = ['bash', '-lc', `${forwarded.join(' ')} exec bash ${shellQuote(args[2])}`];
+    argsForRun = ['bash', '-lc', `${forwarded.join(' ')} exec bash ${shellQuote(processArgs[2])}`];
   }
-  const result = spawnSync(executableToRun, argsToRun, { cwd: repo, env, encoding: 'utf8' });
+  const result = spawnSync(executable, argsForRun, { cwd: repo, env, encoding: 'utf8' });
   if (result.error) throw result.error;
-  return result;
+  const hooks = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
+  return { result, hooks };
 }
 
 function snapshot(target) {
@@ -174,54 +225,94 @@ function snapshot(target) {
   return result.stdout;
 }
 
-function assertStatus(result, expected, label) {
-  if (result.status !== expected) {
-    throw new Error(`${label}: expected exit ${expected}, got ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+function assertStatus(runResult, expected, label) {
+  if (runResult.result.status !== expected) {
+    throw new Error(`${label}: expected exit ${expected}, got ${runResult.result.status}\nstdout:\n${runResult.result.stdout}\nstderr:\n${runResult.result.stderr}`);
+  }
+}
+
+function assertHook(runResult, boundaryName, label) {
+  const count = runResult.hooks.filter((entry) => entry === boundaryName).length;
+  if (count !== 1) throw new Error(`${label}: expected hook ${boundaryName} exactly once, observed ${count} (${runResult.hooks.join(', ')})`);
+}
+
+function assertCleanTransactionParent(target, sibling) {
+  const entries = fs.readdirSync(path.dirname(target), { withFileTypes: true });
+  const leftovers = entries.filter((entry) => transactionPrefixes().some((prefix) => entry.name.startsWith(prefix)));
+  if (leftovers.length) throw new Error(`${surface} ${operation}: transaction artifacts remain after restart: ${leftovers.map((entry) => entry.name).join(', ')}`);
+  if (!present(sibling) || fs.readFileSync(path.join(sibling, 'journal'), 'utf8') !== 'foreign transaction\n') {
+    throw new Error(`${surface} ${operation}: unrelated sibling transaction was removed or changed`);
   }
 }
 
 try {
-  const expectedTarget = path.join(root, 'expected target with spaces');
-  const actualTarget = path.join(root, 'actual target with spaces');
-  if (!boundaryInventory().has(boundary)) {
-    // Prove that the implementation treats the unknown hook as a normal run, then reject it as
-    // an invalid coverage case. This prevents a typo in the CI matrix from becoming a false green.
-    const probeTarget = path.join(root, 'unreachable boundary target');
-    fixture(probeTarget);
-    const probe = run(probeTarget, boundary);
-    assertStatus(probe, 0, `nonexistent abort boundary ${boundary}`);
-    throw new Error(`${surface} ${operation} ${mode} ${boundary}: boundary is not reachable; coverage case rejected`);
-  }
-  assertBoundaryDeclarations();
-  fixture(expectedTarget);
-  fixture(actualTarget);
-  if (operation === 'install') {
-    const clean = run(expectedTarget);
-    assertStatus(clean, 0, 'clean install');
-  }
-  const expected = operation === 'install'
-    ? snapshot(expectedTarget)
-    : (() => { const result = run(expectedTarget); assertStatus(result, 0, 'clean uninstall'); return snapshot(expectedTarget); })();
-  const restoreBoundary = /^(before-restore|after-restore-rename|after-restore-status)-/.test(boundary);
-  const rollbackBoundary = /^(before-rollback|after-rollback)-/.test(boundary);
-  if (restoreBoundary) {
-    const restoreIndex = Number(boundary.match(/(\d+)$/)[1]);
-    const forward = activeBackupForMode().length > 0
-      ? 'after-backup-rename-' + restoreIndex
-      : 'after-replacement-rename-' + (replacementsForMode()[0]);
-    const interrupted = run(actualTarget, forward);
-    assertStatus(interrupted, 86, `${surface} ${operation} ${mode} restore setup`);
-    const restoring = run(actualTarget, boundary);
-    assertStatus(restoring, 86, `${surface} ${operation} ${mode} ${boundary}`);
+  if (listMode) {
+    const target = path.join(root, 'inventory target');
+    fixture(target);
+    const backups = activeBackupIndices(target);
+    const clean = run(target);
+    assertStatus(clean, 0, `clean ${operation}`);
+    const inventory = boundaryInventory(backups, replacementIndicesFromHooks(clean.hooks));
+    assertBoundaryDeclarations(inventory);
+    for (const item of inventory.boundaries) console.log(item);
   } else {
-    const interrupted = rollbackBoundary ? run(actualTarget, boundary, 1) : run(actualTarget, boundary);
-    assertStatus(interrupted, 86, `${surface} ${operation} ${mode} ${boundary}`);
-  }
-  const restarted = run(actualTarget);
-  assertStatus(restarted, 0, `${surface} ${operation} ${mode} ${boundary} restart`);
-  const actual = snapshot(actualTarget);
-  if (actual !== expected) {
-    throw new Error(`${surface} ${operation} ${mode} ${boundary}: successful restart did not produce the clean-operation inventory`);
+    const expectedTarget = path.join(root, 'expected target with spaces');
+    const actualTarget = path.join(root, 'actual target with spaces');
+    fixture(expectedTarget);
+    fixture(actualTarget);
+    const expectedBackups = activeBackupIndices(expectedTarget);
+    const actualBackups = activeBackupIndices(actualTarget);
+    const sibling = unrelatedSibling(actualTarget);
+    const clean = run(expectedTarget);
+    assertStatus(clean, 0, `clean ${operation}`);
+    const replacements = replacementIndicesFromHooks(clean.hooks);
+    const expectedInventory = boundaryInventory(expectedBackups, replacements);
+    const actualInventory = boundaryInventory(actualBackups, replacements);
+    assertBoundaryDeclarations(actualInventory);
+    if (JSON.stringify(expectedInventory) !== JSON.stringify(actualInventory)) throw new Error('expected and actual fixtures have different concrete inventories');
+    if (!actualInventory.boundaries.has(boundary)) {
+      const probe = run(actualTarget, boundary);
+      assertStatus(probe, 0, `nonexistent abort boundary ${boundary}`);
+      throw new Error(`${surface} ${operation} ${mode} ${boundary}: boundary is not reachable; coverage case rejected`);
+    }
+    const expected = snapshot(expectedTarget);
+    const restoreBoundary = /^(before-restore|after-restore-rename|after-restore-status)-/.test(boundary);
+    const rollbackBoundary = /^(before-rollback|after-rollback)-/.test(boundary);
+    if (restoreBoundary) {
+      const index = Number(boundary.match(/(\d+)$/)[1]);
+      const setupBoundary = `after-backup-rename-${index}`;
+      const setup = run(actualTarget, setupBoundary);
+      assertStatus(setup, 86, `${surface} restore setup`);
+      assertHook(setup, setupBoundary, `${surface} restore setup`);
+      const beforeRestore = `before-restore-${index}`;
+      const afterRestoreRename = `after-restore-rename-${index}`;
+      const afterRestoreStatus = `after-restore-status-${index}`;
+      if (boundary === afterRestoreStatus) {
+        const first = run(actualTarget, beforeRestore);
+        assertStatus(first, 86, `${surface} first restore interruption`);
+        assertHook(first, beforeRestore, `${surface} first restore interruption`);
+      } else {
+        const first = run(actualTarget, boundary);
+        assertStatus(first, 86, `${surface} first restore interruption`);
+        assertHook(first, boundary, `${surface} first restore interruption`);
+      }
+      const secondBoundary = boundary === beforeRestore ? afterRestoreRename : afterRestoreStatus;
+      const second = run(actualTarget, boundary === afterRestoreStatus ? boundary : secondBoundary);
+      assertStatus(second, 86, `${surface} second restore interruption`);
+      assertHook(second, boundary === afterRestoreStatus ? boundary : secondBoundary, `${surface} second restore interruption`);
+    } else {
+      const index = Number(boundary.match(/(\d+)$/)?.[1]);
+      const sequence = rollbackBoundary ? (operation === 'install' ? actualInventory.replacements : actualInventory.backups) : [];
+      const position = rollbackBoundary ? sequence.indexOf(index) : -1;
+      if (rollbackBoundary && position < 0) throw new Error(`${surface} ${operation}: rollback index ${index} is absent from concrete inventory`);
+      const interrupted = run(actualTarget, boundary, rollbackBoundary ? position + 1 : undefined);
+      assertStatus(interrupted, 86, `${surface} ${operation} ${mode} ${boundary}`);
+      assertHook(interrupted, boundary, `${surface} ${operation} ${mode} ${boundary}`);
+    }
+    const restarted = run(actualTarget);
+    assertStatus(restarted, 0, `${surface} ${operation} ${mode} ${boundary} restart`);
+    if (snapshot(actualTarget) !== expected) throw new Error(`${surface} ${operation} ${mode} ${boundary}: restart did not produce clean-operation inventory`);
+    assertCleanTransactionParent(actualTarget, sibling);
   }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

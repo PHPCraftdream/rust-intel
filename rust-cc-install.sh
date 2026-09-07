@@ -204,12 +204,14 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
 fi
 
 abrupt_abort() {
-    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
+    if [[ -n "${RUST_INTEL_INSTALL_ABORT_LOG:-}" ]]; then printf '%s\n' "$1" >> "$RUST_INTEL_INSTALL_ABORT_LOG"; fi
+    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then trap - EXIT; exit 86; fi
     return 0
 }
 
 write_recovery_status() {
-    local journal="$1" index="$2" status="$3" temporary="$journal.tmp"
+    local journal="$1" index="$2" status="$3"
+    local temporary="$journal.tmp"
     awk -v wanted="$index" -v replacement="$status" 'BEGIN { FS = OFS = "\t" } $1 == "record" && $2 == wanted { $3 = replacement } { print }' "$journal" > "$temporary"
     mv -- "$temporary" "$journal"
 }
@@ -350,14 +352,14 @@ rollback_transaction() {
                 fi
             fi
             if [[ ! -e "$destination" && ! -L "$destination" && ( -e "$backup" || -L "$backup" ) ]]; then
-                RECORD_STATUS[$owned_index]=restoring
+                RECORD_STATUS[$index]=restoring
                 write_journal active || rollback_failure=1
-                abrupt_abort "before-restore-$owned_index"
+                abrupt_abort "before-restore-$index"
                 mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || rollback_failure=1
-                abrupt_abort "after-restore-rename-$owned_index"
-                RECORD_STATUS[$owned_index]=restored
+                abrupt_abort "after-restore-rename-$index"
+                RECORD_STATUS[$index]=restored
                 write_journal active || rollback_failure=1
-                abrupt_abort "after-restore-status-$owned_index"
+                abrupt_abort "after-restore-status-$index"
             elif [[ "$owned_status" == backed-up && ! -e "$backup" && ! -e "$destination" && ! -L "$destination" ]]; then rollback_failure=1
             elif [[ "$owned_status" == restoring && ! -e "$backup" && ! -e "$destination" && ! -L "$destination" ]]; then rollback_failure=1
             elif [[ "$owned_status" == restored && ( ! -e "$destination" && ! -L "$destination" || -e "$backup" || -L "$backup" ) ]]; then rollback_failure=1

@@ -43,6 +43,7 @@ $ErrorActionPreference = 'Stop'
 
 function Abrupt-Abort {
     param([string]$Boundary)
+    if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, $Boundary + [Environment]::NewLine) }
     if ($env:RUST_INTEL_INSTALL_ABORT_AT -eq $Boundary) { exit 86 }
 }
 
@@ -128,7 +129,8 @@ function Recover-Transaction {
     }
     if ($journal.phase -eq 'committed' -or $journal.phase -eq 'rolled-back') { Remove-Item -LiteralPath $Transaction -Recurse -Force; return }
     $failures = @()
-    foreach ($record in $records) {
+    for ($recordIndex = 0; $recordIndex -lt $records.Count; $recordIndex++) {
+        $record = $records[$recordIndex]
         $destination = [string]$record.destination
         $backup = [string]$record.backup
         $backupPresent = Test-Path -LiteralPath $backup

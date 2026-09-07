@@ -34,6 +34,8 @@ function failAfter() {
 // must recover from the durable journal.  Keeping this behind an environment variable leaves the
 // normal installer path free of timing-sensitive fault injection.
 function abruptAbort(boundary) {
+  const log = process.env.RUST_INTEL_INSTALL_ABORT_LOG;
+  if (log) fs.appendFileSync(log, `${boundary}\n`, 'utf8');
   if (process.env.RUST_INTEL_INSTALL_ABORT_AT === boundary) process.exit(86);
 }
 
