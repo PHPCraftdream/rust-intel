@@ -43,7 +43,7 @@ Its supported Markdown surface is explicit:
 
 ## Status
 
-**Unreleased (in preparation, not tagged).** The current tree carries the post-v0.6.0 completeness, correctness, currency, validator-hardening, installer, and release-tooling work summarized in [`CHANGELOG.md`](CHANGELOG.md). Repository tooling is set to require Node.js 24 or newer, and the next package release will carry that floor; CI covers the current Node 24 line and the exact `24.0.0` floor. The validator fixture suite currently has **414** controls. The shared JavaScript scanner now rejects mismatched delimiters within its deterministic budget, preserves private-name token roles, and rejects every noncanonical executable completion-helper reference. Installer transaction work is in progress: complete owned-inventory journaling and rollback safeguards exist, but independent review still found ordinary Bash abort-hook and cross-boundary restart gaps, sparse-backup recovery gaps, and incomplete boundary coverage; the recovery claim therefore remains partial until those cases are fixed and re-reviewed. The next release is planned as **MINOR `0.7.0`**; manifests and the release banner remain `v0.6.0` until that release is cut. Release-version recovery is durable through POSIX parent-directory fsync; on Windows it is calibrated for process interruption, with sudden-power-loss durability explicitly outside this contract. Release readiness remains gated on closing the independent review's P1/P2/P3 findings and completing a fresh review.
+**Unreleased (in preparation, not tagged).** The current tree carries the post-v0.6.0 completeness, correctness, currency, validator-hardening, installer, and release-tooling work summarized in [`CHANGELOG.md`](CHANGELOG.md). Repository tooling requires Node.js 24 or newer, and the next package release will carry that floor; CI covers the current Node 24 line and the exact `24.0.0` floor. The numbered fixture runner currently has **414** controls: **371** spawn validator children and **43** run in-process; the installer recovery matrix in `dev/test-installer-recovery.mjs` is a separate helper/CI suite and is not part of that numbered total. The shared JavaScript scanner rejects mismatched delimiters within its deterministic budget and preserves private-name token roles, but independent review still found a function/class-expression division context that can hide executable mutation or completion text from the static gate. Installer transaction work has closed the ordinary forward-interruption cases, but recovery after restoring a backup remains only partially reentrant and the boundary matrix still needs rollback/recovery coverage and a strict clean-operation restart oracle. The next release is planned as **MINOR `0.7.0`**; manifests and the release banner remain `v0.6.0` until that release is cut. Release-version recovery is durable through POSIX parent-directory fsync; on Windows it is calibrated for process interruption, with sudden-power-loss durability explicitly outside this contract. Release readiness remains gated on closing the independent review's P1/P2/P3 findings and completing a fresh review.
 
 **v0.6.0 (2026-08-19).** Added §C12/§C12a and related §A1 default-of-an-earlier-era coverage; numbered categories reached **59**. This entry backfills the release's omitted Status record. See [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -82,7 +82,8 @@ Its supported Markdown surface is explicit:
 ## Layout
 
 The `dev/` utilities include `snapshot-install.mjs`, a byte-aware installer inventory used by
-rollback and recovery checks.
+rollback and recovery checks, and `test-installer-recovery.mjs`, the separate boundary matrix
+for installer interruption/restart behavior.
 
 ```
 rust-intel/
@@ -109,6 +110,7 @@ rust-intel/
 │   ├── set-release-version.mjs         # Update package and plugin manifest versions
 │   ├── calibrate-release-version.mjs    # Crash/recovery calibration for release transactions
 │   ├── snapshot-install.mjs             # Byte-aware installer inventory for rollback checks
+│   ├── test-installer-recovery.mjs      # Installer interruption/restart boundary matrix
 │   ├── js-lexer.mjs                     # Shared bounded JavaScript lexical scanner
 │   ├── check-release-version.mjs       # Verify a release tag matches all manifests
 │   ├── semver.mjs                      # Shared version parsing/comparison helpers
