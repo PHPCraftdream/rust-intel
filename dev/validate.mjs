@@ -2171,7 +2171,11 @@ for (const [phase, scriptName, skipValue] of [
 ]) {
   const phaseStart = coordinatorSource.indexOf(`name: '${phase}',`);
   const nextPhaseIndex = coordinatorSource.indexOf("name: '", phaseStart + 1);
-  const phaseSource = phaseStart < 0 ? '' : coordinatorSource.slice(phaseStart, nextPhaseIndex < 0 ? coordinatorSource.length : nextPhaseIndex);
+  // The last phase has no `name: '` successor; bound its slice at the phases array's `];`
+  // instead of end-of-file so a lazy match cannot walk past the phase array.
+  const phasesArrayEnd = coordinatorSource.indexOf('];', phaseStart);
+  const phaseEnd = nextPhaseIndex >= 0 ? nextPhaseIndex : phasesArrayEnd;
+  const phaseSource = phaseStart < 0 || phaseEnd < 0 ? '' : coordinatorSource.slice(phaseStart, phaseEnd);
   const phaseContract = new RegExp(`script: path\\.join\\(root, 'dev', '${scriptName.replace(/\./gu, '\\.')}'\\),[\\s\\S]*?RUST_INTEL_SKIP_NESTED_FIXTURES: '${skipValue}'`);
   if (!phaseContract.test(phaseSource)) {
     errors.push(`dev/validate-all.mjs phase '${phase}' must run dev/${scriptName} with RUST_INTEL_SKIP_NESTED_FIXTURES: '${skipValue}'`);
@@ -2181,8 +2185,18 @@ for (const [phase, scriptName, skipValue] of [
 // options stopped spreading ...phase.env last, the per-phase RUST_INTEL_SKIP_NESTED_FIXTURES
 // values above would silently never reach the child processes — the core phase would re-nest the
 // full fixture suite inside itself while every declaration-level pin still matched.
-if (!/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.phase\.env\s*\}/u.test(coordinatorSource)) {
-  errors.push('dev/validate-all.mjs must pass each phase environment to its child via env: { ...process.env, ...phase.env }');
+const spawnSyncCallStart = coordinatorSource.indexOf('spawnSync(');
+if (spawnSyncCallStart < 0) {
+  errors.push('dev/validate-all.mjs must spawn each phase with child_process spawnSync');
+} else {
+  // Anchor the env pin to the spawnSync options object itself, not the whole file: an
+  // unrelated object literal containing the same text elsewhere would otherwise satisfy it.
+  // The options object closes with `});` and contains no nested `});` of its own.
+  const spawnSyncCallEnd = coordinatorSource.indexOf('});', spawnSyncCallStart);
+  const spawnSyncOptions = spawnSyncCallEnd < 0 ? '' : coordinatorSource.slice(spawnSyncCallStart, spawnSyncCallEnd);
+  if (!/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.phase\.env\s*\}/u.test(spawnSyncOptions)) {
+    errors.push('dev/validate-all.mjs must pass each phase environment to its child via env: { ...process.env, ...phase.env }');
+  }
 }
 // The coordinator's per-phase ETIMEDOUT attribution is reachable only if the CI job outlives the
 // coordinator's worst case: two sequential phases, each capped by RUST_INTEL_VALIDATE_TIMEOUT_MS.

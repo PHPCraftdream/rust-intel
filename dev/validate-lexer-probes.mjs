@@ -47,10 +47,11 @@ function checkControl(id) {
   }
   if (id === 401) {
     try {
-      // The parent chooses the marker id at run time and passes it in argv: the expected
-      // observation — ids [markerId] at the marker's source index — is unknowable from this
-      // module's source, so neither a constant nor a source-length-gated early return in the
-      // shared observation module can satisfy it without performing the full-length scan. The
+      // The parent chooses the marker id at run time and passes it in argv. The id and its
+      // source index are recoverable from the input string itself (the marker ends in a fixed
+      // shape), so the semantic oracle below does not by itself prove that a scan ran; what
+      // proves work is the same-child allocation signature sampled here and asserted by the
+      // parent, plus the fixture's callee-identity pin on the shared observation module. The
       // ';' separator is load-bearing (a completion call directly after an ordinary word token
       // is suppressed as non-canonical), and the filler keeps the total at exactly 2,000,000
       // code units, one unit below the deterministic scan budget (control 402).
@@ -60,7 +61,9 @@ function checkControl(id) {
       const marker = `;completeCurrentControlScope(${markerId}, true)`;
       const fillerLength = 2_000_000 - marker.length;
       const observation = observeLiteralTrueCompletion('x'.repeat(fillerLength) + marker);
+      scanMemory = process.memoryUsage();
       const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
+      companionMemory = process.memoryUsage();
       const combined = { ...observation, companion };
       return {
         ok: observation.inputLength === 2_000_000
@@ -116,6 +119,10 @@ if (!supportedControls.has(controlId)) {
   process.exit(2);
 }
 
+// Samples taken inside control 401, immediately after the large scan and after the companion
+// call; null for every other control. Read by telemetry() below.
+let scanMemory = null;
+let companionMemory = null;
 const initialMemory = process.memoryUsage();
 let result;
 try {
@@ -131,14 +138,24 @@ try {
 function telemetry(initialMemory) {
   const memory = process.memoryUsage();
   const usage = typeof process.resourceUsage === 'function' ? process.resourceUsage() : null;
-  const maxRss = Number.isFinite(usage?.maxRSS) ? usage.maxRSS * 1024 : null;
+  const maxRss = usage && Number.isFinite(usage.maxRSS) && usage.maxRSS > 0 ? usage.maxRSS * 1024 : null;
   return {
     source: 'child',
     terminalSample: true,
+    initialHeapUsed: initialMemory.heapUsed,
+    initialArrayBuffers: initialMemory.arrayBuffers,
+    scanHeapSample: scanMemory ? scanMemory.heapUsed : null,
+    scanArrayBuffersSample: scanMemory ? scanMemory.arrayBuffers : null,
+    companionHeapSample: companionMemory ? companionMemory.heapUsed : null,
     heapUsed: memory.heapUsed,
     rss: memory.rss,
-    peakHeapUsed: Math.max(initialMemory.heapUsed, memory.heapUsed),
-    peakHeapSource: 'terminal-boundary-sample',
+    peakHeapUsed: Math.max(
+      initialMemory.heapUsed,
+      scanMemory ? scanMemory.heapUsed : 0,
+      companionMemory ? companionMemory.heapUsed : 0,
+      memory.heapUsed,
+    ),
+    peakHeapSource: 'sampled-around-scan-and-terminal',
     peakRss: maxRss === null ? Math.max(initialMemory.rss, memory.rss) : Math.max(initialMemory.rss, memory.rss, maxRss),
     peakRssSource: maxRss === null ? 'boundary-sample' : 'process.resourceUsage.maxRSS',
   };

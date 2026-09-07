@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 486 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 490 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 410 spawn child processes (387 validator children and 23 focused lexer/helper children), and 76
+// 414 spawn child processes (390 validator children and 24 focused lexer/helper children), and 76
 // run in-process (including direct, rule-text, and crude source oracles; see ruleTextControls and
 // B5/B26 below). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -97,7 +97,7 @@ const progress = (message) => {
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 486;
+const CONTROL_REGISTRY_TOTAL = 490;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -407,12 +407,13 @@ function runLexerProbe(controlId, timeoutMs = 120_000) {
   progress(`child lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} terminalSample=${result.terminalSample ? 'yes' : 'no-terminal-sample'} outputBytes=${Buffer.byteLength(result.output)}`);
   return result;
 }
-// Control 401's marker id is chosen at run time and handed to the focused child via argv, so the
-// expected observation is derived from a value that appears nowhere in the shipped source: neither
-// a constant-shaped result nor a source-length-gated early return in the shared observation module
-// can produce the expected id and source index without running the real full-length scan. The id
-// is bounded to six digits so the marker length — and with it the scan's operation count and the
-// expected source index — stays constant across runs.
+// Control 401's marker id is chosen at run time and handed to the focused child via argv. The
+// id and its source index are recoverable from the input string itself — the marker ends in a
+// fixed shape — so the semantic oracle alone does not prove a scan ran (round-45 review P3-1).
+// What proves work is control 458's callee-identity pin on the shared observation module plus
+// the same-child allocation floors asserted below. The id is bounded to six digits so the
+// marker length — and with it the scan's operation count and the expected source index —
+// stays constant across runs.
 function chooseControl401MarkerId() {
   return 100_003 + (Date.now() % 800_000);
 }
@@ -427,13 +428,41 @@ function expectedControl401Observation(markerId) {
     companion: { kind: 'diagnostics', inputLength: 38, ids: [901], indexes: [0] },
   };
 }
-// Control 401 must also show the resource signature of the real scan: on the reference host
-// (win32 10.0.19045, Node v24.12.0) a genuine 2,000,000-unit scan reports peakHeapUsed of about
-// 71 MB and peakRss of about 150 MB, while a scan-eliding facade reports a few MB of heap and no
-// scan-driven RSS growth. The floors sit far below the genuine figures and far above the facade's;
-// they are a coarse work-was-performed floor, not a measurement.
-const control401PeakHeapUsedFloor = 32 * 1024 * 1024;
-const control401PeakRssFloor = 100 * 1024 * 1024;
+// Control 401 must also show a causal resource signature of a real scan. Two work signals,
+// sampled by the focused child itself and asserted here (either alone passes a genuine scan;
+// a scan-eliding facade produces neither):
+// (1) scan-heap ratio — heapUsed sampled immediately after the large scan returns (before the
+//     companion call evicts it from the one-entry lexical cache), divided by the same child's
+//     pre-scan baseline. Ratios are portable; the previous absolute terminal-sample byte floor
+//     asserted only that a major GC had not run between the scan and the measurement (round-45
+//     review P2-1). Measured on the reference host (win32 10.0.19045, Node v24.12.0,
+//     --max-old-space-size=64): a genuine scan ratios ~17x; a scan-eliding facade ratios ~1.5x.
+// (2) retained-array delta — the scanner retains a source.length-byte regex-start bitmap in
+//     its one-entry cache, so process.memoryUsage().arrayBuffers must grow by at least half
+//     the 2,000,000-unit input while the sample is still reachable. The bitmap is reachable at
+//     the scan sample, so unlike heapUsed this signal cannot shrink under garbage collection,
+//     and it is derived from the scanner's own allocation rather than calibrated on any host.
+// Neither signal defeats an author who deliberately pads memory inside a forged callee, which
+// is why control 458 pins callee identity independently.
+const control401ScanHeapRatioFloor = 3;
+const control401ScanArrayBuffersDeltaFloor = 1_000_000;
+// peakRss stays only as a conservative tripwire, not the gate: absolute byte floors are not
+// portable, the default below has NOT been validated on Linux (both ubuntu CI lanes evaluate
+// it for the first time on the project's first pushed CI run), and it is overridable per host
+// via RUST_INTEL_CONTROL401_MIN_PEAK_RSS_MB (a positive integer in MiB; a malformed value is a
+// fixture failure, matching the other RUST_INTEL_* knobs' explicit-failure behavior). Measured
+// genuine peak RSS on the reference host is ~142 MB; a scan-eliding facade grows ~2 MB over
+// the child's baseline.
+const control401PeakRssFloorDefaultMb = 32;
+const control401PeakRssFloorRaw = process.env.RUST_INTEL_CONTROL401_MIN_PEAK_RSS_MB;
+let control401PeakRssFloor = control401PeakRssFloorDefaultMb * 1024 * 1024;
+if (control401PeakRssFloorRaw !== undefined) {
+  if (!/^[1-9]\d*$/u.test(control401PeakRssFloorRaw)) {
+    failures.push(`RUST_INTEL_CONTROL401_MIN_PEAK_RSS_MB must be a positive integer in MiB; got ${JSON.stringify(control401PeakRssFloorRaw)}`);
+  } else {
+    control401PeakRssFloor = Number(control401PeakRssFloorRaw) * 1024 * 1024;
+  }
+}
 const expectedLexerObservations = new Map([
   [399, { kind: 'error', name: 'Error', message: 'JavaScript lexical nesting exceeded its deterministic budget' }],
   [400, { kind: 'error', name: 'Error', message: 'JavaScript lexical delimiter mismatch' }],
@@ -458,10 +487,20 @@ const expectedLexerObservations = new Map([
   [477, { kind: 'completion-violations', ids: [null] }],
   [478, { kind: 'completion-violations', ids: [null] }],
 ]);
-function expectLexerProbe(controlId, { expected, peakHeapUsedFloor = 0, peakRssFloor = 0 } = {}) {
+function expectLexerProbe(controlId, { expected, scanHeapRatioFloor = 0, scanArrayBuffersDeltaFloor = 0, peakRssFloor = 0 } = {}) {
   const result = runLexerProbe(controlId);
   const expectedObservation = expected ?? expectedLexerObservations.get(controlId);
   const telemetry = result.payload?.telemetry;
+  const scanHeapRatio = telemetry
+    && Number.isSafeInteger(telemetry.initialHeapUsed) && telemetry.initialHeapUsed > 0
+    && Number.isSafeInteger(telemetry.scanHeapSample) && telemetry.scanHeapSample >= 0
+    ? telemetry.scanHeapSample / telemetry.initialHeapUsed
+    : null;
+  const scanArrayBuffersDelta = telemetry
+    && Number.isSafeInteger(telemetry.initialArrayBuffers) && telemetry.initialArrayBuffers >= 0
+    && Number.isSafeInteger(telemetry.scanArrayBuffersSample) && telemetry.scanArrayBuffersSample >= 0
+    ? telemetry.scanArrayBuffersSample - telemetry.initialArrayBuffers
+    : null;
   const passed = result.status === 0 && !result.signal && !result.error
     && result.payload?.controlId === controlId
     && telemetry?.source === 'child'
@@ -469,14 +508,17 @@ function expectLexerProbe(controlId, { expected, peakHeapUsedFloor = 0, peakRssF
     && Number.isSafeInteger(telemetry.heapUsed) && telemetry.heapUsed >= 0
     && Number.isSafeInteger(telemetry.rss) && telemetry.rss >= 0
     && Number.isSafeInteger(telemetry.peakHeapUsed) && telemetry.peakHeapUsed >= telemetry.heapUsed
-    && telemetry.peakHeapUsed >= peakHeapUsedFloor
-    && telemetry.peakHeapSource === 'terminal-boundary-sample'
+    && Number.isSafeInteger(telemetry.initialHeapUsed) && telemetry.initialHeapUsed >= 0
+    && (scanHeapRatioFloor <= 0
+      || ((scanHeapRatio !== null && scanHeapRatio >= scanHeapRatioFloor)
+        || (scanArrayBuffersDelta !== null && scanArrayBuffersDelta >= scanArrayBuffersDeltaFloor)))
     && Number.isSafeInteger(telemetry.peakRss) && telemetry.peakRss >= telemetry.rss
     && telemetry.peakRss >= peakRssFloor
     && JSON.stringify(result.payload?.observation) === JSON.stringify(expectedObservation);
   if (!passed) {
     const sampleStatus = result.terminalSample ? 'terminal sample present' : 'no terminal sample (child may have failed fatally or been killed)';
-    failures.push(`Control ${controlId}: focused lexer child failed (${sampleStatus}; status ${result.status ?? 'null'}, signal ${result.signal || 'none'}, error ${result.error || 'none'}, output: ${result.output.trim()})`);
+    const expectedId = controlId === 401 ? `, expected marker id ${control401MarkerId}` : '';
+    failures.push(`Control ${controlId}: focused lexer child failed (${sampleStatus}; status ${result.status ?? 'null'}, signal ${result.signal || 'none'}, error ${result.error || 'none'}, work floors: scanHeapRatio=${scanHeapRatio === null ? 'n/a' : scanHeapRatio.toFixed(2)} (floor ${scanHeapRatioFloor}), scanArrayBuffersDelta=${scanArrayBuffersDelta === null ? 'n/a' : scanArrayBuffersDelta} (floor ${scanArrayBuffersDeltaFloor}), peakRss=${telemetry?.peakRss ?? 'n/a'} (floor ${peakRssFloor})${expectedId}, output: ${result.output.trim()})`);
   }
   completeCurrentControlScope(controlId, passed);
 }
@@ -4056,7 +4098,8 @@ observeControls({ start: 400, end: 402 });
 expectLexerProbe(400);
 expectLexerProbe(401, {
   expected: expectedControl401Observation(control401MarkerId),
-  peakHeapUsedFloor: control401PeakHeapUsedFloor,
+  scanHeapRatioFloor: control401ScanHeapRatioFloor,
+  scanArrayBuffersDeltaFloor: control401ScanArrayBuffersDeltaFloor,
   peakRssFloor: control401PeakRssFloor,
 });
 expectLexerProbe(402);
@@ -4327,7 +4370,11 @@ completeCurrentControlScope(457, passed);
 
 // Control 458: focused lexer probes are part of the fixture's anti-vacuity contract.  Keep the
 // canonical argument parser, structured semantic result, and child-owned terminal telemetry in
-// source inventory, and keep the shared observation's scanner call reachable as the function's first statement; a free-form success sentence or an early-return facade is not an accepted protocol.
+// source inventory, keep the shared observation's scanner call reachable as the function's first
+// statement, and pin the callee's identity: the import line verbatim, with no second binding of
+// the scanner identifier anywhere in the module. A free-form success sentence, an early-return
+// facade, or a same-named module-scope wrapper aliased over the real scanner is not an accepted
+// protocol.
 observeControls(458);
 {
   const helperContract = [
@@ -4358,19 +4405,42 @@ observeControls(458);
     ? observationModuleMasked.slice(bodyOpen + 1, scannerStatementIndex)
     : null;
   const hasUnguardedFirstStatementScannerCall = scannerPreamble !== null && /^[ \t\r\n]*$/u.test(scannerPreamble);
+  // Callee-identity pin: the anchored first statement pins statement POSITION, not what
+  // literalTrueCompletionDiagnostics resolves to. A module-scope wrapper — aliasing the real
+  // scanner in the import and re-declaring a same-named function that answers the large input
+  // from the marker's recoverable tail shape — leaves that anchor byte-identical while never
+  // scanning, and the run-time marker id is recoverable from the input string, so position
+  // alone cannot close the gate (round-45 review P3-1). Require the import line verbatim and
+  // require the identifier to have no other live binding: the comment/string-masked source
+  // must contain the name exactly twice — the import binding and the anchored call.
+  const pinnedScannerImportLine = "import { literalTrueCompletionDiagnostics } from './js-lexer.mjs';";
+  const hasPinnedScannerImport = observationModuleSource.split(/\r?\n/).some((line) => line === pinnedScannerImportLine);
+  const scannerIdentityOccurrences = [...observationModuleMasked.matchAll(/\bliteralTrueCompletionDiagnostics\b/gu)].length;
+  const hasPinnedScannerIdentity = hasPinnedScannerImport && scannerIdentityOccurrences === 2;
   const violations = literalTrueCompletionViolations(lexerProbeSource);
   const companion = observeLiteralTrueCompletion('completeCurrentControlScope(901, true)');
   const passed = helperContract.every((pattern) => pattern.test(lexerProbeSource))
     && hasUnguardedFirstStatementScannerCall
+    && hasPinnedScannerIdentity
     && JSON.stringify(companion) === JSON.stringify({ kind: 'diagnostics', inputLength: 38, ids: [901], indexes: [0] })
     && violations.length === 0
     && !lexerProbeSource.includes('lexer probe passed (control');
-  if (!passed) failures.push(`Control 458: focused lexer helper anti-vacuity contract drifted (${JSON.stringify(violations)})`);
+  if (!passed) {
+    const identityDetail = !hasPinnedScannerImport
+      ? 'observation module must import the scanner verbatim as "import { literalTrueCompletionDiagnostics } from \'./js-lexer.mjs\';" (callee identity pin)'
+      : scannerIdentityOccurrences !== 2
+        ? `literalTrueCompletionDiagnostics must appear exactly twice in the observation module (import binding + anchored call), found ${scannerIdentityOccurrences} (callee identity pin)`
+        : '';
+    failures.push(`Control 458: focused lexer helper anti-vacuity contract drifted (${identityDetail ? identityDetail + '; ' : ''}violations: ${JSON.stringify(violations)})`);
+  }
   completeCurrentControlScope(458, passed);
 }
 
 // Control 459: mutate the shared observation's scanner result to an expected-shaped constant.
-// The expected observation is derived from the run-time marker id, so neither a constant nor an early-return facade can preserve the large-input result without performing the full-length scan.
+// The expected observation is derived from the run-time marker id, so a constant cannot match
+// it; eliding facades that keep the anchor line intact are closed separately, by control 401's
+// same-child work floors and control 458's callee-identity pin. This control proves the
+// predicate mutation itself is caught by the independent semantic oracle.
 observeControls(459);
 {
   const mutated = runValidateAgainstMutatedFiles(['dev/validate-lexer-observations.mjs'], (source) => {
@@ -4447,6 +4517,83 @@ observeControls(486);
       + source.slice(spreadIndex).replace(spreadAnchor, 'env: { ...process.env },');
   });
   expectFixture(result, 'Control 486: coordinator phase-wiring mutations (escape hatch and env spread) are rejected', 1, ["dev/validate-all.mjs phase 'core'", '...phase.env'], 486);
+}
+
+// Control 487: the coordinator itself is an executable release entrypoint (package.json's
+// validate script and three CI lanes), so its failure path must be exercised, not just pinned
+// textually. Run dev/validate-all.mjs against a temp copy whose core phase script exits 1
+// immediately: the coordinator must stop before the fixtures phase, map the child's exit
+// status through to its own exit status, and attribute the failure to the core phase.
+observeControls(487);
+{
+  const result = runValidateAgainstMutatedFiles(['dev/validate.mjs'], (source) => {
+    const anchor = '#!/usr/bin/env node';
+    if (!source.startsWith(anchor)) return null;
+    return anchor + '\nprocess.exit(1);' + source.slice(anchor.length);
+  }, { script: 'dev/validate-all.mjs', timeoutMs: 60_000 });
+  const passed = !result.skipped && !result.executionFailure
+    && result.status === 1
+    && result.output.includes('[validate-all] phase=core failed')
+    && result.output.includes('exit status 1')
+    && !result.output.includes('phase=fixtures');
+  if (result.skipped) failures.push('Control 487: could not find the validator entrypoint shebang to mutate');
+  else if (result.executionFailure) failures.push(`Control 487: coordinator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
+  else if (!passed) failures.push(`Control 487: coordinator did not map a failing core phase to exit status 1 with a phase=core failed diagnostic (status ${result.status ?? 'null'}, output: ${result.output.trim()})`);
+  completeCurrentControlScope(487, passed);
+}
+
+// Control 488: the coordinator's core phase must be declared before the fixtures phase. Fully
+// reversing the two phase objects (not just their names) must trip the validator's order pin
+// while both per-phase contracts still match their own objects — isolating the order check.
+observeControls(488);
+{
+  const result = runValidateAgainstMutatedFiles(['dev/validate-all.mjs'], (source) => {
+    const coreIndex = source.indexOf("name: 'core',");
+    const fixturesIndex = source.indexOf("name: 'fixtures',");
+    if (coreIndex < 0 || fixturesIndex < 0 || coreIndex > fixturesIndex) return null;
+    const coreOpen = source.lastIndexOf('{', coreIndex);
+    const coreClose = source.indexOf('},', coreIndex) + 2;
+    const fixturesOpen = source.lastIndexOf('{', fixturesIndex);
+    const fixturesClose = source.indexOf('},', fixturesIndex) + 2;
+    if (coreOpen < 0 || coreClose < 2 || fixturesOpen < 0 || fixturesClose < 2) return null;
+    return source.slice(0, coreOpen)
+      + source.slice(fixturesOpen, fixturesClose)
+      + source.slice(coreClose, fixturesOpen)
+      + source.slice(coreOpen, coreClose)
+      + source.slice(fixturesClose);
+  });
+  expectFixture(result, 'Control 488: coordinator phases declared in reversed order are rejected', 1, ['core phase before the fixtures phase'], 488);
+}
+
+// Control 489: each coordinator lane's job timeout must stay at or above the computed minimum
+// (2 x the coordinator's per-phase default + 5). Under-setting one lane must fail the pin —
+// that firing path is the pin's entire purpose and was previously unexercised.
+observeControls(489);
+{
+  const result = runValidateAgainstMutatedFiles(['.github/workflows/ci.yml'], (source) => {
+    const jobAnchor = '  node-floor:';
+    const jobStart = source.indexOf(jobAnchor);
+    if (jobStart < 0) return null;
+    const timeoutAnchor = '    timeout-minutes: 50';
+    const timeoutStart = source.indexOf(timeoutAnchor, jobStart);
+    if (timeoutStart < 0) return null;
+    return source.slice(0, timeoutStart)
+      + '    timeout-minutes: 44'
+      + source.slice(timeoutStart + timeoutAnchor.length);
+  });
+  expectFixture(result, 'Control 489: coordinator lane job timeout below the computed minimum is rejected', 1, ['timeout-minutes must be an integer of at least 45'], 489);
+}
+
+// Control 490: a workflow-level RUST_INTEL_VALIDATE_TIMEOUT_MS override invalidates the pinned
+// coordinator-vs-job timeout relationship, so its appearance in either workflow must fail —
+// including as a comment, since the ban is a deliberate whole-file content check.
+observeControls(490);
+{
+  const result = runValidateAgainstMutatedFiles(['.github/workflows/ci.yml'], (source) => {
+    const probe = '# control 490 probe: RUST_INTEL_VALIDATE_TIMEOUT_MS must stay unset';
+    return source.replace(/\n?$/u, '\n') + probe + '\n';
+  });
+  expectFixture(result, 'Control 490: workflow-level RUST_INTEL_VALIDATE_TIMEOUT_MS override is rejected', 1, ['must not set RUST_INTEL_VALIDATE_TIMEOUT_MS'], 490);
 }
 
 for (const fixture of cases) {
