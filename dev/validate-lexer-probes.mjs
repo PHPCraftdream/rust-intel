@@ -16,7 +16,7 @@ const fixtureSource = fs.readFileSync(path.join(root, 'dev', 'validate-fixtures.
 const rawControlId = process.argv[2] || '';
 const canonicalControlId = /^(?:0|[1-9]\d*)$/u.test(rawControlId) ? Number(rawControlId) : NaN;
 const controlId = Number.isSafeInteger(canonicalControlId) ? canonicalControlId : NaN;
-const supportedControls = new Set([399, 400, 401, 402, 409, 410, 411, 412, 413, 414, 421, 429, 439, 445, 446]);
+const supportedControls = new Set([399, 400, 401, 402, 409, 410, 411, 412, 413, 414, 421, 429, 439, 445, 446, 473, 474, 475, 476, 477, 478]);
 
 function completionMutation(replacement) {
   const anchor = '// Controls 400-402:';
@@ -79,6 +79,12 @@ function checkControl(id) {
     439: 'const expression439 = class extends function() { { value: 1; } } {} / completeCurrentControlScope(number, true) / 2;',
     445: 'const fieldMutation445 = class { function = {} / completeCurrentControlScope(number, true) / 2; };',
     446: 'const fieldMutation446 = class { class = {} / completeCurrentControlScope(number, true) / 2; };',
+    473: 'const fieldMutation473 = class { value = function () {} / completeCurrentControlScope(number, true) / 2; };',
+    474: 'const fieldMutation474 = class { static value = function () {} / completeCurrentControlScope(number, true) / 2; };',
+    475: 'const fieldMutation475 = class { #value = function () {} / completeCurrentControlScope(number, true) / 2; };',
+    476: 'const fieldMutation476 = class { ["value"] = function () {} / completeCurrentControlScope(number, true) / 2; };',
+    477: 'const fieldMutation477 = class { "value" = function () {} / completeCurrentControlScope(number, true) / 2; };',
+    478: 'const fieldMutation478 = class { 1 = function () {} / completeCurrentControlScope(number, true) / 2; };',
   };
   const mutated = completionMutation(replacements[id]);
   if (mutated === null) return { ok: false, observation: { kind: 'mutation-not-applied' } };

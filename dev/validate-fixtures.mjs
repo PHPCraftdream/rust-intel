@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 460 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 484 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 397 spawn child processes (380 validator children and 17 focused lexer/helper children), and 63
+// 403 spawn child processes (386 validator children and 17 focused lexer/helper children), and 81
 // run in-process (including direct, rule-text, and crude source oracles; see ruleTextControls and
 // B5/B26 below). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -96,7 +96,7 @@ const progress = (message) => {
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 460;
+const CONTROL_REGISTRY_TOTAL = 484;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -393,6 +393,12 @@ const expectedLexerObservations = new Map([
   [439, { kind: 'completion-violations', ids: [null] }],
   [445, { kind: 'completion-violations', ids: [null] }],
   [446, { kind: 'completion-violations', ids: [null] }],
+  [473, { kind: 'completion-violations', ids: [null] }],
+  [474, { kind: 'completion-violations', ids: [null] }],
+  [475, { kind: 'completion-violations', ids: [null] }],
+  [476, { kind: 'completion-violations', ids: [null] }],
+  [477, { kind: 'completion-violations', ids: [null] }],
+  [478, { kind: 'completion-violations', ids: [null] }],
 ]);
 function expectLexerProbe(controlId) {
   const result = runLexerProbe(controlId);
@@ -4185,6 +4191,56 @@ for (const [number, field, rootName] of [
     `const fieldFunctionMutation${number} = class { ${field} / ${rootName}.push({}) / 2; };`,
   ));
   expectFixture(result, `Control ${number}: actual workflow class-field function-expression mutation is rejected`, 1, ['workflow'], number);
+}
+
+// Controls 461-472: every legal class-field property-name form must advance the class-element
+// state before its function initializer. Expression/declaration twins keep the slash after the
+// class body in its corresponding division/regexp role. The declaration twins are deliberately
+// real class declarations, not merely keyword-shaped text.
+observeControls({ start: 461, end: 472 });
+const classFieldForms = [
+  ['ordinary', 'value'],
+  ['static', 'static value'],
+  ['private', '#value'],
+  ['computed', '["value"]'],
+  ['string', '"value"'],
+  ['numeric', '1'],
+];
+for (let formIndex = 0; formIndex < classFieldForms.length; formIndex += 1) {
+  const [name, field] = classFieldForms[formIndex];
+  const expressionId = 461 + formIndex * 2;
+  const declarationId = expressionId + 1;
+  for (const [number, source, expected] of [
+    [expressionId, `const expression${expressionId} = class { ${field} = function () {} / completeCurrentControlScope(${expressionId}, true) / 2; };`, [expressionId]],
+    [declarationId, `class Declaration${declarationId} { ${field} = function () {}; } / completeCurrentControlScope(${declarationId}, true) / 2;`, []],
+  ]) {
+    const actual = literalTrueCompletionViolations(source);
+    const passed = JSON.stringify(actual) === JSON.stringify(expected);
+    if (!passed) failures.push(`Control ${number}: ${name} class-field function-expression slash role mismatch (got ${JSON.stringify(actual)})`);
+    completeCurrentControlScope(number, passed);
+  }
+}
+
+// Controls 473-478: mutate the real completion loop with each class-field spelling. This keeps
+// the completion finding causal: a stale class-element role must expose the literal-true helper
+// as a completion violation rather than hiding it as a regexp.
+observeControls({ start: 473, end: 478 });
+for (const number of [473, 474, 475, 476, 477, 478]) expectLexerProbe(number);
+
+// Controls 479-484: the same six forms must remain visible when inserted into the live workflow
+// roots. This prevents an isolated lexer-only pass from masking a real MODULES/AUDIT_UNITS
+// mutation in the validator's source-contract path.
+observeControls({ start: 479, end: 484 });
+for (let formIndex = 0; formIndex < classFieldForms.length; formIndex += 1) {
+  const [name, field] = classFieldForms[formIndex];
+  const number = 479 + formIndex;
+  const rootName = formIndex % 2 === 0 ? 'MODULES' : 'AUDIT_UNITS';
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    rootName,
+    `const fieldFunctionMutation${number} = class { ${field} = function () {} / ${rootName}.push({}) / 2; };`,
+  ));
+  expectFixture(result, `Control ${number}: actual workflow ${name} class-field mutation is rejected`, 1, ['workflow'], number);
 }
 
 // Control 457: lexical scans may retain only one source/result pair, never an unbounded

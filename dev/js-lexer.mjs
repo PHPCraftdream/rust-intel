@@ -125,6 +125,13 @@ function scanLexical(source) {
   const noteClassElementToken = (token) => {
     const frame = classBodyFrame();
     if (!frame) return;
+    if ((frame.elementState === 'name' || frame.elementState === 'candidate') && token === '[') {
+      // A computed property name owns the whole bracket pair.  Leave the class frame in this
+      // state while scanning the expression so a nested `function`/`class` remains a construct,
+      // then resolve the element only when its closing bracket is reached.
+      frame.elementState = 'computedName';
+      return;
+    }
     if (frame.elementState === 'candidate') {
       // A lone `static { ... }` is a static block.  All other punctuation resolves
       // the preceding token as the element name (including `static = ...`).
@@ -237,6 +244,10 @@ function scanLexical(source) {
       continue;
     }
     if (character === "'" || character === '"') {
+      const frame = classBodyFrame();
+      if (frame && (frame.elementState === 'name' || frame.elementState === 'candidate')) {
+        frame.elementState = 'afterName';
+      }
       blank(index);
       index += 1;
       skipQuoted(character); canStartRegex = false; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = 'literal'; continue;
@@ -303,6 +314,10 @@ function scanLexical(source) {
     // a control-header close followed by a regexp.  Keep the hash and name visible to preserve
     // offsets; only the token-role state changes.
     if (character === '#' && isIdentifierStart(next)) {
+      const frame = classBodyFrame();
+      if (frame && (frame.elementState === 'name' || frame.elementState === 'candidate')) {
+        frame.elementState = 'afterName';
+      }
       index += 1;
       const start = index;
       index += 1;
@@ -315,6 +330,10 @@ function scanLexical(source) {
       continue;
     }
     if (/[0-9]/u.test(character) || (character === '.' && /[0-9]/u.test(next))) {
+      const frame = classBodyFrame();
+      if (frame && (frame.elementState === 'name' || frame.elementState === 'candidate')) {
+        frame.elementState = 'afterName';
+      }
       index += 1;
       while (index < source.length && /[A-Za-z0-9._]/u.test(source[index])) { index += 1; step(); }
       canStartRegex = false; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = 'number'; continue;
@@ -341,7 +360,12 @@ function scanLexical(source) {
       canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '('; index += 1; continue;
     }
     if (character === '[') {
-      push({ type: 'bracket' }); canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '['; index += 1; continue;
+      const frame = classBodyFrame();
+      const classComputedName = Boolean(frame
+        && (frame.elementState === 'name' || frame.elementState === 'candidate'));
+      noteClassElementToken('[');
+      push({ type: 'bracket', classComputedName });
+      canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '['; index += 1; continue;
     }
     if (character === '{') {
       // Only the most recent construct at the current delimiter depth can own this brace. A brace
@@ -386,6 +410,10 @@ function scanLexical(source) {
         throw new Error('JavaScript lexical delimiter mismatch');
       }
       stack.pop();
+      if (character === ']' && entry?.classComputedName) {
+        const enclosingClassBody = classBodyFrame();
+        if (enclosingClassBody) enclosingClassBody.elementState = 'afterName';
+      }
       if (character === '}' && entry?.classElementBody) {
         const enclosingClassBody = classBodyFrame();
         if (enclosingClassBody) enclosingClassBody.elementState = 'name';
