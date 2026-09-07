@@ -2,7 +2,7 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 409 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 414 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
@@ -72,7 +72,7 @@ const failures = [];
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 409;
+const CONTROL_REGISTRY_TOTAL = 414;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -3927,6 +3927,32 @@ observeControls(409);
   const passed = violations.length === 1 && violations[0] === null;
   if (!passed) failures.push(`Control 409: actual-loop literal-true mutation was not rejected (got ${JSON.stringify(violations)})`);
   completeCurrentControlScope(409, passed);
+}
+
+// Controls 410-414: mutating the actual completion loop through a sequence, array, object,
+// argument, or nonliteral-ID form must be rejected at the helper-reference level.  These are
+// source mutations rather than hand-written decoys: a permissive scanner would let the fixture
+// registry keep advancing while the real completion predicate had been replaced.
+observeControls({ start: 410, end: 414 });
+const completionLoopMutations = [
+  [410, '(0, completeCurrentControlScope)(number, true);', 'sequence'],
+  [411, '[completeCurrentControlScope][0](number, true);', 'array/property'],
+  [412, '({ done: completeCurrentControlScope }).done(number, true);', 'object/property'],
+  [413, 'consume(completeCurrentControlScope);', 'argument forwarding'],
+  [414, 'completeCurrentControlScope(number + 0, true);', 'nonliteral ID'],
+];
+const completionMutationAnchor = '// Controls 400-402:';
+const completionMutationStart = fixtureSource.indexOf(completionMutationAnchor);
+const completionMutationMarker = 'completeCurrentControlScope(number, passed);';
+const completionMutationMarkerIndex = completionMutationStart < 0
+  ? -1 : fixtureSource.indexOf(completionMutationMarker, completionMutationStart);
+for (const [number, replacement, label] of completionLoopMutations) {
+  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
+    + fixtureSource.slice(completionMutationMarkerIndex).replace(completionMutationMarker, replacement);
+  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
+  const passed = violations.length === 1 && violations[0] === null;
+  if (!passed) failures.push(`Control ${number}: actual-loop ${label} mutation was not rejected (got ${JSON.stringify(violations)})`);
+  completeCurrentControlScope(number, passed);
 }
 
 for (const fixture of cases) {

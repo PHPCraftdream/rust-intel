@@ -311,8 +311,22 @@ function completionDiagnostics(source) {
   };
   const stack = [];
   const significant = [];
-  const aliases = new Set();
+  // Keep the first canonical helper reference that introduced an alias.  A later alias call
+  // reports against that same source offset, so assignment + invocation is one violation rather
+  // than two copies of the same non-canonical reference.
+  const aliases = new Map();
   const diagnostics = [];
+  const diagnosticByIndex = new Map();
+  const report = (index, id = null) => {
+    const existing = diagnosticByIndex.get(index);
+    if (existing) {
+      if (existing.id === null && id !== null) existing.id = id;
+      return;
+    }
+    const entry = { index, id };
+    diagnosticByIndex.set(index, entry);
+    diagnostics.push(entry);
+  };
   const previous = () => significant[significant.length - 1];
   const isWord = (character) => character !== undefined && /[A-Za-z_$\p{ID_Start}]/u.test(character);
   const isWordContinue = (character) => character !== undefined
@@ -361,10 +375,15 @@ function completionDiagnostics(source) {
       if (beforeLast?.kind === 'close'
         && (!aliasReference || beforeLast.value !== '}')) return null;
       if (beforeLast?.kind === 'word' && !COMPLETION_PREFIX_WORDS.has(beforeLast.value)) return null;
-      return { outcome: 1, id: 0, index: last.start, canonical: last.value === COMPLETION_NAME };
+      return {
+        outcome: 1,
+        id: 0,
+        index: aliasReference ? aliases.get(last.value).index : last.start,
+        canonical: last.value === COMPLETION_NAME,
+      };
     }
     if (last?.kind === 'close' && last.groupName && completionName(last.groupName)) {
-      return { outcome: 1, id: 0, index: last.start, canonical: false };
+      return { outcome: 1, id: 0, index: last.groupIndex, canonical: false };
     }
     const calleeToken = beforeBeforeLast?.kind === 'word' && completionName(beforeBeforeLast.value)
       ? beforeBeforeLast : beforeBeforeLast?.kind === 'close' && beforeBeforeLast.groupName
@@ -397,14 +416,17 @@ function completionDiagnostics(source) {
       if (frame.call.apply && idSummary.kind === 'array') idSummary = idSummary.values?.[0] || { kind: 'other' };
       const id = idSummary.kind === 'number' && /^(?:0|[1-9][0-9]*)$/u.test(idSummary.value)
         && Number.isSafeInteger(Number(idSummary.value)) ? Number(idSummary.value) : null;
-      diagnostics.push({ index: frame.call.index, id });
+      report(frame.call.index, id);
     }
     if (frame.kind === 'paren' && !frame.call) {
       const atoms = frame.args[0] || [];
       const groupName = atoms.length === 1
         && ((atoms[0].kind === 'word' && completionName(atoms[0].value)) ? atoms[0].value : atoms[0].groupName);
+      const groupIndex = groupName
+        ? (atoms[0].kind === 'word' ? atoms[0].start : atoms[0].groupIndex)
+        : undefined;
       return groupName
-        ? { kind: 'group', summary: { kind: 'other' }, groupName }
+        ? { kind: 'group', summary: { kind: 'other' }, groupName, groupIndex }
         : { kind: 'group', summary: value };
     }
     return frame.kind === 'array' ? value : { kind: 'group', summary: value };
@@ -413,11 +435,21 @@ function completionDiagnostics(source) {
     addAtom(token);
     significant.push(token);
   };
-  const rememberAssignedAlias = (equalsIndex, referenceName) => {
+  const rememberAssignedAlias = (equalsIndex, referenceName, referenceIndex) => {
     if (!referenceName || significant[equalsIndex]?.value !== '=') return;
     const target = significant[equalsIndex - 1];
-    if (target?.kind === 'word' && target.value !== COMPLETION_NAME) aliases.add(target.value);
+    if (target?.kind === 'word' && target.value !== COMPLETION_NAME) {
+      aliases.set(target.value, { index: referenceIndex ?? target.start });
+    }
   };
+  const nextCodeIndex = (start) => {
+    let index = start;
+    while (index < executable.length && /\s/u.test(executable[index])) index += 1;
+    return index;
+  };
+  let importDeclaration = false;
+  let exportSpecifierPending = false;
+  let exportSpecifierDepth = 0;
   for (let index = 0; index < executable.length;) {
     step();
     const character = executable[index];
@@ -426,11 +458,36 @@ function completionDiagnostics(source) {
       const end = readWord(index);
       step(end - index);
       const value = executable.slice(index, end);
-      const token = { kind: 'word', value, start: index };
       const prior = significant.at(-1);
+      const nextIndex = nextCodeIndex(end);
+      const propertyReference = prior?.value === '.' || prior?.value === '?.';
+      const declarationReference = prior?.value === 'function' || prior?.value === 'class'
+        || prior?.value === 'const' || prior?.value === 'let' || prior?.value === 'var';
+      const propertyKey = executable[nextIndex] === ':';
+      const canonicalDirectCallee = value === COMPLETION_NAME && executable[nextIndex] === '('
+        && !propertyReference && !declarationReference
+        && !importDeclaration && exportSpecifierDepth === 0;
+      const completionReference = completionName(value)
+        && !propertyReference && !declarationReference && !propertyKey
+        && !importDeclaration && exportSpecifierDepth === 0;
+      const token = {
+        kind: 'word',
+        value,
+        start: index,
+        completionReference,
+        canonicalDirectCallee,
+      };
       const priorPrior = significant.at(-2);
       if (prior?.value === '=' && priorPrior?.kind === 'word' && completionName(value)
-        && executable[end] !== '(') rememberAssignedAlias(significant.length - 1, value);
+        && executable[nextIndex] !== '(') rememberAssignedAlias(significant.length - 1, value, index);
+      if (value === 'import') {
+        importDeclaration = executable[nextIndex] !== '(' && executable[nextIndex] !== '.';
+      } else if (value === 'from' && importDeclaration) {
+        importDeclaration = false;
+      } else if (value === 'export' && executable[nextIndex] === '{') {
+        exportSpecifierPending = true;
+      }
+      if (completionReference && !canonicalDirectCallee) report(index);
       emit(token); index = end; continue;
     }
     if (/[0-9]/u.test(character)) {
@@ -445,7 +502,14 @@ function completionDiagnostics(source) {
     }
     if (character === '[' || character === '{') {
       const frame = { kind: character === '[' ? 'array' : 'object', argument: 0, args: [[]], openSignificantIndex: significant.length };
-      stack.push(frame); significant.push({ kind: 'open', frame, start: index }); index += 1; continue;
+      stack.push(frame); significant.push({ kind: 'open', frame, start: index });
+      if (character === '{' && exportSpecifierPending) {
+        exportSpecifierDepth = 1;
+        exportSpecifierPending = false;
+      } else if (character === '{' && exportSpecifierDepth > 0) {
+        exportSpecifierDepth += 1;
+      }
+      index += 1; continue;
     }
     if (character === ',') {
       const frame = stack.at(-1);
@@ -459,10 +523,18 @@ function completionDiagnostics(source) {
       while (frame && frame.kind !== expected) frame = stack.pop();
       if (!frame) { emit({ kind: 'punct', value: character, start: index }); index += 1; continue; }
       const group = closeFrame(frame);
-      const close = { kind: 'close', value: character, frame, groupName: group.groupName, start: index };
-      if (group.groupName) rememberAssignedAlias(frame.openSignificantIndex - 1, group.groupName);
+      const close = {
+        kind: 'close',
+        value: character,
+        frame,
+        groupName: group.groupName,
+        groupIndex: group.groupIndex,
+        start: index,
+      };
+      if (group.groupName) rememberAssignedAlias(frame.openSignificantIndex - 1, group.groupName, group.groupIndex);
       significant.push(close);
       addAtom(group);
+      if (character === '}' && exportSpecifierDepth > 0) exportSpecifierDepth -= 1;
       index += 1; continue;
     }
     if (character === '.' && executable[index + 1] === '?') {
@@ -471,7 +543,9 @@ function completionDiagnostics(source) {
     if (character === '?' && executable[index + 1] === '.') {
       emit({ kind: 'punct', value: '?.', start: index }); index += 2; continue;
     }
-    emit({ kind: 'punct', value: character, start: index }); index += 1;
+    emit({ kind: 'punct', value: character, start: index });
+    if (character === ';') importDeclaration = false;
+    index += 1;
   }
   return diagnostics;
 }
