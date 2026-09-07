@@ -69,9 +69,17 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
 fi
 
 abrupt_abort() {
-    if [[ "${RUST_INTEL_INSTALL_ROLLING_BACK:-0}" != 1 && "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
+    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
     return 0
 }
+
+write_recovery_status() {
+    local journal="$1" index="$2" status="$3" temporary="$journal.tmp"
+    awk -v wanted="$index" -v replacement="$status" 'BEGIN { FS = OFS = "\t" } $1 == "record" && $2 == wanted { $3 = replacement } { print }' "$journal" > "$temporary"
+    mv -- "$temporary" "$journal"
+}
+
+# RUST_INTEL_ABORT_BOUNDARIES: before-journal,after-journal,before-backup-{index},after-backup-journal-{index},after-backup-rename-{index},before-restore-{index},after-restore-rename-{index},after-restore-status-{index},before-rollback-{index},after-rollback-{index},before-commit,after-commit,before-cleanup,after-cleanup
 
 OWNED=("$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
     "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md")
@@ -93,19 +101,29 @@ recover_transaction() {
         [[ "$kind" != phase ]] || continue
         [[ "$kind" == record ]] || continue
         [[ "$index" =~ ^[0-9]+$ && "$index" -lt "${#OWNED[@]}" && -z "${seen[$index]:-}" ]] || { echo "Error: invalid uninstall transaction record index (recover from $tx)." >&2; return 1; }
-        [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid uninstall transaction record (recover from $tx)." >&2; return 1; }
+        [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up || "$status" == restoring || "$status" == restored ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid uninstall transaction record (recover from $tx)." >&2; return 1; }
         seen[$index]=1
         record_count=$((record_count + 1))
         destination="${OWNED[$index]}"
         backup="$tx/backup/$index"
         if [[ "$phase" == committed || "$phase" == rolled-back ]]; then continue; fi
-        if [[ "$status" == backing-up && ! -e "$backup" && ! -L "$backup" && ( -e "$destination" || -L "$destination" ) ]]; then
+        if [[ "$status" == restoring && ! -e "$backup" && ! -L "$backup" && ( -e "$destination" || -L "$destination" ) ]]; then
+            write_recovery_status "$journal" "$index" restored
+            abrupt_abort "after-restore-status-$index"
+        elif [[ "$status" == restored ]]; then
+            [[ ( -e "$destination" || -L "$destination" ) && ! -e "$backup" && ! -L "$backup" ]] || { echo "Error: restored transaction record is incomplete: $destination (recover from $tx)." >&2; return 1; }
+        elif [[ "$status" == backing-up && ! -e "$backup" && ! -L "$backup" && ( -e "$destination" || -L "$destination" ) ]]; then
             # The journal is written before rename; destination-present/backup-absent proves that
             # the rename did not happen.  Preserve the unbacked destination.
             continue
         elif [[ -e "$backup" || -L "$backup" ]]; then
             if [[ ! -e "$destination" && ! -L "$destination" ]]; then
+                write_recovery_status "$journal" "$index" restoring
+                abrupt_abort "before-restore-$index"
                 mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || return 1
+                abrupt_abort "after-restore-rename-$index"
+                write_recovery_status "$journal" "$index" restored
+                abrupt_abort "after-restore-status-$index"
             else
                 echo "Error: unfinished uninstall has both destination and backup: $destination (recover from $tx)." >&2
                 return 1
@@ -155,9 +173,9 @@ mkdir -p "$BACKUP_ROOT"
 rollback_uninstall() {
     local status=$?
     set +e
-    # `exit` runs this EXIT trap. Disable fault injection before journal cleanup so an abort at
-    # before/after-journal cannot recursively re-enter rollback_uninstall.
-    RUST_INTEL_INSTALL_ROLLING_BACK=1
+    # Remove the EXIT trap before invoking rollback hooks. An intentional abort must retain the
+    # journal for the next invocation without recursively entering this handler.
+    trap - EXIT
     local rollback_failure=0
     if [[ "$ROLLBACK_NEEDED" -eq 1 ]]; then
         local index destination
@@ -169,8 +187,23 @@ rollback_uninstall() {
             if [[ -e "$destination" || -L "$destination" ]]; then
                 rollback_failure=1
             elif [[ -e "$backup" || -L "$backup" ]]; then
-                abrupt_abort "before-rollback-$owned_index"; mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || rollback_failure=1; abrupt_abort "after-rollback-$owned_index"
+                abrupt_abort "before-rollback-$owned_index"
+                write_journal active || rollback_failure=1
+                RECORD_STATUS[$owned_index]=restoring
+                write_recovery_status "$JOURNAL" "$owned_index" restoring || rollback_failure=1
+                abrupt_abort "before-restore-$owned_index"
+                mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || rollback_failure=1
+                abrupt_abort "after-restore-rename-$owned_index"
+                RECORD_STATUS[$owned_index]=restored
+                write_recovery_status "$JOURNAL" "$owned_index" restored || rollback_failure=1
+                write_journal active || rollback_failure=1
+                abrupt_abort "after-restore-status-$owned_index"
+                abrupt_abort "after-rollback-$owned_index"
             elif [[ "${RECORD_STATUS[$owned_index]}" == backed-up ]]; then
+                rollback_failure=1
+            elif [[ "${RECORD_STATUS[$owned_index]}" == restoring && ! -e "$destination" && ! -L "$destination" && ! -e "$backup" && ! -L "$backup" ]]; then
+                rollback_failure=1
+            elif [[ "${RECORD_STATUS[$owned_index]}" == restored && ( ( ! -e "$destination" && ! -L "$destination" ) || -e "$backup" || -L "$backup" ) ]]; then
                 rollback_failure=1
             fi
             index=$((index - 1))

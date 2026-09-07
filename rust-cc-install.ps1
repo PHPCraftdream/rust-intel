@@ -60,6 +60,8 @@ function Abrupt-Abort {
     if ($env:RUST_INTEL_INSTALL_ABORT_AT -eq $Boundary) { exit 86 }
 }
 
+# RUST_INTEL_ABORT_BOUNDARIES: before-journal,after-journal,before-backup-{index},after-backup-journal-{index},after-backup-rename-{index},before-replacement-{index},after-replacement-journal-{index},after-replacement-rename-{index},before-restore-{index},after-restore-rename-{index},after-restore-status-{index},before-rollback-{index},after-rollback-{index},before-commit,after-commit,before-cleanup,after-cleanup
+
 $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 if ($env:CLAUDE_CONFIG_DIR) {
@@ -156,6 +158,30 @@ function Write-TransactionJournal {
     Abrupt-Abort 'after-journal'
 }
 
+function Restore-TransactionRecord {
+    param([string]$JournalPath, [object]$Journal, [object]$Record, [int]$Index)
+    $backupPresent = Test-Path -LiteralPath $Record.backup
+    $destinationPresent = Test-Path -LiteralPath $Record.destination
+    if ($Record.status -eq 'restoring' -and -not $backupPresent -and $destinationPresent) {
+        $Record.status = 'restored'
+        Write-TransactionJournal $JournalPath 'active' @($Journal.records)
+        Abrupt-Abort ("after-restore-status-" + $Index)
+        return $true
+    }
+    if ($Record.status -eq 'restored') { return $destinationPresent -and -not $backupPresent }
+    if (-not $backupPresent -or $destinationPresent) { return $false }
+    $Record.status = 'restoring'
+    Write-TransactionJournal $JournalPath 'active' @($Journal.records)
+    Abrupt-Abort ("before-restore-" + $Index)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Record.destination) | Out-Null
+    Move-Item -LiteralPath $Record.backup -Destination $Record.destination
+    Abrupt-Abort ("after-restore-rename-" + $Index)
+    $Record.status = 'restored'
+    Write-TransactionJournal $JournalPath 'active' @($Journal.records)
+    Abrupt-Abort ("after-restore-status-" + $Index)
+    return $true
+}
+
 function Recover-Transaction {
     param([string]$Transaction, [string[]]$Owned)
     $journalPath = Join-Path $Transaction 'journal.json'
@@ -169,7 +195,7 @@ function Recover-Transaction {
     if ($journal.version -ne 1 -or $phases -notcontains [string]$journal.phase) { throw "Invalid installer transaction journal; recover manually from $Transaction" }
     $records = @($journal.records)
     if ($records.Count -ne $Owned.Count) { throw "Installer transaction journal record count does not match owned inventory: $Transaction" }
-    $statuses = @('pending', 'backing-up', 'backed-up', 'installing', 'installed')
+    $statuses = @('pending', 'backing-up', 'backed-up', 'installing', 'installed', 'restoring', 'restored')
     $backupRoot = [IO.Path]::GetFullPath((Join-Path $Transaction 'backup'))
     for ($recordIndex = 0; $recordIndex -lt $records.Count; $recordIndex++) {
         $record = $records[$recordIndex]
@@ -192,6 +218,14 @@ function Recover-Transaction {
         $backupPresent = Test-Path -LiteralPath $backup
         $destinationPresent = Test-Path -LiteralPath $destination
         if ($record.status -eq 'backing-up' -and -not $backupPresent -and $destinationPresent) { continue }
+        if ($record.status -eq 'restoring' -and -not $backupPresent -and $destinationPresent) {
+            try { Restore-TransactionRecord $journalPath $journal $record $recordIndex } catch { $failures += "$destination`: $($_.Exception.Message)" }
+            continue
+        }
+        if ($record.status -eq 'restored') {
+            if (-not $destinationPresent -or $backupPresent) { $failures += "$destination`: restored state is incomplete" }
+            continue
+        }
         if ($backupPresent) {
             if ($record.status -eq 'installed' -and $destinationPresent) {
                 try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
@@ -203,8 +237,7 @@ function Recover-Transaction {
             }
             if (-not (Test-Path -LiteralPath $destination) -and (Test-Path -LiteralPath $backup)) {
                 try {
-                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
-                    Move-Item -LiteralPath $backup -Destination $destination
+                    if (-not (Restore-TransactionRecord $journalPath $journal $record $recordIndex)) { throw 'destination and backup both exist' }
                 } catch { $failures += "$destination`: $($_.Exception.Message)" }
             } elseif ((Test-Path -LiteralPath $backup) -and (Test-Path -LiteralPath $destination)) {
                 $failures += "$destination`: destination and backup both exist"
@@ -316,10 +349,8 @@ try {
             Abrupt-Abort ("after-rollback-" + $recordIndex)
         }
         if ((Test-Path -LiteralPath $record.backup) -and -not (Test-Path -LiteralPath $record.destination)) {
-            try {
-                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $record.destination) | Out-Null
-                Move-Item -LiteralPath $record.backup -Destination $record.destination
-            } catch { $rollbackFailures += "$($record.destination): $($_.Exception.Message)" }
+            try { if (-not (Restore-TransactionRecord $journalPath ([pscustomobject]@{ records = $records }) $record $recordIndex)) { throw 'destination and backup both exist' } }
+            catch { $rollbackFailures += "$($record.destination): $($_.Exception.Message)" }
         } elseif ($backupPresent -and $destinationPresent -and $record.status -ne 'installed') {
             $rollbackFailures += "$($record.destination): destination and backup both exist"
         } elseif ($record.status -eq 'backing-up' -and -not $backupPresent -and -not $destinationPresent) {
@@ -328,6 +359,10 @@ try {
             $rollbackFailures += "$($record.destination): destination and backup are both absent"
         } elseif ($record.status -eq 'installing' -and $destinationPresent -and -not $backupPresent) {
             $rollbackFailures += "$($record.destination): unbacked destination exists while replacement is installing"
+        } elseif ($record.status -eq 'restoring' -and -not $destinationPresent -and -not $backupPresent) {
+            $rollbackFailures += "$($record.destination): destination and backup are both absent while restoring"
+        } elseif ($record.status -eq 'restored' -and (-not $destinationPresent -or $backupPresent)) {
+            $rollbackFailures += "$($record.destination): restored state is incomplete"
         }
     }
     if ($rollbackFailures.Count -gt 0) {

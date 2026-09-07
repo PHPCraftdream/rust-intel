@@ -204,9 +204,17 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
 fi
 
 abrupt_abort() {
-    if [[ "${RUST_INTEL_INSTALL_ROLLING_BACK:-0}" != 1 && "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
+    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
     return 0
 }
+
+write_recovery_status() {
+    local journal="$1" index="$2" status="$3" temporary="$journal.tmp"
+    awk -v wanted="$index" -v replacement="$status" 'BEGIN { FS = OFS = "\t" } $1 == "record" && $2 == wanted { $3 = replacement } { print }' "$journal" > "$temporary"
+    mv -- "$temporary" "$journal"
+}
+
+# RUST_INTEL_ABORT_BOUNDARIES: before-journal,after-journal,before-backup-{index},after-backup-journal-{index},after-backup-rename-{index},before-replacement-{index},after-replacement-journal-{index},after-replacement-rename-{index},before-restore-{index},after-restore-rename-{index},after-restore-status-{index},before-rollback-{index},after-rollback-{index},before-commit,after-commit,before-cleanup,after-cleanup
 
 # Build and validate the complete replacement beside the destination first. The old install is
 # moved to a backup only after every source file is known and copied successfully.
@@ -227,13 +235,18 @@ recover_transaction() {
         [[ "$kind" != phase ]] || continue
         [[ "$kind" == record ]] || continue
         [[ "$index" =~ ^[0-9]+$ && "$index" -lt "${#OWNED[@]}" && -z "${seen[$index]:-}" ]] || { echo "Error: invalid installer transaction record index (recover from $tx)." >&2; return 1; }
-        [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up || "$status" == installing || "$status" == installed ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid installer transaction record (recover from $tx)." >&2; return 1; }
+        [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up || "$status" == installing || "$status" == installed || "$status" == restoring || "$status" == restored ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid installer transaction record (recover from $tx)." >&2; return 1; }
         seen[$index]=1
         record_count=$((record_count + 1))
         destination="${OWNED[$index]}"
         backup="$tx/backup/$index"
         if [[ "$phase" == committed || "$phase" == rolled-back ]]; then continue; fi
-        if [[ "$status" == backing-up && ! -e "$backup" && ! -L "$backup" && ( -e "$destination" || -L "$destination" ) ]]; then
+        if [[ "$status" == restoring && ! -e "$backup" && ! -L "$backup" && ( -e "$destination" || -L "$destination" ) ]]; then
+            write_recovery_status "$journal" "$index" restored
+            abrupt_abort "after-restore-status-$index"
+        elif [[ "$status" == restored ]]; then
+            [[ ( -e "$destination" || -L "$destination" ) && ! -e "$backup" && ! -L "$backup" ]] || { echo "Error: restored transaction record is incomplete: $destination (recover from $tx)." >&2; return 1; }
+        elif [[ "$status" == backing-up && ! -e "$backup" && ! -L "$backup" && ( -e "$destination" || -L "$destination" ) ]]; then
             # The journal is written before rename; destination-present/backup-absent proves the
             # rename did not happen.  Never delete this unbacked live path.
             continue
@@ -245,7 +258,12 @@ recover_transaction() {
                 rm -rf -- "$destination" || return 1
             fi
             if [[ ! -e "$destination" && ! -L "$destination" ]]; then
+                write_recovery_status "$journal" "$index" restoring
+                abrupt_abort "before-restore-$index"
                 mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || return 1
+                abrupt_abort "after-restore-rename-$index"
+                write_recovery_status "$journal" "$index" restored
+                abrupt_abort "after-restore-status-$index"
             else
                 echo "Error: unfinished transaction has both destination and backup: $destination (recover from $tx)." >&2
                 return 1
@@ -315,9 +333,9 @@ mkdir -p "$STAGE_ROOT" "$BACKUP_ROOT"
 rollback_transaction() {
     local status=$?
     set +e
-    # `exit` runs this EXIT trap. Disable fault injection before journal cleanup so an abort at
-    # before/after-journal cannot recursively re-enter rollback_transaction.
-    RUST_INTEL_INSTALL_ROLLING_BACK=1
+    # Remove the EXIT trap before invoking rollback hooks. An intentional abort must retain the
+    # journal for the next invocation without recursively entering this handler.
+    trap - EXIT
     if [[ "$ROLLBACK_NEEDED" -eq 1 ]]; then
         local destination
         local index destination backup owned_status rollback_failure=0
@@ -332,8 +350,17 @@ rollback_transaction() {
                 fi
             fi
             if [[ ! -e "$destination" && ! -L "$destination" && ( -e "$backup" || -L "$backup" ) ]]; then
+                RECORD_STATUS[$owned_index]=restoring
+                write_journal active || rollback_failure=1
+                abrupt_abort "before-restore-$owned_index"
                 mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || rollback_failure=1
+                abrupt_abort "after-restore-rename-$owned_index"
+                RECORD_STATUS[$owned_index]=restored
+                write_journal active || rollback_failure=1
+                abrupt_abort "after-restore-status-$owned_index"
             elif [[ "$owned_status" == backed-up && ! -e "$backup" && ! -e "$destination" && ! -L "$destination" ]]; then rollback_failure=1
+            elif [[ "$owned_status" == restoring && ! -e "$backup" && ! -e "$destination" && ! -L "$destination" ]]; then rollback_failure=1
+            elif [[ "$owned_status" == restored && ( ! -e "$destination" && ! -L "$destination" || -e "$backup" || -L "$backup" ) ]]; then rollback_failure=1
             fi
             index=$((index - 1))
         done

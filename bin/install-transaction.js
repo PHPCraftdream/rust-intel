@@ -75,7 +75,9 @@ function readJournal(file) {
 }
 
 const JOURNAL_PHASES = new Set(['prepared', 'active', 'committed', 'rolled-back', 'rollback-failed']);
-const RECORD_STATUSES = new Set(['pending', 'backing-up', 'backed-up', 'installing', 'installed']);
+const RECORD_STATUSES = new Set(['pending', 'backing-up', 'backed-up', 'installing', 'installed', 'restoring', 'restored']);
+
+// RUST_INTEL_ABORT_BOUNDARIES: before-journal,after-journal,before-backup-{index},after-backup-journal-{index},after-backup-rename-{index},before-replacement-{index},after-replacement-journal-{index},after-replacement-rename-{index},before-restore-{index},after-restore-rename-{index},after-restore-status-{index},before-rollback-{index},after-rollback-{index},before-commit,after-commit,before-cleanup,after-cleanup
 
 function validateJournal(journal, transaction, owned) {
   if (!journal || journal.version !== 1 || !JOURNAL_PHASES.has(journal.phase)) {
@@ -129,7 +131,32 @@ function recoverTransaction(transaction, owned) {
     return;
   }
   const unresolved = [];
+  function restoreRecord(record, index) {
+    const backupPresent = pathExists(record.backup);
+    const destinationPresent = pathExists(record.destination);
+    if (record.status === 'restoring' && !backupPresent && destinationPresent) {
+      // The rename completed but the status write did not.  `restoring` is published only while
+      // the destination is absent, so destination-present/backup-absent is an unambiguous commit.
+      record.status = 'restored';
+      durableWrite(journalFile, journal);
+      abruptAbort(`after-restore-status-${index}`);
+      return true;
+    }
+    if (record.status === 'restored') return destinationPresent && !backupPresent;
+    if (!backupPresent || destinationPresent) return false;
+    record.status = 'restoring';
+    durableWrite(journalFile, journal);
+    abruptAbort(`before-restore-${index}`);
+    mkdirParent(record.destination);
+    fs.renameSync(record.backup, record.destination);
+    abruptAbort(`after-restore-rename-${index}`);
+    record.status = 'restored';
+    durableWrite(journalFile, journal);
+    abruptAbort(`after-restore-status-${index}`);
+    return true;
+  }
   for (const record of journal.records || []) {
+    const index = journal.records.indexOf(record);
     const backupPresent = pathExists(record.backup);
     const destinationPresent = pathExists(record.destination);
     if (record.status === 'backing-up' && !backupPresent && destinationPresent) {
@@ -146,13 +173,11 @@ function recoverTransaction(transaction, owned) {
         // restore the old snapshot below.
         try { remove(record.destination); } catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
       }
-      if (!pathExists(record.destination) && pathExists(record.backup)) {
+      if (pathExists(record.backup)) {
         try {
-          mkdirParent(record.destination);
-          fs.renameSync(record.backup, record.destination);
-        } catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
-      } else if (pathExists(record.backup)) {
-        unresolved.push(`${record.destination}: destination and backup both exist`);
+          if (!restoreRecord(record, index)) unresolved.push(`${record.destination}: destination and backup both exist`);
+        }
+        catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
       }
     } else if (record.status === 'installed' && !record.originalPresent && destinationPresent) {
       // The journal says this destination was installed by this transaction and had no backup.
@@ -161,6 +186,12 @@ function recoverTransaction(transaction, owned) {
       // Fresh install: there is no old snapshot, so a destination at this boundary is the new
       // replacement and can be removed to restore the pre-transaction state.
       try { remove(record.destination); } catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
+    } else if (record.status === 'restoring' && destinationPresent) {
+      try { restoreRecord(record, index); }
+      catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
+      if (record.status !== 'restored') unresolved.push(`${record.destination}: restore state is incomplete`);
+    } else if (record.status === 'restored') {
+      if (!destinationPresent || backupPresent) unresolved.push(`${record.destination}: restored state is incomplete`);
     } else if (record.status === 'installing' && destinationPresent) {
       unresolved.push(`${record.destination}: unbacked destination exists while replacement is installing`);
     } else if (record.status === 'backed-up' || (record.status === 'backing-up' && !destinationPresent)) {
@@ -210,6 +241,7 @@ function atomicInstall({ transactionParent, replacements, removals, prepare }) {
   durableWrite(journalFile, journal);
   abruptAbort('after-journal');
   let replacementCount = 0;
+  let backupCount = 0;
   const limit = failAfter();
 
   try {
@@ -226,6 +258,10 @@ function atomicInstall({ transactionParent, replacements, removals, prepare }) {
       abruptAbort(`after-backup-rename-${journal.records.indexOf(record)}`);
       record.status = 'backed-up';
       durableWrite(journalFile, journal);
+      backupCount += 1;
+      if (replacements.length === 0 && limit !== null && backupCount === limit) {
+        throw new Error(`injected installer failure after backup ${backupCount}`);
+      }
     }
 
     for (const { destination, staged } of replacements) {
@@ -255,6 +291,28 @@ function atomicInstall({ transactionParent, replacements, removals, prepare }) {
     abruptAbort('after-cleanup');
   } catch (error) {
     const failures = [];
+    function restoreRecord(record, index) {
+      const backupPresentNow = exists(record.backup);
+      const destinationPresentNow = exists(record.destination);
+      if (record.status === 'restoring' && !backupPresentNow && destinationPresentNow) {
+        record.status = 'restored';
+        durableWrite(journalFile, journal);
+        abruptAbort(`after-restore-status-${index}`);
+        return true;
+      }
+      if (record.status === 'restored') return destinationPresentNow && !backupPresentNow;
+      if (!backupPresentNow || destinationPresentNow) return false;
+      record.status = 'restoring';
+      durableWrite(journalFile, journal);
+      abruptAbort(`before-restore-${index}`);
+      mkdirParent(record.destination);
+      fs.renameSync(record.backup, record.destination);
+      abruptAbort(`after-restore-rename-${index}`);
+      record.status = 'restored';
+      durableWrite(journalFile, journal);
+      abruptAbort(`after-restore-status-${index}`);
+      return true;
+    }
     // Remove only destinations whose replacement was durably recorded.  Unrelated siblings and
     // paths whose backup never completed are never enumerated or deleted.
     for (const record of journal.records.slice().reverse()) {
@@ -266,8 +324,10 @@ function atomicInstall({ transactionParent, replacements, removals, prepare }) {
         abruptAbort(`after-rollback-${journal.records.indexOf(record)}`);
       }
       if (exists(record.backup) && !exists(record.destination)) {
-        try { mkdirParent(record.destination); fs.renameSync(record.backup, record.destination); }
+        abruptAbort(`before-rollback-${journal.records.indexOf(record)}`);
+        try { restoreRecord(record, journal.records.indexOf(record)); }
         catch (rollbackError) { failures.push(`${record.destination}: ${rollbackError.message}`); }
+        abruptAbort(`after-rollback-${journal.records.indexOf(record)}`);
       } else if (backupPresent && destinationPresent && record.status !== 'installed') {
         failures.push(`${record.destination}: destination and backup both exist`);
       } else if (record.status === 'backing-up' && !exists(record.backup) && !exists(record.destination)) {
@@ -276,6 +336,10 @@ function atomicInstall({ transactionParent, replacements, removals, prepare }) {
         failures.push(`${record.destination}: destination and backup are both absent`);
       } else if (record.status === 'installing' && destinationPresent && !backupPresent) {
         failures.push(`${record.destination}: unbacked destination exists while replacement is installing`);
+      } else if (record.status === 'restoring' && !destinationPresent && !backupPresent) {
+        failures.push(`${record.destination}: destination and backup are both absent while restoring`);
+      } else if (record.status === 'restored' && (!destinationPresent || backupPresent)) {
+        failures.push(`${record.destination}: restored state is incomplete`);
       }
     }
     if (failures.length) {

@@ -161,9 +161,15 @@ jobs:
               for phase in before-backup after-backup-journal after-backup-rename; do
                 run_case "$surface" install upgrade "${phase}-${index}"
               done
+              for phase in before-restore after-restore-rename after-restore-status; do
+                run_case "$surface" install upgrade "${phase}-${index}"
+              done
             done
             for index in "${replacements[@]}"; do
               for phase in before-replacement after-replacement-journal after-replacement-rename; do
+                run_case "$surface" install upgrade "${phase}-${index}"
+              done
+              for phase in before-rollback after-rollback; do
                 run_case "$surface" install upgrade "${phase}-${index}"
               done
             done
@@ -177,7 +183,18 @@ jobs:
               for phase in before-replacement after-replacement-journal after-replacement-rename; do
                 run_case "$surface" install sparse "${phase}-${replacement_index}"
               done
+              for phase in before-restore after-restore-rename after-restore-status; do
+                run_case "$surface" install sparse "${phase}-${sparse_index}"
+              done
+              for phase in before-rollback after-rollback; do
+                run_case "$surface" install sparse "${phase}-${replacement_index}"
+              done
             fi
+            for index in "${replacements[@]}"; do
+              for phase in before-rollback after-rollback; do
+                run_case "$surface" install fresh "${phase}-${index}"
+              done
+            done
           }
 
           uninstall_matrix() {
@@ -196,9 +213,15 @@ jobs:
               for phase in before-backup after-backup-journal after-backup-rename; do
                 run_case "$surface" uninstall upgrade "${phase}-${index}"
               done
+              for phase in before-restore after-restore-rename after-restore-status before-rollback after-rollback; do
+                run_case "$surface" uninstall upgrade "${phase}-${index}"
+              done
             done
             if [[ "$surface" != node-codex ]]; then
               for phase in before-backup after-backup-journal after-backup-rename; do
+                run_case "$surface" uninstall sparse "${phase}-${sparse_index}"
+              done
+              for phase in before-restore after-restore-rename after-restore-status before-rollback after-rollback; do
                 run_case "$surface" uninstall sparse "${phase}-${sparse_index}"
               done
             fi
@@ -402,14 +425,29 @@ jobs:
               Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
               Invoke-RecoveryCase 'uninstall' 'upgrade' "$phase-$index"
             }
+            foreach ($phase in 'before-restore','after-restore-rename','after-restore-status') {
+              Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
+              Invoke-RecoveryCase 'uninstall' 'upgrade' "$phase-$index"
+            }
+            foreach ($phase in 'before-rollback','after-rollback') {
+              Invoke-RecoveryCase 'uninstall' 'upgrade' "$phase-$index"
+            }
           }
           foreach ($index in $replacementIndices) {
             foreach ($phase in 'before-replacement','after-replacement-journal','after-replacement-rename') {
               Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
               Invoke-RecoveryCase 'install' 'fresh' "$phase-$index"
             }
+            foreach ($phase in 'before-rollback','after-rollback') {
+              Invoke-RecoveryCase 'install' 'upgrade' "$phase-$index"
+              Invoke-RecoveryCase 'install' 'fresh' "$phase-$index"
+            }
           }
           foreach ($phase in 'before-backup','after-backup-journal','after-backup-rename') {
+            Invoke-RecoveryCase 'install' 'sparse' "$phase-5"
+            Invoke-RecoveryCase 'uninstall' 'sparse' "$phase-5"
+          }
+          foreach ($phase in 'before-restore','after-restore-rename','after-restore-status','before-rollback','after-rollback') {
             Invoke-RecoveryCase 'install' 'sparse' "$phase-5"
             Invoke-RecoveryCase 'uninstall' 'sparse' "$phase-5"
           }
