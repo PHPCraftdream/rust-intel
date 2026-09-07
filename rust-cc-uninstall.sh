@@ -69,7 +69,8 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
 fi
 
 abrupt_abort() {
-    [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]] && exit 86
+    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
+    return 0
 }
 
 OWNED=("$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
@@ -187,9 +188,10 @@ backup_owned() {
     local destination="$1"
     if [[ -e "$destination" || -L "$destination" ]]; then
         BACKUP_DESTS[$BACKUP_COUNT]="$destination"
-        BACKUP_PATHS[$BACKUP_COUNT]="$BACKUP_ROOT/$BACKUP_COUNT"
         local index="$BACKUP_COUNT" owned_index
         for owned_index in ${!OWNED[@]}; do [[ "${OWNED[$owned_index]}" == "$destination" ]] && break; done
+        [[ "$owned_index" -lt "${#OWNED[@]}" ]] || { echo "Error: destination is outside owned inventory: $destination" >&2; return 1; }
+        BACKUP_PATHS[$BACKUP_COUNT]="$BACKUP_ROOT/$owned_index"
         BACKUP_INDICES[$index]="$owned_index"
         RECORD_STATUS[$owned_index]=backing-up
         abrupt_abort "before-backup-$owned_index"

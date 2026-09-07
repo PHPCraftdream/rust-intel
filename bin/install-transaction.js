@@ -141,8 +141,10 @@ function recoverTransaction(transaction, owned) {
       if (record.status === 'installed' && destinationPresent) {
         try { remove(record.destination); } catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
       } else if (record.status === 'installing' && destinationPresent) {
-        // Installing was not durably completed, so this destination is not ours to delete.
-        unresolved.push(`${record.destination}: unbacked destination exists while replacement is installing`);
+        // The old path was moved to backup before replacement installation began. Thus a
+        // destination at this boundary is the replacement after its rename; remove it and
+        // restore the old snapshot below.
+        try { remove(record.destination); } catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
       }
       if (!pathExists(record.destination) && pathExists(record.backup)) {
         try {
@@ -154,6 +156,10 @@ function recoverTransaction(transaction, owned) {
       }
     } else if (record.status === 'installed' && !record.originalPresent && destinationPresent) {
       // The journal says this destination was installed by this transaction and had no backup.
+      try { remove(record.destination); } catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
+    } else if (record.status === 'installing' && destinationPresent && !record.originalPresent) {
+      // Fresh install: there is no old snapshot, so a destination at this boundary is the new
+      // replacement and can be removed to restore the pre-transaction state.
       try { remove(record.destination); } catch (error) { unresolved.push(`${record.destination}: ${error.message}`); }
     } else if (record.status === 'installing' && destinationPresent) {
       unresolved.push(`${record.destination}: unbacked destination exists while replacement is installing`);
@@ -190,26 +196,21 @@ function atomicInstall({ transactionParent, replacements, removals, prepare }) {
   recoverTransactions(transactionParent, uniqueOwned);
   const transaction = fs.mkdtempSync(path.join(transactionParent, '.rust-intel-tx-'));
   const backupRoot = path.join(transaction, 'backup');
-  const journal = {
-    version: 1, phase: 'prepared', records: [],
-  };
+  // Build the complete owned inventory before the first journal publication.  A restart after
+  // that publication must always have a structurally valid record set to validate and recover.
+  const records = uniqueOwned.map((destination, index) => ({
+    destination,
+    backup: path.join(backupRoot, String(index)),
+    status: 'pending',
+    originalPresent: exists(destination),
+  }));
+  const journal = { version: 1, phase: 'prepared', records };
   const journalFile = path.join(transaction, 'journal.json');
   abruptAbort('before-journal');
   durableWrite(journalFile, journal);
   abruptAbort('after-journal');
   let replacementCount = 0;
   const limit = failAfter();
-  for (const destination of uniqueOwned) {
-    journal.records.push({
-      destination,
-      backup: path.join(backupRoot, String(journal.records.length)),
-      status: 'pending',
-      originalPresent: exists(destination),
-    });
-  }
-  abruptAbort('before-journal');
-  durableWrite(journalFile, journal);
-  abruptAbort('after-journal');
 
   try {
     fs.mkdirSync(backupRoot);

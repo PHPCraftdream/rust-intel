@@ -204,7 +204,8 @@ if [[ -n "${RUST_INTEL_INSTALL_FAIL_AFTER:-}" && ! "${RUST_INTEL_INSTALL_FAIL_AF
 fi
 
 abrupt_abort() {
-    [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]] && exit 86
+    if [[ "${RUST_INTEL_INSTALL_ABORT_AT:-}" == "$1" ]]; then exit 86; fi
+    return 0
 }
 
 # Build and validate the complete replacement beside the destination first. The old install is
@@ -240,8 +241,8 @@ recover_transaction() {
             if [[ "$status" == installed && ( -e "$destination" || -L "$destination" ) ]]; then
                 rm -rf -- "$destination" || return 1
             elif [[ "$status" == installing && ( -e "$destination" || -L "$destination" ) ]]; then
-                echo "Error: unfinished transaction has an unbacked destination while replacement is installing: $destination (recover from $tx)." >&2
-                return 1
+                # The replacement reached the destination after the old path was backed up.
+                rm -rf -- "$destination" || return 1
             fi
             if [[ ! -e "$destination" && ! -L "$destination" ]]; then
                 mkdir -p -- "$(dirname "$destination")" && mv -- "$backup" "$destination" || return 1
@@ -250,6 +251,10 @@ recover_transaction() {
                 return 1
             fi
         elif [[ "$status" == installed && "$original" == 0 && ( -e "$destination" || -L "$destination" ) ]]; then
+            rm -rf -- "$destination" || return 1
+        elif [[ "$status" == installing && ( -e "$destination" || -L "$destination" ) && "$original" == 0 ]]; then
+            # Fresh installs have no old snapshot, so remove the replacement to restore the
+            # pre-transaction state.
             rm -rf -- "$destination" || return 1
         elif [[ "$status" == installing && ( -e "$destination" || -L "$destination" ) ]]; then
             echo "Error: unfinished transaction has an unbacked destination while replacement is installing: $destination (recover from $tx)." >&2
@@ -381,12 +386,13 @@ backup_owned() {
     local destination="$1"
     if [[ -e "$destination" || -L "$destination" ]]; then
         BACKUP_DESTS[$BACKUP_COUNT]="$destination"
-        BACKUP_PATHS[$BACKUP_COUNT]="$BACKUP_ROOT/$BACKUP_COUNT"
         local index="$BACKUP_COUNT"
         local owned_index
         for owned_index in ${!OWNED[@]}; do
             [[ "${OWNED[$owned_index]}" == "$destination" ]] && break
         done
+        [[ "$owned_index" -lt "${#OWNED[@]}" ]] || { echo "Error: destination is outside owned inventory: $destination" >&2; return 1; }
+        BACKUP_PATHS[$BACKUP_COUNT]="$BACKUP_ROOT/$owned_index"
         BACKUP_INDICES[$index]="$owned_index"
         RECORD_STATUS[$owned_index]=backing-up
         abrupt_abort "before-backup-$owned_index"

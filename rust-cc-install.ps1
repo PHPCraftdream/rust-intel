@@ -196,7 +196,10 @@ function Recover-Transaction {
             if ($record.status -eq 'installed' -and $destinationPresent) {
                 try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
             } elseif ($record.status -eq 'installing' -and $destinationPresent) {
-                $failures += "$destination`: unbacked destination exists while replacement is installing"
+                # The old path was moved to backup before replacement installation began. Thus a
+                # destination at this boundary is the replacement after its rename; remove it
+                # and restore the old snapshot below.
+                try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
             }
             if (-not (Test-Path -LiteralPath $destination) -and (Test-Path -LiteralPath $backup)) {
                 try {
@@ -207,6 +210,10 @@ function Recover-Transaction {
                 $failures += "$destination`: destination and backup both exist"
             }
         } elseif ($record.status -eq 'installed' -and -not [bool]$record.originalPresent -and $destinationPresent) {
+            try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
+        } elseif ($record.status -eq 'installing' -and $destinationPresent -and -not [bool]$record.originalPresent) {
+            # Fresh install: there is no old snapshot, so remove the replacement to restore the
+            # pre-transaction state.
             try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
         } elseif ($record.status -eq 'installing' -and $destinationPresent) {
             $failures += "$destination`: unbacked destination exists while replacement is installing"
