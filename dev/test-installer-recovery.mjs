@@ -67,6 +67,26 @@ function command(target) {
   return ['pwsh', ['-NoProfile', '-File', path.join(repo, operation === 'install' ? 'rust-cc-install.ps1' : 'rust-cc-uninstall.ps1')], { CLAUDE_CONFIG_DIR: target }];
 }
 
+// Keep the journal record order in one place. Node Claude intentionally journals its removals
+// before replacements; the other surfaces use their public owned inventory order. A case outside
+// this inventory is a coverage error, not a successful no-op.
+function boundaryInventory() {
+  const common = new Set(['before-journal', 'after-journal', 'before-commit', 'after-commit', 'before-cleanup', 'after-cleanup']);
+  const backup = surface === 'node-claude' && operation === 'install'
+    ? [0, 1, 2, 3, 4]
+    : surface === 'node-codex' ? [0] : [0, 1, 2, 3, 4, 5, 6, 7, 8];
+  const replacements = operation === 'install'
+    ? surface === 'node-claude' ? [5, 6, 7, 8] : surface === 'node-codex' ? [0] : [0, 1, 2, 3]
+    : [];
+  for (const index of backup) {
+    for (const phase of ['before-backup', 'after-backup-journal', 'after-backup-rename']) common.add(`${phase}-${index}`);
+  }
+  for (const index of replacements) {
+    for (const phase of ['before-replacement', 'after-replacement-journal', 'after-replacement-rename']) common.add(`${phase}-${index}`);
+  }
+  return common;
+}
+
 function run(target, abortBoundary) {
   const [executable, args, variables] = command(target);
   const env = { ...process.env, ...variables };
@@ -92,6 +112,15 @@ function assertStatus(result, expected, label) {
 try {
   const expectedTarget = path.join(root, 'expected target with spaces');
   const actualTarget = path.join(root, 'actual target with spaces');
+  if (!boundaryInventory().has(boundary)) {
+    // Prove that the implementation treats the unknown hook as a normal run, then reject it as
+    // an invalid coverage case. This prevents a typo in the CI matrix from becoming a false green.
+    const probeTarget = path.join(root, 'unreachable boundary target');
+    fixture(probeTarget);
+    const probe = run(probeTarget, boundary);
+    assertStatus(probe, 0, `nonexistent abort boundary ${boundary}`);
+    throw new Error(`${surface} ${operation} ${mode} ${boundary}: boundary is not reachable; coverage case rejected`);
+  }
   fixture(expectedTarget);
   fixture(actualTarget);
   if (operation === 'install') {
@@ -101,13 +130,16 @@ try {
   const expected = operation === 'install'
     ? snapshot(expectedTarget)
     : (() => { const result = run(expectedTarget); assertStatus(result, 0, 'clean uninstall'); return snapshot(expectedTarget); })();
+  const initial = snapshot(actualTarget);
 
   const interrupted = run(actualTarget, boundary);
   assertStatus(interrupted, 86, `${surface} ${operation} ${mode} ${boundary}`);
   const restarted = run(actualTarget);
   assertStatus(restarted, 0, `${surface} ${operation} ${mode} ${boundary} restart`);
   const actual = snapshot(actualTarget);
-  if (actual !== expected) throw new Error(`${surface} ${operation} ${mode} ${boundary}: complete inventory differs after restart`);
+  if (actual !== initial && actual !== expected) {
+    throw new Error(`${surface} ${operation} ${mode} ${boundary}: complete post-restart inventory is neither old nor new`);
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
