@@ -147,9 +147,14 @@ function expectedReplacementIndices() {
 
 function assertReplacementInventory(hooks, label) {
   const expected = expectedReplacementIndices();
-  const actual = replacementIndicesFromHooks(hooks);
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(`${label}: clean replacement hooks ${JSON.stringify(actual)} do not match declared inventory ${JSON.stringify(expected)}`);
+  const expectedHooks = expected.flatMap((index) => [
+    `before-replacement-${index}`,
+    `after-replacement-journal-${index}`,
+    `after-replacement-rename-${index}`,
+  ]);
+  const actualHooks = hooks.filter((entry) => /^(?:before|after)-replacement(?:-journal|-rename)?-\d+$/.test(entry));
+  if (JSON.stringify(actualHooks) !== JSON.stringify(expectedHooks)) {
+    throw new Error(`${label}: clean replacement hooks ${JSON.stringify(actualHooks)} do not match declared inventory ${JSON.stringify(expectedHooks)}`);
   }
 }
 
