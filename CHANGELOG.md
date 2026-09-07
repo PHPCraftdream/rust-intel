@@ -94,7 +94,7 @@ This release also closes out two prior commits that shipped without a changelog 
 
 **Rounds 20–21's two validator-conformance P3s are closed in the net architecture.** The anchored contract's shared `projectFenceOpener` feeds the fence mask, and invalid backtick-info lines are body-width failures rather than table-boundary false negatives; no standalone table-boundary detector remains. The NBSP arbitrary-table delimiter case is moot because non-anchored tables are outside the anchored contract, while surviving delimiter normalization still treats only the cmark-gfm ASCII whitespace class as table space. See `docs/reviews/latest-commits-review-round-20-2026-09-04-1206.md` findings 1–2 and `docs/reviews/latest-commits-review-round-21-2026-09-04-1228.md` carried P3 findings 1–2.
 
-**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, and tracks class-body roles across brace-bearing `extends` expressions. Function/class-expression division, direct function-heritage ordering, and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–440; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 440 controls, with 374 child-process controls and 66 in-process controls; installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
+**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, tracks class-body roles across brace-bearing `extends` expressions, and distinguishes keyword-named class fields with a bounded lexical cache. Function/class-expression division, direct function-heritage ordering, and the associated completion-loop/workflow-mutation boundaries are covered by controls 415–449; indirect provenance remains a runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI definitions for current Node 24 and exact `24.0.0`. The fixture suite has 449 controls, with 376 child-process controls and 73 in-process controls; the 440-control/374-child/66-in-process split is historical to the round-40 review base at `8b2d576`. Installer interruption/recovery cases live in the separate `dev/test-installer-recovery.mjs` matrix/helper and are not included in that numbered total. Parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes remain outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and the corresponding round-23 report; those counts and results are revision-qualified historical evidence, not current-head CI claims.
 
 **Round-38 fixing disposition.** `2948c85` tracks class-body roles across brace-bearing `extends`
 expressions and adds the corresponding causal controls; `5d9e8a8` implements the reported installer
@@ -109,7 +109,7 @@ publication is claimed.
 
 **Round-39 fixing disposition (implementation parent `7042ce8`, documentation at `8b2d576`; pending independent review).** `f5a655e` adds ordered
 same-depth class/function heritage tracking and controls 423–440, bringing the fixture suite to
-440 controls (374 child-process and 66 in-process). `1363cc8` adds checked POSIX inventory
+440 controls (374 child-process and 66 in-process at that historical disposition). `1363cc8` adds checked POSIX inventory
 materialization, cross-operation transaction recovery for Bash/PowerShell, operation-correct
 cleanup, finite child/release-version subprocess timeouts, CI job timeouts/sharding, and generated
 Bash 3.2/PowerShell matrix execution. `7042ce8` makes replacement-hook inventory checks
@@ -120,13 +120,18 @@ implementation parent and its documentation disposition are distinct revisions; 
 current-head release claim. No closure, current-head CI, version bump, tag, push, or publication is
 claimed until those gaps and the independent follow-up are complete.
 
-**Round-40 fixing disposition (partial, pending HS follow-up).** This pass adds the measured
-45-minute timeout to `.github/workflows/npm-publish.yml`, corrects the round-39 parent/disposition
-provenance, and qualifies the README/CHANGELOG/Layout summaries against round 40's findings. The
-round-40 blank-only POSIX inventory, keyword-named class-field, full-validator OOM, independent
-cross-operation oracle, and two-prefix debris-calibration findings remain open until their
-implementation fixes and a fresh independent review land. No current-head CI, version bump, tag,
-push, or publication is claimed.
+**Round-40 fixing disposition (implemented, pending final proof and HS follow-up).** `6b435f7`
+closes blank-only POSIX inventory acceptance and replaces the self-replaying cross-operation and
+single-prefix debris oracles with independent clean-operation and complete-prefix checks.
+`090844b` distinguishes keyword-named class fields and bounds the lexical cache, adding controls
+441–449. `81b5d60` adds the measured 45-minute timeout to `.github/workflows/npm-publish.yml`,
+corrects round-39 provenance, and qualifies the release-facing summaries. The current fixture
+header is 449 controls (376 child-process and 73 in-process); 440/374/66 remains historical to
+the round-40 review base at `8b2d576`. The bounded-cache fix reduces retention, but an ordinary
+fixture run and `npm run validate` still terminate with a V8 heap-allocation failure; the full
+validator and generated Node recovery matrix memory behavior therefore require further diagnosis
+and proof, followed by an independent HS follow-up. No current-head CI, version bump, tag, push, or
+publication is claimed.
 
 ## [0.6.0] — 2026-08-19
 
