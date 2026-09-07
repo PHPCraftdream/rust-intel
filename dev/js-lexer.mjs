@@ -53,8 +53,13 @@ function scanLexical(source) {
   // a declaration statement or an expression.  Keep that role attached to the construct rather
   // than inferring it from the `)`/identifier immediately before the body: both forms have the
   // same surface tokens, but `function () {} / value` is division while `function f() {} /re/` is
-  // a regexp statement.
-  let pendingClassBodyRole = null;
+  // a regexp statement.  Class bodies are keyed by the delimiter depth at which their complete
+  // header started.  This matters for `class extends mixin({}) {}` and
+  // `class extends (class {}) {}`: braces in the heritage expression belong to nested delimiter
+  // frames and must not consume the outer class's pending body role.
+  // One short stack per delimiter depth keeps lookup and removal O(1) even for adversarial
+  // source containing many unfinished class keywords; do not scan all pending constructs here.
+  const pendingClassConstructs = new Map();
   let pendingFunctionBodyRole = null;
   let previousWordBeforeToken = '';
   let previousTokenBeforeWord = '';
@@ -188,13 +193,17 @@ function scanLexical(source) {
       previousWordBeforeToken = wordBeforeWord;
       previousWord = word;
       if (word === 'class' && !propertyName) {
-        pendingClassBodyRole = declarationOrExpression(
-          tokenBeforeWord,
-          wordBeforeWord,
-          tokenBeforePreviousWord,
-          wordBeforePreviousWord,
-          stack.at(-1)?.type === 'brace' && stack.at(-1).block,
-        );
+        const constructs = pendingClassConstructs.get(stack.length) || [];
+        constructs.push({
+          bodyRole: declarationOrExpression(
+            tokenBeforeWord,
+            wordBeforeWord,
+            tokenBeforePreviousWord,
+            wordBeforePreviousWord,
+            stack.at(-1)?.type === 'brace' && stack.at(-1).block,
+          ),
+        });
+        pendingClassConstructs.set(stack.length, constructs);
       }
       if (word === 'function' && !propertyName) {
         pendingFunctionBodyRole = declarationOrExpression(
@@ -252,7 +261,12 @@ function scanLexical(source) {
       push({ type: 'bracket' }); canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '['; index += 1; continue;
     }
     if (character === '{') {
-      const bodyRole = pendingClassBodyRole || pendingFunctionBodyRole;
+      // Only a class construct at the current delimiter depth can own this brace.  A brace in
+      // `extends mixin({})`, an object literal, or a nested class is therefore left on its own
+      // frame; the outer class role is consumed by the later body brace.
+      const constructs = pendingClassConstructs.get(stack.length);
+      const classConstruct = constructs?.at(-1) || null;
+      const bodyRole = classConstruct?.bodyRole || pendingFunctionBodyRole;
       const block = previousWord === 'else' || previousWord === 'do' || previousWord === 'try'
         || previousWord === 'catch' || previousWord === 'finally' || bodyRole !== null || previousToken === ')'
         || previousToken === '}' || previousToken === ';' || previousToken === ':' || previousToken === '=>'
@@ -262,7 +276,10 @@ function scanLexical(source) {
         block,
         closeCanStartRegex: bodyRole === 'expression' ? false : block,
       });
-      pendingClassBodyRole = null;
+      if (classConstruct) {
+        constructs.pop();
+        if (constructs.length === 0) pendingClassConstructs.delete(stack.length);
+      }
       pendingFunctionBodyRole = null;
       canStartRegex = true; previousWord = ''; previousWasDot = false; previousWasProperty = false; previousToken = '{'; index += 1; continue;
     }

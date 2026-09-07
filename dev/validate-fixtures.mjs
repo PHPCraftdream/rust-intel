@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 422 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 430 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 372 spawn a validator child and 50 are in-process (the junction alias and direct oracles); there
+// 373 spawn a validator child and 57 are in-process (the junction alias and direct oracles); there
 // are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
 // probes (B5/B26). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -72,7 +72,7 @@ const failures = [];
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 422;
+const CONTROL_REGISTRY_TOTAL = 430;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -3993,6 +3993,45 @@ for (const [number, source, expected] of [
     'const expression422 = class Named422 {} / MODULES.push({}) / 2;',
   ));
   expectFixture(result, 'Control 422: actual workflow class-expression mutation is rejected', 1, ['workflow'], 422);
+}
+
+// Controls 423-430: a class heritage expression may contain calls, object literals, or a nested
+// class before the outer body.  Braces in that expression must not consume the outer class role:
+// expression bodies expose the following division/helper, while declaration bodies still make the
+// same spelling a regexp.  The final two controls mutate the real completion loop and workflow
+// root so a permissive scanner cannot pass only because these are isolated strings.
+observeControls({ start: 423, end: 430 });
+for (const [number, source, expected] of [
+  [423, 'const expression423 = class extends mixin({}) {} / completeCurrentControlScope(423, true) / 2;', [423]],
+  [424, 'const expression424 = class extends (class {}) {} / completeCurrentControlScope(424, true) / 2;', [424]],
+  [425, 'const expression425 = class extends ({ base: { value: 1 } }) {} / completeCurrentControlScope(425, true) / 2;', [425]],
+  [426, 'class declaration426 extends mixin({}) {} / completeCurrentControlScope(426, true) / 2;', []],
+  [427, 'class Declaration427 extends (class {}) {} / completeCurrentControlScope(427, true) / 2;', []],
+  [428, 'class Declaration428 extends ({ base: { value: 1 } }) {} / completeCurrentControlScope(428, true) / 2;', []],
+]) {
+  const actual = literalTrueCompletionDiagnostics(source).map(({ id }) => id);
+  const passed = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!passed) failures.push(`Control ${number}: class heritage-expression slash role mismatch (got ${JSON.stringify(actual)})`);
+  completeCurrentControlScope(number, passed);
+}
+{
+  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
+    + fixtureSource.slice(completionMutationMarkerIndex).replace(
+      completionMutationMarker,
+      'const expression429 = class extends mixin({ value: class {} }) {} / completeCurrentControlScope(number, true) / 2;',
+    );
+  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
+  const passed = violations.length === 1 && violations[0] === null;
+  if (!passed) failures.push(`Control 429: actual-loop heritage-expression mutation was not rejected (got ${JSON.stringify(violations)})`);
+  completeCurrentControlScope(429, passed);
+}
+{
+  const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
+    source,
+    'AUDIT_UNITS',
+    'const expression430 = class extends (class {}) {} / AUDIT_UNITS.push({}) / 2;',
+  ));
+  expectFixture(result, 'Control 430: actual workflow heritage-expression mutation is rejected', 1, ['workflow'], 430);
 }
 
 for (const fixture of cases) {
