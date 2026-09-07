@@ -34,9 +34,13 @@ sibling-cleanup, and brace-bearing `extends` cases. The round-39 fixing pass (`f
 and `7042ce8`) then implements direct function-heritage ordering, checked POSIX inventories,
 cross-operation transaction recovery, operation-correct cleanup, independently declared
 replacement inventory, finite child/release-version timeouts, and generated Bash 3.2/PowerShell
-matrix execution. This fixing head has not yet received an independent HS follow-up, so it is not a
-closure or release-readiness claim. The documented Windows contract remains process interruption,
-not sudden-power-loss durability; caught-error rollback retains ambiguous states for manual recovery
+matrix execution. Its documentation disposition is commit `8b2d576` over implementation parent
+`7042ce8`; round 40 found that blank-only POSIX inventories, keyword-named class fields, the full
+validator's V8 OOM, and independent cross-operation/debris oracles still need closure. This pass
+adds a measured 45-minute timeout to the tag-triggered publish job, but the fixing head still
+requires an independent HS follow-up and a successful full validator run before any closure or
+release-readiness claim. The documented Windows contract remains process interruption, not
+sudden-power-loss durability; caught-error rollback retains ambiguous states for manual recovery
 instead of silently deleting or guessing at owned paths. No current-head CI result, version bump,
 tag, push, or publication is implied by this unreleased entry.
 
@@ -103,16 +107,26 @@ remain open. Full Node and current-Bash same-operation matrices pass locally, bu
 release gate for those missing dimensions. No current-head CI result, version bump, tag, push, or
 publication is claimed.
 
-**Round-39 fixing disposition (current, pending independent review).** `f5a655e` adds ordered
+**Round-39 fixing disposition (implementation parent `7042ce8`, documentation at `8b2d576`; pending independent review).** `f5a655e` adds ordered
 same-depth class/function heritage tracking and controls 423–440, bringing the fixture suite to
 440 controls (374 child-process and 66 in-process). `1363cc8` adds checked POSIX inventory
 materialization, cross-operation transaction recovery for Bash/PowerShell, operation-correct
 cleanup, finite child/release-version subprocess timeouts, CI job timeouts/sharding, and generated
 Bash 3.2/PowerShell matrix execution. `7042ce8` makes replacement-hook inventory checks
 independent of the hook used to seed them. `419fe32` records the pre-fix round-39 release state.
-These commits address the round-39 P2/P3 implementation findings, but the current fixing head is
-not yet independently HS-reviewed; no closure, current-head CI, version bump, tag, push, or
-publication is claimed until that follow-up is complete.
+These commits address the round-39 P2/P3 implementation findings, but round 40 identified the
+remaining blank-inventory, keyword-field, full-validator, and oracle gaps noted above. The
+implementation parent and its documentation disposition are distinct revisions; neither is a
+current-head release claim. No closure, current-head CI, version bump, tag, push, or publication is
+claimed until those gaps and the independent follow-up are complete.
+
+**Round-40 fixing disposition (partial, pending HS follow-up).** This pass adds the measured
+45-minute timeout to `.github/workflows/npm-publish.yml`, corrects the round-39 parent/disposition
+provenance, and qualifies the README/CHANGELOG/Layout summaries against round 40's findings. The
+round-40 blank-only POSIX inventory, keyword-named class-field, full-validator OOM, independent
+cross-operation oracle, and two-prefix debris-calibration findings remain open until their
+implementation fixes and a fresh independent review land. No current-head CI, version bump, tag,
+push, or publication is claimed.
 
 ## [0.6.0] — 2026-08-19
 
