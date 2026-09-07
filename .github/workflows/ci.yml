@@ -38,7 +38,7 @@ jobs:
       - name: Verify the Codex skill mirror is in sync
         run: node dev/sync-mirror.mjs --check
       - name: Validate docs, manifests, links, and fixtures
-        run: node dev/validate.mjs
+        run: node dev/validate-all.mjs
       - name: Compile fixture syntax
         run: |
           mkdir -p "$RUNNER_TEMP/rust-intel-fixtures"
@@ -55,6 +55,8 @@ jobs:
           node --check dev/sync-mirror.mjs
           node --check dev/snapshot-install.mjs
           node --check dev/test-installer-recovery.mjs
+          node --check dev/validate-all.mjs
+          node --check dev/validate-lexer-observations.mjs
           node --check skill/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
@@ -211,6 +213,22 @@ jobs:
             test -f "$install_root/.claude/commands/rust-cc-${command_name}.md"
           done
 
+  windows-validator:
+    name: windows validator (Node ${{ matrix.node-version }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [24, 24.0.0]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Run isolated validator coordinator
+        run: node dev/validate-all.mjs
+
   installer-boundaries:
     name: ${{ matrix.surface }} installer boundaries
     runs-on: ubuntu-latest
@@ -312,9 +330,17 @@ jobs:
           done
 
   windows-install-smoke:
-    name: Windows installer smoke
+    name: Windows installer and recovery (${{ matrix.powershell }})
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep PowerShell 7 coverage, and exercise the powershell.exe runtime used by the
+        # documented .bat wrappers (Windows PowerShell 5.1 on stock supported hosts).
+        powershell: [pwsh, powershell.exe]
+    env:
+      RUST_INTEL_POWERSHELL_EXECUTABLE: ${{ matrix.powershell }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -329,6 +355,9 @@ jobs:
           Copy-Item -LiteralPath $env:GITHUB_WORKSPACE -Destination $source -Recurse
           $script = Join-Path $source 'rust-cc-install.ps1'
           $uninstall = Join-Path $source 'rust-cc-uninstall.ps1'
+          $installBat = Join-Path $source 'rust-cc-install.bat'
+          $uninstallBat = Join-Path $source 'rust-cc-uninstall.bat'
+          $powershell = $env:RUST_INTEL_POWERSHELL_EXECUTABLE
           $env:CLAUDE_CONFIG_DIR = $target
           New-Item -ItemType Directory -Force -Path (Join-Path $target 'skills\rust-intel'), (Join-Path $target 'commands\rust-intel-cc') | Out-Null
           Set-Content -LiteralPath (Join-Path $target 'skills\rust-intel\SKILL.md') -Value 'old-skill'
@@ -344,10 +373,13 @@ jobs:
           $after = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
           if ($before -ne $after) { throw 'PowerShell backup failure changed the complete inventory' }
           Remove-Item Env:RUST_INTEL_INSTALL_FAIL_AFTER
-          & $script
+          # The .bat wrappers are part of the documented Windows surface and always dispatch to
+          # powershell.exe; use them for the successful install/uninstall path as well as testing
+          # the underlying scripts directly for injected failures and restart boundaries.
+          & $installBat
           $knownGood = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
           $env:RUST_INTEL_INSTALL_ABORT_AT = 'after-backup-journal-0'
-          $abrupt = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $script) -Wait -PassThru -NoNewWindow
+          $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', $script) -Wait -PassThru -NoNewWindow
           if ($abrupt.ExitCode -ne 86) { throw "abrupt PowerShell install exit code was $($abrupt.ExitCode)" }
           Remove-Item Env:RUST_INTEL_INSTALL_ABORT_AT
           & $script
@@ -369,13 +401,13 @@ jobs:
           if ($knownGood -ne $after) { throw 'PowerShell uninstall rollback changed the complete inventory' }
           Remove-Item Env:RUST_INTEL_INSTALL_FAIL_AFTER
           $env:RUST_INTEL_INSTALL_ABORT_AT = 'after-backup-journal-0'
-          $abrupt = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $uninstall) -Wait -PassThru -NoNewWindow
+          $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', $uninstall) -Wait -PassThru -NoNewWindow
           if ($abrupt.ExitCode -ne 86) { throw "abrupt PowerShell uninstall exit code was $($abrupt.ExitCode)" }
           Remove-Item Env:RUST_INTEL_INSTALL_ABORT_AT
-          & $uninstall
+          & $uninstallBat
           if (Test-Path -LiteralPath (Join-Path $target 'skills\rust-intel')) { throw 'PowerShell uninstall left skill files' }
           if (-not (Test-Path -LiteralPath (Join-Path $target 'commands\keep.md'))) { throw 'PowerShell uninstall removed unrelated sibling' }
-      - name: Exhaustively test PowerShell transaction boundaries
+      - name: Exhaustively test PowerShell transaction boundaries (${{ matrix.powershell }})
         shell: pwsh
         run: |
           $helper = Join-Path $env:GITHUB_WORKSPACE 'dev\test-installer-recovery.mjs'

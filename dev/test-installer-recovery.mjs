@@ -31,6 +31,10 @@ if (mode === 'fresh' && operation === 'uninstall') {
 
 const repo = path.resolve(import.meta.dirname, '..');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rust-intel-recovery-'));
+// Windows PowerShell is the documented .bat-facing runtime. Keep PowerShell 7 as the local
+// default for existing callers, while allowing CI and Windows PowerShell 5.1 users to select the
+// executable they actually want to exercise (for example, powershell.exe).
+const powershellExecutable = process.env.RUST_INTEL_POWERSHELL_EXECUTABLE?.trim() || 'pwsh';
 let invocation = 0;
 const crossOracleCorruptions = [];
 
@@ -222,7 +226,7 @@ function command(target, operationName = operation) {
       ? ['wsl.exe', ['env', 'bash', script], { CLAUDE_CONFIG_DIR: toPosix(target) }]
       : ['bash', [script], { CLAUDE_CONFIG_DIR: toPosix(target) }];
   }
-  return ['pwsh', ['-NoProfile', '-File', path.join(repo, operationName === 'install' ? 'rust-cc-install.ps1' : 'rust-cc-uninstall.ps1')], { CLAUDE_CONFIG_DIR: target }];
+  return [powershellExecutable, ['-NoProfile', '-File', path.join(repo, operationName === 'install' ? 'rust-cc-install.ps1' : 'rust-cc-uninstall.ps1')], { CLAUDE_CONFIG_DIR: target }];
 }
 
 function run(target, abortBoundary, failAfter, operationName = operation) {

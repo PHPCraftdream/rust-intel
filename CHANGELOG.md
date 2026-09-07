@@ -148,9 +148,13 @@ controls 458–460 while preserving child-owned terminal heap/RSS samples and tr
 killed children as having no terminal sample. The current
 fixture header is 460 controls: 397 child-process controls (380 validator-entrypoint and 17 focused
 lexer/helper children) plus 63 in-process controls; the 449-control/391-child/58-in-process split
-is historical to `b907ded`. A clean ordinary `npm run validate`, clean Node recovery-matrix
-memory evidence, independent HS review, and exact-head CI remain required; no current-head CI,
-version bump, tag, push, or publication is claimed.
+is historical to `b907ded`. A clean ordinary `npm run validate`, the `installer-boundaries` CI
+job's generated `--list` loops over every same/cross Node case (578/578 cases across
+`node-claude` and `node-codex`), independent HS review, and exact-head CI remain required; focused-child
+validator memory telemetry is a separate evidence stream. The recovery helper defaults to `pwsh`
+and accepts `RUST_INTEL_POWERSHELL_EXECUTABLE=powershell.exe` for the Windows PowerShell 5.1
+runtime used by the `.bat` wrappers. No current-head CI, version bump, tag, push, or publication
+is claimed.
 
 ## [0.6.0] — 2026-08-19
 
