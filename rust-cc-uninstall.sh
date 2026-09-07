@@ -103,7 +103,7 @@ recover_transaction() {
         [[ "$kind" != phase ]] || continue
         [[ "$kind" == record ]] || continue
         [[ "$index" =~ ^[0-9]+$ && "$index" -lt "${#OWNED[@]}" && -z "${seen[$index]:-}" ]] || { echo "Error: invalid uninstall transaction record index (recover from $tx)." >&2; return 1; }
-        [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up || "$status" == restoring || "$status" == restored ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid uninstall transaction record (recover from $tx)." >&2; return 1; }
+        [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up || "$status" == installing || "$status" == installed || "$status" == restoring || "$status" == restored ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid installer transaction record (recover from $tx)." >&2; return 1; }
         seen[$index]=1
         record_count=$((record_count + 1))
         destination="${OWNED[$index]}"
@@ -119,6 +119,11 @@ recover_transaction() {
             # the rename did not happen.  Preserve the unbacked destination.
             continue
         elif [[ -e "$backup" || -L "$backup" ]]; then
+            if [[ "$status" == installed && ( -e "$destination" || -L "$destination" ) ]]; then
+                rm -rf -- "$destination" || return 1
+            elif [[ "$status" == installing && ( -e "$destination" || -L "$destination" ) ]]; then
+                rm -rf -- "$destination" || return 1
+            fi
             if [[ ! -e "$destination" && ! -L "$destination" ]]; then
                 write_recovery_status "$journal" "$index" restoring
                 abrupt_abort "before-restore-$index"
@@ -127,9 +132,19 @@ recover_transaction() {
                 write_recovery_status "$journal" "$index" restored
                 abrupt_abort "after-restore-status-$index"
             else
-                echo "Error: unfinished uninstall has both destination and backup: $destination (recover from $tx)." >&2
+                echo "Error: unfinished transaction has both destination and backup: $destination (recover from $tx)." >&2
                 return 1
             fi
+        elif [[ "$status" == installed && "$original" == 0 && ( -e "$destination" || -L "$destination" ) ]]; then
+            rm -rf -- "$destination" || return 1
+        elif [[ "$status" == installing && ( -e "$destination" || -L "$destination" ) && "$original" == 0 ]]; then
+            rm -rf -- "$destination" || return 1
+        elif [[ "$status" == installing && ( -e "$destination" || -L "$destination" ) ]]; then
+            echo "Error: unfinished transaction has an unbacked destination while replacement is installing: $destination (recover from $tx)." >&2
+            return 1
+        elif [[ "$status" == installed && "$original" == 1 ]]; then
+            echo "Error: unfinished transaction backup is missing for an installed original path: $destination (recover from $tx)." >&2
+            return 1
         elif [[ "$status" == backed-up || ( "$status" == backing-up && ! -e "$destination" && ! -L "$destination" ) ]]; then
             echo "Error: unfinished uninstall backup is incomplete: $destination (recover from $tx)." >&2
             return 1
@@ -139,10 +154,18 @@ recover_transaction() {
     if [[ "$phase" == committed || "$phase" == rolled-back ]]; then rm -rf -- "$tx"; return; fi
     rm -rf -- "$tx"
 }
-for pending in "$TX_PARENT"/.rust-intel-bash-uninstall.*; do
-    [[ -d "$pending" ]] || continue
-    recover_transaction "$pending"
+pending_transactions=()
+for transaction_prefix in .rust-intel-bash-uninstall. .rust-intel-bash-tx.; do
+    for pending in "$TX_PARENT"/"$transaction_prefix"*; do
+        [[ -d "$pending" ]] || continue
+        pending_transactions+=("$pending")
+    done
 done
+if [[ "${#pending_transactions[@]}" -gt 1 ]]; then
+    echo "Error: multiple pending installer transactions require manual recovery: ${pending_transactions[*]}" >&2
+    exit 1
+fi
+for pending in "${pending_transactions[@]}"; do recover_transaction "$pending"; done
 
 TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-bash-uninstall.XXXXXX")"
 ROLLBACK_NEEDED=1

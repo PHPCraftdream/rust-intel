@@ -86,7 +86,9 @@ function main(argv) {
   assertNoOverlap(skillSrc, destination);
   if (uninstall) {
     atomicInstall({
-      transactionParent: path.dirname(destination),
+      // Keep install and uninstall journals beside the same skills root so either operation can
+      // recover an interrupted transaction created by the other operation.
+      transactionParent: path.dirname(skillsRoot),
       replacements: [],
       removals: [destination],
       prepare: () => {},

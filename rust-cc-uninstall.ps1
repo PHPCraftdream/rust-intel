@@ -145,10 +145,22 @@ function Recover-Transaction {
             continue
         }
         if ($backupPresent) {
+            if (($record.status -eq 'installed' -or $record.status -eq 'installing') -and $destinationPresent) {
+                try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
+                $destinationPresent = Test-Path -LiteralPath $destination
+            }
             if (-not $destinationPresent) {
                 try { if (-not (Restore-TransactionRecord $journalPath $journal $record $recordIndex)) { throw 'destination and backup both exist' } }
                 catch { $failures += "$destination`: $($_.Exception.Message)" }
             } else { $failures += "$destination`: destination and backup both exist" }
+        } elseif ($record.status -eq 'installed' -and -not [bool]$record.originalPresent -and $destinationPresent) {
+            try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
+        } elseif ($record.status -eq 'installing' -and -not [bool]$record.originalPresent -and $destinationPresent) {
+            try { Remove-Item -LiteralPath $destination -Recurse -Force } catch { $failures += "$destination`: $($_.Exception.Message)" }
+        } elseif ($record.status -eq 'installing' -and $destinationPresent) {
+            $failures += "$destination`: unbacked destination exists while replacement is installing"
+        } elseif ($record.status -eq 'installed' -and [bool]$record.originalPresent) {
+            $failures += "$destination`: installed original path has no backup"
         } elseif ($record.status -eq 'backed-up' -or ($record.status -eq 'backing-up' -and -not $destinationPresent)) { $failures += "$destination`: backup state is incomplete" }
     }
     if ($failures.Count -gt 0) { throw "Unfinished uninstall transaction requires recovery: $Transaction`n$($failures -join "`n")" }
@@ -162,7 +174,15 @@ $owned = @($SkillDir,
     (Join-Path $CommandsDir 'rust-plan.md'), (Join-Path $CommandsDir 'rust-intel.md'))
 $txParent = Split-Path -Parent $ClaudeDir
 New-Item -ItemType Directory -Force -Path $txParent | Out-Null
-foreach ($pending in @(Get-ChildItem -LiteralPath $txParent -Directory -Filter '.rust-intel-ps-uninstall-*' -ErrorAction SilentlyContinue)) { Recover-Transaction $pending.FullName $owned }
+$pendingTransactions = @(
+    foreach ($filter in @('.rust-intel-ps-uninstall-*', '.rust-intel-ps-tx-*')) {
+        Get-ChildItem -LiteralPath $txParent -Directory -Filter $filter -ErrorAction SilentlyContinue
+    }
+)
+if ($pendingTransactions.Count -gt 1) {
+    throw "Multiple pending installer transactions require manual recovery: $($pendingTransactions.FullName -join ', ')"
+}
+foreach ($pending in $pendingTransactions) { Recover-Transaction $pending.FullName $owned }
 $txDir = Join-Path $txParent ('.rust-intel-ps-uninstall-' + [IO.Path]::GetRandomFileName())
 $backupRoot = Join-Path $txDir 'backup'
 New-Item -ItemType Directory -Force -Path $txDir | Out-Null

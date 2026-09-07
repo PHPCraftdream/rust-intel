@@ -224,7 +224,10 @@ function recoverTransactions(transactionParent, owned) {
  */
 function atomicInstall({ transactionParent, replacements, removals, prepare }) {
   fs.mkdirSync(transactionParent, { recursive: true });
-  const allOwned = [...removals, ...replacements.map((entry) => entry.destination)];
+  // Keep the journal inventory operation-independent: replacement destinations come first and
+  // removals follow in their declared order. Install and uninstall must be able to recover each
+  // other's interrupted transaction without rebinding positional records to different paths.
+  const allOwned = [...replacements.map((entry) => entry.destination), ...removals];
   const uniqueOwned = [...new Set(allOwned)];
   recoverTransactions(transactionParent, uniqueOwned);
   const transaction = fs.mkdtempSync(path.join(transactionParent, '.rust-intel-tx-'));

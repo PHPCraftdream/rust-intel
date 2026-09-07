@@ -294,10 +294,18 @@ recover_transaction() {
 
 OWNED=("$SKILL_DIR" "$COMMANDS_DIR/rust-cc-audit.md" "$COMMANDS_DIR/rust-cc-fix.md" "$COMMANDS_DIR/rust-cc-plan.md" "$NS_DIR" \
     "$COMMANDS_DIR/rust-audit.md" "$COMMANDS_DIR/rust-fix.md" "$COMMANDS_DIR/rust-plan.md" "$COMMANDS_DIR/rust-intel.md")
-for pending in "$TX_PARENT"/.rust-intel-bash-tx.*; do
-    [[ -d "$pending" ]] || continue
-    recover_transaction "$pending"
+pending_transactions=()
+for transaction_prefix in .rust-intel-bash-tx. .rust-intel-bash-uninstall.; do
+    for pending in "$TX_PARENT"/"$transaction_prefix"*; do
+        [[ -d "$pending" ]] || continue
+        pending_transactions+=("$pending")
+    done
 done
+if [[ "${#pending_transactions[@]}" -gt 1 ]]; then
+    echo "Error: multiple pending installer transactions require manual recovery: ${pending_transactions[*]}" >&2
+    exit 1
+fi
+for pending in "${pending_transactions[@]}"; do recover_transaction "$pending"; done
 
 TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-bash-tx.XXXXXX")"
 STAGE_ROOT="$TX_DIR/stage"

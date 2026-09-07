@@ -10,12 +10,15 @@ import { spawnSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const listMode = args[0] === '--list';
-const [surface, operation, mode, boundary] = listMode ? args.slice(1) : args;
+const crossMode = args[0] === '--cross' || args[4] === 'cross';
+const commandArgs = args[0] === '--list' || args[0] === '--cross' ? args.slice(1) : args;
+const [surface, operation, mode, boundary] = commandArgs;
 const validSurfaces = new Set(['node-claude', 'node-codex', 'bash', 'powershell']);
 const validOperations = new Set(['install', 'uninstall']);
 const validModes = new Set(['fresh', 'upgrade', 'sparse']);
+const expectedArgCount = listMode ? 4 : crossMode ? 5 : 4;
 if (!validSurfaces.has(surface) || !validOperations.has(operation) || !validModes.has(mode)
-    || (!listMode && (!boundary || args.length !== 4)) || (listMode && args.length !== 4)) {
+    || (!boundary && !listMode) || args.length !== expectedArgCount) {
   console.error(listMode
     ? 'usage: node dev/test-installer-recovery.mjs --list <surface> <operation> <mode>'
     : 'usage: node dev/test-installer-recovery.mjs <surface> <operation> <mode> <boundary>');
@@ -37,16 +40,16 @@ function write(file, value) {
 
 function ownedPaths(target) {
   if (surface === 'node-codex') return [path.join(target, 'rust-intel')];
-  if (surface === 'node-claude' && operation === 'install') return [
+  if (surface === 'node-claude') return [
+    path.join(target, 'skills', 'rust-intel'),
+    path.join(target, 'commands', 'rust-cc-audit.md'),
+    path.join(target, 'commands', 'rust-cc-fix.md'),
+    path.join(target, 'commands', 'rust-cc-plan.md'),
     path.join(target, 'commands', 'rust-intel-cc'),
     path.join(target, 'commands', 'rust-audit.md'),
     path.join(target, 'commands', 'rust-fix.md'),
     path.join(target, 'commands', 'rust-plan.md'),
     path.join(target, 'commands', 'rust-intel.md'),
-    path.join(target, 'skills', 'rust-intel'),
-    path.join(target, 'commands', 'rust-cc-audit.md'),
-    path.join(target, 'commands', 'rust-cc-fix.md'),
-    path.join(target, 'commands', 'rust-cc-plan.md'),
   ];
   return [
     path.join(target, 'skills', 'rust-intel'),
@@ -63,8 +66,12 @@ function ownedPaths(target) {
 
 function transactionPrefixes() {
   if (surface.startsWith('node-')) return ['.rust-intel-tx-'];
-  if (surface === 'bash') return ['.rust-intel-bash-tx.'];
-  return operation === 'install' ? ['.rust-intel-ps-tx-'] : ['.rust-intel-ps-uninstall-'];
+  if (surface === 'bash') return operation === 'install'
+    ? ['.rust-intel-bash-tx.', '.rust-intel-bash-uninstall.']
+    : ['.rust-intel-bash-uninstall.', '.rust-intel-bash-tx.'];
+  return operation === 'install'
+    ? ['.rust-intel-ps-tx-', '.rust-intel-ps-uninstall-']
+    : ['.rust-intel-ps-uninstall-', '.rust-intel-ps-tx-'];
 }
 
 function unrelatedSibling(target) {
@@ -131,6 +138,21 @@ function replacementIndicesFromHooks(hooks) {
   }))];
 }
 
+function expectedReplacementIndices() {
+  if (operation !== 'install') return [];
+  if (surface === 'node-codex') return [0];
+  if (surface === 'node-claude') return [0, 1, 2, 3];
+  return [0, 1, 2, 3];
+}
+
+function assertReplacementInventory(hooks, label) {
+  const expected = expectedReplacementIndices();
+  const actual = replacementIndicesFromHooks(hooks);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label}: clean replacement hooks ${JSON.stringify(actual)} do not match declared inventory ${JSON.stringify(expected)}`);
+  }
+}
+
 function declaredBoundaryTemplates() {
   const source = surface.startsWith('node-')
     ? fs.readFileSync(path.join(repo, 'bin', 'install-transaction.js'), 'utf8')
@@ -171,30 +193,30 @@ function assertBoundaryDeclarations(inventory) {
   }
 }
 
-function command(target) {
+function command(target, operationName = operation) {
   if (surface === 'node-claude') {
     const commandArgs = [path.join(repo, 'bin', 'install.js'), '--user'];
-    if (operation === 'uninstall') commandArgs.push('--uninstall');
+    if (operationName === 'uninstall') commandArgs.push('--uninstall');
     return [process.execPath, commandArgs, { CLAUDE_CONFIG_DIR: target }];
   }
   if (surface === 'node-codex') {
     const commandArgs = [path.join(repo, 'bin', 'install-codex.js'), '--user-dir', target];
-    if (operation === 'uninstall') commandArgs.push('--uninstall');
+    if (operationName === 'uninstall') commandArgs.push('--uninstall');
     return [process.execPath, commandArgs, {}];
   }
   if (surface === 'bash') {
     const toPosix = (value) => process.platform === 'win32' && /^[A-Za-z]:[\\/]/.test(value)
       ? `/mnt/${value[0].toLowerCase()}${value.slice(2).replaceAll('\\', '/')}` : value;
-    const script = toPosix(path.join(repo, operation === 'install' ? 'rust-cc-install.sh' : 'rust-cc-uninstall.sh'));
+    const script = toPosix(path.join(repo, operationName === 'install' ? 'rust-cc-install.sh' : 'rust-cc-uninstall.sh'));
     return process.platform === 'win32'
       ? ['wsl.exe', ['env', 'bash', script], { CLAUDE_CONFIG_DIR: toPosix(target) }]
       : ['bash', [script], { CLAUDE_CONFIG_DIR: toPosix(target) }];
   }
-  return ['pwsh', ['-NoProfile', '-File', path.join(repo, operation === 'install' ? 'rust-cc-install.ps1' : 'rust-cc-uninstall.ps1')], { CLAUDE_CONFIG_DIR: target }];
+  return ['pwsh', ['-NoProfile', '-File', path.join(repo, operationName === 'install' ? 'rust-cc-install.ps1' : 'rust-cc-uninstall.ps1')], { CLAUDE_CONFIG_DIR: target }];
 }
 
-function run(target, abortBoundary, failAfter) {
-  const [executableName, processArgs, variables] = command(target);
+function run(target, abortBoundary, failAfter, operationName = operation) {
+  const [executableName, processArgs, variables] = command(target, operationName);
   const logPath = path.join(root, `hooks-${invocation++}.log`);
   fs.writeFileSync(logPath, '');
   const env = { ...process.env, ...variables, RUST_INTEL_INSTALL_ABORT_LOG: logPath };
@@ -213,14 +235,19 @@ function run(target, abortBoundary, failAfter) {
     const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
     argsForRun = ['bash', '-lc', `${forwarded.join(' ')} exec bash ${shellQuote(processArgs[2])}`];
   }
-  const result = spawnSync(executable, argsForRun, { cwd: repo, env, encoding: 'utf8' });
+  const result = spawnSync(executable, argsForRun, { cwd: repo, env, encoding: 'utf8', timeout: 120_000 });
+  if (result.error?.code === 'ETIMEDOUT') throw new Error(`${surface} ${operationName}: installer child timed out after 120000ms`);
   if (result.error) throw result.error;
+  if (result.signal) throw new Error(`${surface} ${operationName}: installer child terminated by ${result.signal}`);
   const hooks = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
   return { result, hooks };
 }
 
 function snapshot(target) {
-  const result = spawnSync(process.execPath, [path.join(repo, 'dev', 'snapshot-install.mjs'), target], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, [path.join(repo, 'dev', 'snapshot-install.mjs'), target], { encoding: 'utf8', timeout: 30_000 });
+  if (result.error?.code === 'ETIMEDOUT') throw new Error(`${surface} ${operation}: snapshot child timed out after 30000ms`);
+  if (result.error) throw result.error;
+  if (result.signal) throw new Error(`${surface} ${operation}: snapshot child terminated by ${result.signal}`);
   if (result.status !== 0) throw new Error(`snapshot failed: ${result.stderr}`);
   return result.stdout;
 }
@@ -239,10 +266,46 @@ function assertHook(runResult, boundaryName, label) {
 function assertCleanTransactionParent(target, sibling) {
   const entries = fs.readdirSync(path.dirname(target), { withFileTypes: true });
   const leftovers = entries.filter((entry) => transactionPrefixes().some((prefix) => entry.name.startsWith(prefix)));
-  if (leftovers.length) throw new Error(`${surface} ${operation}: transaction artifacts remain after restart: ${leftovers.map((entry) => entry.name).join(', ')}`);
+  if (leftovers.length) throw new Error(`${surface} ${operation}: transaction artifacts remain after restart: ${leftovers.map((entry) => entry.name).join(', ')} in ${path.dirname(target)}`);
   if (!present(sibling) || fs.readFileSync(path.join(sibling, 'journal'), 'utf8') !== 'foreign transaction\n') {
     throw new Error(`${surface} ${operation}: unrelated sibling transaction was removed or changed`);
   }
+}
+
+function interruptAtBoundary(target, inventory, boundary, labelPrefix) {
+  const restoreBoundary = /^(before-restore|after-restore-rename|after-restore-status)-/.test(boundary);
+  const rollbackBoundary = /^(before-rollback|after-rollback)-/.test(boundary);
+  if (restoreBoundary) {
+    const index = Number(boundary.match(/(\d+)$/)[1]);
+    const setupBoundary = `after-backup-rename-${index}`;
+    const setup = run(target, setupBoundary);
+    assertStatus(setup, 86, `${labelPrefix} restore setup`);
+    assertHook(setup, setupBoundary, `${labelPrefix} restore setup`);
+    const beforeRestore = `before-restore-${index}`;
+    const afterRestoreRename = `after-restore-rename-${index}`;
+    const afterRestoreStatus = `after-restore-status-${index}`;
+    if (boundary === afterRestoreStatus) {
+      const first = run(target, beforeRestore);
+      assertStatus(first, 86, `${labelPrefix} first restore interruption`);
+      assertHook(first, beforeRestore, `${labelPrefix} first restore interruption`);
+    } else {
+      const first = run(target, boundary);
+      assertStatus(first, 86, `${labelPrefix} first restore interruption`);
+      assertHook(first, boundary, `${labelPrefix} first restore interruption`);
+    }
+    const secondBoundary = boundary === beforeRestore ? afterRestoreRename : afterRestoreStatus;
+    const second = run(target, boundary === afterRestoreStatus ? boundary : secondBoundary);
+    assertStatus(second, 86, `${labelPrefix} second restore interruption`);
+    assertHook(second, boundary === afterRestoreStatus ? boundary : secondBoundary, `${labelPrefix} second restore interruption`);
+    return;
+  }
+  const index = Number(boundary.match(/(\d+)$/)?.[1]);
+  const sequence = rollbackBoundary ? (operation === 'install' ? inventory.replacements : inventory.backups) : [];
+  const position = rollbackBoundary ? sequence.indexOf(index) : -1;
+  if (rollbackBoundary && position < 0) throw new Error(`${labelPrefix}: rollback index ${index} is absent from concrete inventory`);
+  const interrupted = run(target, boundary, rollbackBoundary ? position + 1 : undefined);
+  assertStatus(interrupted, 86, labelPrefix);
+  assertHook(interrupted, boundary, labelPrefix);
 }
 
 try {
@@ -252,7 +315,15 @@ try {
     const backups = activeBackupIndices(target);
     const clean = run(target);
     assertStatus(clean, 0, `clean ${operation}`);
-    const inventory = boundaryInventory(backups, replacementIndicesFromHooks(clean.hooks));
+    assertReplacementInventory(clean.hooks, `${surface} ${operation}`);
+    const inventory = boundaryInventory(backups, expectedReplacementIndices());
+    if (expectedReplacementIndices().length > 0) {
+      const missingSeedHooks = clean.hooks.filter((entry) => !/^before-replacement-\d+$/.test(entry));
+      let rejectedMissingSeed = false;
+      try { assertReplacementInventory(missingSeedHooks, `${surface} ${operation} missing-seed negative`); }
+      catch { rejectedMissingSeed = true; }
+      if (!rejectedMissingSeed) throw new Error(`${surface} ${operation}: missing replacement inventory seed was accepted`);
+    }
     assertBoundaryDeclarations(inventory);
     for (const item of inventory.boundaries) console.log(item);
   } else {
@@ -265,7 +336,9 @@ try {
     const sibling = unrelatedSibling(actualTarget);
     const clean = run(expectedTarget);
     assertStatus(clean, 0, `clean ${operation}`);
-    const replacements = replacementIndicesFromHooks(clean.hooks);
+    const oppositeOperation = operation === 'install' ? 'uninstall' : 'install';
+    assertReplacementInventory(clean.hooks, `${surface} ${operation}`);
+    const replacements = expectedReplacementIndices();
     const expectedInventory = boundaryInventory(expectedBackups, replacements);
     const actualInventory = boundaryInventory(actualBackups, replacements);
     assertBoundaryDeclarations(actualInventory);
@@ -275,43 +348,31 @@ try {
       assertStatus(probe, 0, `nonexistent abort boundary ${boundary}`);
       throw new Error(`${surface} ${operation} ${mode} ${boundary}: boundary is not reachable; coverage case rejected`);
     }
-    const expected = snapshot(expectedTarget);
-    const restoreBoundary = /^(before-restore|after-restore-rename|after-restore-status)-/.test(boundary);
-    const rollbackBoundary = /^(before-rollback|after-rollback)-/.test(boundary);
-    if (restoreBoundary) {
-      const index = Number(boundary.match(/(\d+)$/)[1]);
-      const setupBoundary = `after-backup-rename-${index}`;
-      const setup = run(actualTarget, setupBoundary);
-      assertStatus(setup, 86, `${surface} restore setup`);
-      assertHook(setup, setupBoundary, `${surface} restore setup`);
-      const beforeRestore = `before-restore-${index}`;
-      const afterRestoreRename = `after-restore-rename-${index}`;
-      const afterRestoreStatus = `after-restore-status-${index}`;
-      if (boundary === afterRestoreStatus) {
-        const first = run(actualTarget, beforeRestore);
-        assertStatus(first, 86, `${surface} first restore interruption`);
-        assertHook(first, beforeRestore, `${surface} first restore interruption`);
-      } else {
-        const first = run(actualTarget, boundary);
-        assertStatus(first, 86, `${surface} first restore interruption`);
-        assertHook(first, boundary, `${surface} first restore interruption`);
-      }
-      const secondBoundary = boundary === beforeRestore ? afterRestoreRename : afterRestoreStatus;
-      const second = run(actualTarget, boundary === afterRestoreStatus ? boundary : secondBoundary);
-      assertStatus(second, 86, `${surface} second restore interruption`);
-      assertHook(second, boundary === afterRestoreStatus ? boundary : secondBoundary, `${surface} second restore interruption`);
-    } else {
-      const index = Number(boundary.match(/(\d+)$/)?.[1]);
-      const sequence = rollbackBoundary ? (operation === 'install' ? actualInventory.replacements : actualInventory.backups) : [];
-      const position = rollbackBoundary ? sequence.indexOf(index) : -1;
-      if (rollbackBoundary && position < 0) throw new Error(`${surface} ${operation}: rollback index ${index} is absent from concrete inventory`);
-      const interrupted = run(actualTarget, boundary, rollbackBoundary ? position + 1 : undefined);
-      assertStatus(interrupted, 86, `${surface} ${operation} ${mode} ${boundary}`);
-      assertHook(interrupted, boundary, `${surface} ${operation} ${mode} ${boundary}`);
-    }
-    const restarted = run(actualTarget);
-    assertStatus(restarted, 0, `${surface} ${operation} ${mode} ${boundary} restart`);
-    if (snapshot(actualTarget) !== expected) throw new Error(`${surface} ${operation} ${mode} ${boundary}: restart did not produce clean-operation inventory`);
+    let expected;
+    if (crossMode) {
+      // The clean run above only calibrates emitted hooks. Restore the expected fixture so the
+      // reference path undergoes the same interrupted first operation as the actual path.
+      fs.rmSync(expectedTarget, { recursive: true, force: true });
+      fixture(expectedTarget);
+      interruptAtBoundary(expectedTarget, expectedInventory, boundary, `${surface} expected ${operation} ${mode} ${boundary}`);
+      const oppositeExpected = run(expectedTarget, undefined, undefined, oppositeOperation);
+      assertStatus(oppositeExpected, 0, `clean ${oppositeOperation}`);
+      expected = snapshot(expectedTarget);
+    } else expected = snapshot(expectedTarget);
+    interruptAtBoundary(actualTarget, actualInventory, boundary, `${surface} ${operation} ${mode} ${boundary}`);
+    const restarted = run(actualTarget, undefined, undefined, crossMode ? oppositeOperation : operation);
+    assertStatus(restarted, 0, `${surface} ${operation} ${mode} ${boundary} ${crossMode ? 'cross-' : ''}restart`);
+    const actualSnapshot = snapshot(actualTarget);
+    if (actualSnapshot !== expected) throw new Error(`${surface} ${operation} ${mode} ${boundary}: restart did not produce clean-operation inventory\nexpected=${expected}\nactual=${actualSnapshot}`);
+    const negativeTransaction = path.join(path.dirname(actualTarget), `${transactionPrefixes()[0]}negative`);
+    write(path.join(negativeTransaction, 'stage', 'owned.txt'), 'owned\n');
+    write(path.join(negativeTransaction, 'backup', 'owned.txt'), 'owned\n');
+    write(path.join(negativeTransaction, 'journal'), 'owned transaction\n');
+    let rejectedOwnedTransaction = false;
+    try { assertCleanTransactionParent(actualTarget, sibling); }
+    catch { rejectedOwnedTransaction = true; }
+    fs.rmSync(negativeTransaction, { recursive: true, force: true });
+    if (!rejectedOwnedTransaction) throw new Error(`${surface} ${operation}: owned transaction cleanup oracle accepted a leaked transaction`);
     assertCleanTransactionParent(actualTarget, sibling);
   }
 } finally {

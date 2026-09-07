@@ -16,6 +16,7 @@ concurrency:
 jobs:
   repository-checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -126,24 +127,6 @@ jobs:
           node dev/snapshot-install.mjs "$target" > "$root/after.json"; cmp "$root/known-good.json" "$root/after.json"
           node bin/install-codex.js --user-dir "$target" --uninstall
           test ! -e "$target/rust-intel"; test "$(cat "$target/other/sibling.md")" = keep
-      - name: Exhaustively test POSIX installer transaction boundaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          helper="$GITHUB_WORKSPACE/dev/test-installer-recovery.mjs"
-          run_case() { node "$helper" "$1" "$2" "$3" "$4"; }
-          # The helper owns the concrete inventory and emits every reachable boundary after
-          # inspecting the fixture. This keeps CI in lockstep with the implementation order.
-          for surface in node-claude node-codex bash; do
-            for operation in install uninstall; do
-              for mode in fresh upgrade sparse; do
-                [[ "$operation" == uninstall && "$mode" == fresh ]] && continue
-                while IFS= read -r boundary; do
-                  [[ -n "$boundary" ]] && run_case "$surface" "$operation" "$mode" "$boundary"
-                done < <(node "$helper" --list "$surface" "$operation" "$mode")
-              done
-            done
-          done
       - name: Installer overlap-guard execution tests
         shell: bash
         run: |
@@ -228,9 +211,60 @@ jobs:
             test -f "$install_root/.claude/commands/rust-cc-${command_name}.md"
           done
 
+  installer-boundaries:
+    name: ${{ matrix.surface }} installer boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        surface: [node-claude, node-codex, bash]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Run the generated recovery matrix with checked inventories
+        shell: bash
+        env:
+          SURFACE: ${{ matrix.surface }}
+        run: |
+          set -euo pipefail
+          helper="$GITHUB_WORKSPACE/dev/test-installer-recovery.mjs"
+          read_inventory() {
+            local output="$1"
+            shift
+            if ! "$@" >"$output"; then
+              echo 'boundary inventory producer failed' >&2
+              return 1
+            fi
+            [[ -s "$output" ]] || { echo 'boundary inventory is empty' >&2; return 1; }
+          }
+          negative_inventory="$(mktemp)"
+          trap 'rm -f "$negative_inventory"' EXIT
+          if read_inventory "$negative_inventory" bash -c 'exit 7'; then
+            echo 'negative inventory producer unexpectedly succeeded' >&2
+            exit 1
+          fi
+          for operation in install uninstall; do
+            for mode in fresh upgrade sparse; do
+              [[ "$operation" == uninstall && "$mode" == fresh ]] && continue
+              inventory="$(mktemp)"
+              trap 'rm -f "$negative_inventory" "$inventory"' EXIT
+              read_inventory "$inventory" node "$helper" --list "$SURFACE" "$operation" "$mode"
+              while IFS= read -r boundary; do
+                [[ -n "$boundary" ]] || continue
+                node "$helper" "$SURFACE" "$operation" "$mode" "$boundary"
+                node "$helper" "$SURFACE" "$operation" "$mode" "$boundary" cross
+              done < "$inventory"
+              rm -f "$inventory"
+            done
+          done
+
   node-floor:
     name: Node.js 24.0.0 floor
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -256,6 +290,7 @@ jobs:
   windows-install-smoke:
     name: Windows installer smoke
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -320,8 +355,10 @@ jobs:
         shell: pwsh
         run: |
           $helper = Join-Path $env:GITHUB_WORKSPACE 'dev\test-installer-recovery.mjs'
-          function Invoke-RecoveryCase([string]$operation, [string]$mode, [string]$boundary) {
-            & node $helper 'powershell' $operation $mode $boundary
+          function Invoke-RecoveryCase([string]$operation, [string]$mode, [string]$boundary, [switch]$Cross) {
+            $arguments = @($helper, 'powershell', $operation, $mode, $boundary)
+            if ($Cross) { $arguments += 'cross' }
+            & node $arguments
             if ($LASTEXITCODE -ne 0) { throw "PowerShell $operation $mode $boundary recovery case failed with exit $LASTEXITCODE" }
           }
           foreach ($operation in 'install','uninstall') {
@@ -329,8 +366,12 @@ jobs:
               if ($operation -eq 'uninstall' -and $mode -eq 'fresh') { continue }
               $boundaries = @(& node $helper '--list' 'powershell' $operation $mode)
               if ($LASTEXITCODE -ne 0) { throw "PowerShell $operation $mode inventory generation failed" }
+              if ($boundaries.Count -eq 0 -or ($boundaries | Where-Object { $_.Trim() }).Count -eq 0) { throw "PowerShell $operation $mode inventory was empty" }
               foreach ($boundary in $boundaries) {
-                if ($boundary.Trim()) { Invoke-RecoveryCase $operation $mode $boundary.Trim() }
+                if ($boundary.Trim()) {
+                  Invoke-RecoveryCase $operation $mode $boundary.Trim()
+                  Invoke-RecoveryCase $operation $mode $boundary.Trim() -Cross
+                }
               }
             }
           }
@@ -338,6 +379,7 @@ jobs:
   bash-floor:
     name: Bash 3.2 installer floor
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -365,5 +407,23 @@ jobs:
           CLAUDE_CONFIG_DIR="$target" ./rust-cc-uninstall.sh
           test ! -e "$target/skills/rust-intel"
           test "$(cat "$target/commands/keep.md")" = unrelated
-          # Exercise a real child interruption and restart under the oldest advertised shell.
-          node dev/test-installer-recovery.mjs bash install sparse after-backup-rename-5
+          # Exercise the generated recovery matrix under the oldest advertised shell, including
+          # both directions of cross-operation recovery. Each list is materialized so a failed
+          # producer cannot masquerade as an empty passing matrix.
+          for operation in install uninstall; do
+            for mode in fresh upgrade sparse; do
+              [[ "$operation" == uninstall && "$mode" == fresh ]] && continue
+              inventory="$(mktemp)"
+              trap 'rm -f "$inventory"' EXIT
+              if ! node dev/test-installer-recovery.mjs --list bash "$operation" "$mode" > "$inventory"; then
+                echo "Bash 3.2 $operation $mode inventory generation failed" >&2; exit 1
+              fi
+              [ -s "$inventory" ] || { echo "Bash 3.2 $operation $mode inventory was empty" >&2; exit 1; }
+              while IFS= read -r boundary; do
+                [ -n "$boundary" ] || continue
+                node dev/test-installer-recovery.mjs bash "$operation" "$mode" "$boundary"
+                node dev/test-installer-recovery.mjs bash "$operation" "$mode" "$boundary" cross
+              done < "$inventory"
+              rm -f "$inventory"
+            done
+          done

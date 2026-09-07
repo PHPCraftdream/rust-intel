@@ -262,9 +262,15 @@ function Recover-Transaction {
 
 $txParent = Split-Path -Parent $ClaudeDir
 New-Item -ItemType Directory -Force -Path $txParent | Out-Null
-foreach ($pending in @(Get-ChildItem -LiteralPath $txParent -Directory -Filter '.rust-intel-ps-tx-*' -ErrorAction SilentlyContinue)) {
-    Recover-Transaction $pending.FullName $owned
+$pendingTransactions = @(
+    foreach ($filter in @('.rust-intel-ps-tx-*', '.rust-intel-ps-uninstall-*')) {
+        Get-ChildItem -LiteralPath $txParent -Directory -Filter $filter -ErrorAction SilentlyContinue
+    }
+)
+if ($pendingTransactions.Count -gt 1) {
+    throw "Multiple pending installer transactions require manual recovery: $($pendingTransactions.FullName -join ', ')"
 }
+foreach ($pending in $pendingTransactions) { Recover-Transaction $pending.FullName $owned }
 
 $txDir = Join-Path $txParent ('.rust-intel-ps-tx-' + [IO.Path]::GetRandomFileName())
 $stageRoot = Join-Path $txDir 'stage'

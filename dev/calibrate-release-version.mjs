@@ -57,8 +57,14 @@ function run(caseRoot, args, extraEnv = {}) {
   delete environment.RUST_INTEL_RELEASE_FAIL_AFTER;
   Object.assign(environment, extraEnv);
   return spawnSync(process.execPath, [path.join(caseRoot, 'dev', 'set-release-version.mjs'), ...args], {
-    cwd: caseRoot, encoding: 'utf8', env: environment,
+    cwd: caseRoot, encoding: 'utf8', env: environment, timeout: 120_000,
   });
+}
+
+function assertCompleted(result, label) {
+  if (result.error?.code === 'ETIMEDOUT') throw new Error(`${label}: release-version child timed out after 120000ms`);
+  if (result.error) throw result.error;
+  if (result.signal) throw new Error(`${label}: release-version child terminated by ${result.signal}`);
 }
 
 function assertEqualSnapshot(actual, expected, label) {
@@ -122,6 +128,7 @@ let newState;
 try {
   oldState = snapshot(expectedRoot);
   const completed = run(expectedRoot, ['0.7.0']);
+  assertCompleted(completed, 'successful release bump');
   if (completed.status !== 0) throw new Error(`successful release bump failed: ${completed.stderr.trim()}`);
   newState = snapshot(expectedRoot);
   if (newState.some((item, index) => item.mode !== oldState[index].mode || JSON.parse(item.bytes).version !== '0.7.0')) {
@@ -140,10 +147,12 @@ for (const boundary of abortBoundaries) {
       environment.RUST_INTEL_RELEASE_FAIL_AFTER = '3';
     }
     const interrupted = run(caseRoot, ['0.7.0'], environment);
+    assertCompleted(interrupted, boundary);
     if (interrupted.status !== 86) {
       throw new Error(`${boundary}: expected abort status 86, got ${interrupted.status}; stdout=${JSON.stringify(interrupted.stdout)} stderr=${JSON.stringify(interrupted.stderr)}`);
     }
     const recovered = run(caseRoot, ['--recover']);
+    assertCompleted(recovered, `${boundary} recovery`);
     if (recovered.status !== 0) throw new Error(`${boundary}: recovery failed: ${recovered.stderr.trim()}`);
     assertOldOrNew(snapshot(caseRoot), oldState, newState, boundary);
     assertNoArtifacts(caseRoot, boundary);
@@ -160,6 +169,7 @@ try {
   const completed = run(nonexistentBoundaryRoot, ['0.7.0'], {
     RUST_INTEL_RELEASE_ABORT_AT: 'nonexistent-boundary',
   });
+  assertCompleted(completed, 'nonexistent boundary');
   if (completed.status !== 0) {
     throw new Error(`nonexistent boundary: expected normal status 0, got ${completed.status}; stdout=${JSON.stringify(completed.stdout)} stderr=${JSON.stringify(completed.stderr)}`);
   }
@@ -173,8 +183,10 @@ for (const replacements of [1, 2, 3]) {
   const caseRoot = freshCase();
   try {
     const failed = run(caseRoot, ['0.7.0'], { RUST_INTEL_RELEASE_FAIL_AFTER: String(replacements) });
+    assertCompleted(failed, `failure-after-${replacements}`);
     if (failed.status === 0) throw new Error(`failure-after-${replacements} unexpectedly succeeded`);
     const recovered = run(caseRoot, ['--recover']);
+    assertCompleted(recovered, `failure-after-${replacements} recovery`);
     if (recovered.status !== 0) throw new Error(`failure-after-${replacements}: recovery failed`);
     assertEqualSnapshot(snapshot(caseRoot), oldState, `failure-after-${replacements}`);
     assertNoArtifacts(caseRoot, `failure-after-${replacements}`);
