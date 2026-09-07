@@ -23,14 +23,15 @@ bytes, modes, and recursive temporary/backup/journal cleanup, including a negati
 case. The round-33 and round-34 fixing dispositions are recorded in the review ledger; no version
 bump, tag, CI, push, or publication is implied by this unreleased entry.
 
-**Installer and recovery net state.** Node, Bash, and PowerShell installers stage complete
-inventories, journal their exact owned paths before staging, and recover the defined process-
-interruption boundaries on restart; caught-error rollback retains ambiguous states for manual
-recovery instead of silently deleting or guessing at owned paths. `dev/snapshot-install.mjs`
-supplies the byte-aware inventory used by those checks. The current release gate still requires a
-fresh independent review and its evidence, but this summary records restart recovery as an
-implemented safeguard rather than leaving the round-35 pre-live and sparse-inventory defects
-described as current.
+**Installer and recovery net state (partial).** Node, Bash, and PowerShell installers stage
+complete inventories and retain byte-aware rollback safeguards, with `dev/snapshot-install.mjs`
+supplying the inventory used by those checks. Independent review still found an ordinary Bash
+abort-hook regression, unrecoverable Node/PowerShell replacement-rename boundaries, a Node
+initial-journal boundary, sparse Bash backup binding, and incomplete installer restart coverage.
+The recovery claim therefore remains partial until those implementation and CI gaps are fixed and
+independently re-reviewed; caught-error rollback retains ambiguous states for manual recovery
+instead of silently deleting or guessing at owned paths. No version bump, tag, CI, push, or
+publication is implied by this unreleased entry.
 
 > Every `docs/reviews/*.md` citation below points to a file tracked in this **repository** (stable via a commit-pinned link, e.g. `https://github.com/PHPCraftdream/rust-intel/tree/1591d39/docs/reviews`) — not to a file included in the **npm package**: `docs/reviews/` is not in `package.json`'s `files` allowlist, so clone or browse the repository for the underlying reports. The package also explicitly lists the two license files, while npm includes package metadata, README, and applicable license files under its standard package rules.
 
@@ -82,7 +83,7 @@ This release also closes out two prior commits that shipped without a changelog 
 
 **Rounds 20–21's two validator-conformance P3s are closed in the net architecture.** The anchored contract's shared `projectFenceOpener` feeds the fence mask, and invalid backtick-info lines are body-width failures rather than table-boundary false negatives; no standalone table-boundary detector remains. The NBSP arbitrary-table delimiter case is moot because non-anchored tables are outside the anchored contract, while surviving delimiter normalization still treats only the cmark-gfm ASCII whitespace class as table space. See `docs/reviews/latest-commits-review-round-20-2026-09-04-1206.md` findings 1–2 and `docs/reviews/latest-commits-review-round-21-2026-09-04-1228.md` carried P3 findings 1–2.
 
-**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, and enforces the documented canonical completion contract while leaving indirect provenance to the runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI coverage on current Node 24 and exact `24.0.0`; the fixture suite has 409 controls, including deterministic budget, private-member, alias, actual-loop, installer-recovery, and Node-floor regressions while retiring parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and `docs/reviews/latest-commits-review-round-23-2026-09-06-0810.md`.
+**Net tooling state.** The validator enforces exactly two anchored top-level trigger tables, a shared project-fence mask, a bounded code-span scanner, and explicit unsupported-style diagnostics; it structurally parses and deep-freezes `MODULES`/`AUDIT_UNITS`, including the pinned policy matrix and SHA-256-pinned coverage block. Its JavaScript mutation scanner charges every delimiter-stack step, rejects mismatched nesting, preserves private-name token roles, and enforces the documented canonical completion contract while leaving indirect provenance to the runtime deep-freeze backstop. The Node.js 24 floor is guarded at startup, with CI coverage on current Node 24 and exact `24.0.0`; the fixture suite has 414 controls, including deterministic budget, private-member, alias, actual-loop, installer-recovery, and Node-floor regressions while retiring parser-only one-column, HTML-block, list-container, and `TABLE_VISITED` probes outside the anchored contract. The cycle history and round-23 disposition, including CI run `34015308368` (both jobs green at the reviewed 375-control head), are recorded in `docs/reviews/README.md` and `docs/reviews/latest-commits-review-round-23-2026-09-06-0810.md`.
 
 ## [0.6.0] — 2026-08-19
 

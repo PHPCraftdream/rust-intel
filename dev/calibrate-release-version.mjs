@@ -140,7 +140,9 @@ for (const boundary of abortBoundaries) {
       environment.RUST_INTEL_RELEASE_FAIL_AFTER = '3';
     }
     const interrupted = run(caseRoot, ['0.7.0'], environment);
-    if (interrupted.status === 0) throw new Error(`${boundary}: abrupt child exit unexpectedly succeeded`);
+    if (interrupted.status !== 86) {
+      throw new Error(`${boundary}: expected abort status 86, got ${interrupted.status}; stdout=${JSON.stringify(interrupted.stdout)} stderr=${JSON.stringify(interrupted.stderr)}`);
+    }
     const recovered = run(caseRoot, ['--recover']);
     if (recovered.status !== 0) throw new Error(`${boundary}: recovery failed: ${recovered.stderr.trim()}`);
     assertOldOrNew(snapshot(caseRoot), oldState, newState, boundary);
@@ -148,6 +150,23 @@ for (const boundary of abortBoundaries) {
   } finally {
     fs.rmSync(caseRoot, { recursive: true, force: true });
   }
+}
+
+// A typo or stale boundary name must not turn into a false-positive interruption case. It is
+// deliberately a normal successful bump, so the calibration proves that the hook is both exact
+// and non-invasive when no named boundary is selected.
+const nonexistentBoundaryRoot = freshCase();
+try {
+  const completed = run(nonexistentBoundaryRoot, ['0.7.0'], {
+    RUST_INTEL_RELEASE_ABORT_AT: 'nonexistent-boundary',
+  });
+  if (completed.status !== 0) {
+    throw new Error(`nonexistent boundary: expected normal status 0, got ${completed.status}; stdout=${JSON.stringify(completed.stdout)} stderr=${JSON.stringify(completed.stderr)}`);
+  }
+  assertEqualSnapshot(snapshot(nonexistentBoundaryRoot), newState, 'nonexistent boundary');
+  assertNoArtifacts(nonexistentBoundaryRoot, 'nonexistent boundary');
+} finally {
+  fs.rmSync(nonexistentBoundaryRoot, { recursive: true, force: true });
 }
 
 for (const replacements of [1, 2, 3]) {
