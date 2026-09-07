@@ -37,9 +37,29 @@ function isExpressionPrefixKeyword(word) {
 function scanLexical(source) {
   if (source === lexicalCacheSource && lexicalCacheResult) return lexicalCacheResult;
   const regexStarts = new Uint8Array(source.length);
-  const masked = source.split('');
+  // Allocate the mutable mask lazily in a typed UTF-16 buffer. `source.split('')` creates a
+  // multi-million element object array for the deliberate two-million-code-unit budget probes;
+  // even an eagerly initialized typed buffer is needless when a source contains no strings,
+  // comments, or regexp literals to mask. Lazy allocation preserves offsets while making those
+  // large code-only probes retain just the original source and regex bitmap.
+  let masked = null;
+  const ensureMasked = () => {
+    if (masked) return masked;
+    masked = new Uint16Array(source.length);
+    for (let position = 0; position < source.length; position += 1) masked[position] = source.charCodeAt(position);
+    return masked;
+  };
+  const maskedString = () => {
+    if (!masked) return source;
+    const chunks = [];
+    const chunkSize = 8192;
+    for (let start = 0; start < masked.length; start += chunkSize) {
+      chunks.push(String.fromCharCode(...masked.subarray(start, Math.min(start + chunkSize, masked.length))));
+    }
+    return chunks.join('');
+  };
   const blank = (position) => {
-    if (!isJsLineTerminator(source[position])) masked[position] = ' ';
+    if (!isJsLineTerminator(source[position])) ensureMasked()[position] = 0x20;
   };
   const blankRange = (start, end) => {
     for (let position = start; position < end; position += 1) blank(position);
@@ -336,7 +356,7 @@ function scanLexical(source) {
     previousToken = character === ';' || character === ':' ? character : two;
     index += ['=>', '&&', '||', '??', '**', '==', '!=', '<=', '>=', '<<', '>>', '?.'].includes(two) ? 2 : 1;
   }
-  const result = { regexStarts, masked: masked.join(''), lineCommentRanges };
+  const result = { regexStarts, masked: maskedString(), lineCommentRanges };
   lexicalCacheSource = source;
   lexicalCacheResult = result;
   return result;

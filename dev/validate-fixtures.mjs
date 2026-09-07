@@ -7,7 +7,7 @@
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 376 spawn a validator child and 73 are in-process (the junction alias and direct oracles); there
+// 391 spawn a validator child and 58 are in-process (the junction alias and direct oracles); there
 // are also thirteen rule-text presence controls (see ruleTextControls below) and two crude source
 // probes (B5/B26). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -265,6 +265,7 @@ const validateInputs = [
   'commands',
   'dev/validate.mjs',
   'dev/js-lexer.mjs',
+  'dev/validate-lexer-probes.mjs',
   'dev/semver.mjs',
   'dev/set-release-version.mjs',
   'dev/check-release-version.mjs',
@@ -327,6 +328,49 @@ function runValidateAgainstMutatedFiles(relativePaths, mutate, spawnOptions = {}
 
 function runValidateAgainstMutatedCopy(mutateReadme) {
   return runValidateAgainstMutatedFiles(['README.md'], mutateReadme);
+}
+
+// Resource-heavy lexer probes run in short-lived children. V8's parser/native allocation zones
+// are process-scoped and may outlive JavaScript references until a major collection; one child per
+// probe gives the full suite a deterministic memory ceiling without changing lexer budgets or
+// weakening the large-input controls. The child reports one concise line on success and all
+// timeout/exit details are retained for an opt-in progress trace and failure diagnosis.
+const lexerProbeScript = path.join(root, 'dev', 'validate-lexer-probes.mjs');
+// Keep each resource-heavy probe below the host's normal V8 reservation. This is a lower cap,
+// not a heap increase: the probes' deterministic 2,000,001-code-unit workload fits comfortably
+// within it, while a future accidental growth fails in the focused child instead of taking down
+// the long-lived fixture parent.
+const lexerProbeHeapMb = 64;
+function runLexerProbe(controlId, timeoutMs = 120_000) {
+  const command = [process.execPath, `--max-old-space-size=${lexerProbeHeapMb}`, lexerProbeScript, String(controlId)];
+  progress(`spawn lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} timeout=${timeoutMs}`);
+  const run = spawnSync(process.execPath, command.slice(1), {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    killSignal: 'SIGTERM',
+    env: {
+      ...process.env,
+      RUST_INTEL_FIXTURE_PROGRESS: '0',
+    },
+  });
+  const error = run.error || null;
+  const result = {
+    status: Number.isInteger(run.status) ? run.status : null,
+    signal: run.signal || null,
+    error: error ? `${error.code || error.name || 'spawn error'}: ${error.message}` : null,
+    output: `${run.stdout || ''}${run.stderr || ''}`,
+  };
+  progress(`child lexer command=${JSON.stringify(command)} controls=${activeControlScope || 'unknown'} status=${result.status ?? 'null'} signal=${result.signal || 'none'} error=${result.error || 'none'} outputBytes=${Buffer.byteLength(result.output)}`);
+  return result;
+}
+function expectLexerProbe(controlId) {
+  const result = runLexerProbe(controlId);
+  const passed = result.status === 0 && !result.signal && !result.error
+    && result.output.trim() === `lexer probe passed (control ${controlId})`;
+  if (!passed) {
+    failures.push(`Control ${controlId}: focused lexer child failed (status ${result.status ?? 'null'}, signal ${result.signal || 'none'}, error ${result.error || 'none'}, output: ${result.output.trim()})`);
+  }
+  completeCurrentControlScope(controlId, passed);
 }
 
 // Control 1: mutate the banner's required count to a wrong number outright.
@@ -3893,26 +3937,15 @@ for (const [number, source, expected] of [
 // Control 399: deeply unmatched delimiters must fail closed under the shared lexical depth/
 // operation budget instead of allowing completion candidate discovery to grow without bound.
 observeControls(399);
-let bounded = false;
-try { literalTrueCompletionDiagnostics('('.repeat(100_001)); } catch { bounded = true; }
-completeCurrentControlScope(399, bounded);
+expectLexerProbe(399);
 
 // Controls 400-402: delimiter mismatches fail closed without a backward stack walk, and the
-// shared lexer accepts work exactly at its operation budget but rejects work above it.  These
-// controls use deterministic exception/result oracles; elapsed time is intentionally not part of
-// the assertion.
+// shared lexer accepts work exactly at its operation budget but rejects work above it. Each
+// large-input probe runs in a short-lived child so V8 native allocation zones cannot accumulate
+// across the full fixture process. These controls use deterministic exception/result oracles;
+// elapsed time is intentionally not part of the assertion.
 observeControls({ start: 400, end: 402 });
-for (const [number, source, expected] of [
-  [400, '('.repeat(50_000) + ']'.repeat(50_000), /delimiter mismatch/u],
-  [401, 'x'.repeat(2_000_000), null],
-  [402, 'x'.repeat(2_000_001), /deterministic budget/u],
-]) {
-  let error = null;
-  try { literalTrueCompletionDiagnostics(source); } catch (caught) { error = caught; }
-  const passed = expected === null ? !error : Boolean(error && expected.test(error.message));
-  if (!passed) failures.push(`Control ${number}: lexical budget/mismatch probe did not match its deterministic oracle`);
-  completeCurrentControlScope(number, passed);
-}
+for (const number of [400, 401, 402]) expectLexerProbe(number);
 
 // Controls 403-404: private names are IdentifierName tokens even when their spelling is a
 // keyword.  A live division after `this.#if()` must remain visible, while a real regexp in the
@@ -3948,51 +3981,22 @@ for (const [number, source, expected] of [
 // Control 409: mutating the actual completion loop to an unconditional literal must be visible to
 // the source gate, not merely keep advancing the registry with a forged success.
 observeControls(409);
-{
-  const marker = 'completeCurrentControlScope(number, passed);';
-  const anchor = '// Controls 400-402:';
-  const start = fixtureSource.indexOf(anchor);
-  const markerIndex = start < 0 ? -1 : fixtureSource.indexOf(marker, start);
-  const mutated = markerIndex < 0 ? null : fixtureSource.slice(0, markerIndex)
-    + fixtureSource.slice(markerIndex).replace(marker, 'completeCurrentControlScope(number, true);');
-  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
-  const passed = violations.length === 1 && violations[0] === null;
-  if (!passed) failures.push(`Control 409: actual-loop literal-true mutation was not rejected (got ${JSON.stringify(violations)})`);
-  completeCurrentControlScope(409, passed);
-}
+expectLexerProbe(409);
 
 // Controls 410-414: mutating the actual completion loop through a sequence, array, object,
 // argument, or nonliteral-ID form must be rejected at the helper-reference level.  These are
 // source mutations rather than hand-written decoys: a permissive scanner would let the fixture
 // registry keep advancing while the real completion predicate had been replaced.
 observeControls({ start: 410, end: 414 });
-const completionLoopMutations = [
-  [410, '(0, completeCurrentControlScope)(number, true);', 'sequence'],
-  [411, '[completeCurrentControlScope][0](number, true);', 'array/property'],
-  [412, '({ done: completeCurrentControlScope }).done(number, true);', 'object/property'],
-  [413, 'consume(completeCurrentControlScope);', 'argument forwarding'],
-  [414, 'completeCurrentControlScope(number + 0, true);', 'nonliteral ID'],
-];
-const completionMutationAnchor = '// Controls 400-402:';
-const completionMutationStart = fixtureSource.indexOf(completionMutationAnchor);
-const completionMutationMarker = 'completeCurrentControlScope(number, passed);';
-const completionMutationMarkerIndex = completionMutationStart < 0
-  ? -1 : fixtureSource.indexOf(completionMutationMarker, completionMutationStart);
-for (const [number, replacement, label] of completionLoopMutations) {
-  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
-    + fixtureSource.slice(completionMutationMarkerIndex).replace(completionMutationMarker, replacement);
-  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
-  const passed = violations.length === 1 && violations[0] === null;
-  if (!passed) failures.push(`Control ${number}: actual-loop ${label} mutation was not rejected (got ${JSON.stringify(violations)})`);
-  completeCurrentControlScope(number, passed);
-}
+for (const number of [410, 411, 412, 413, 414]) expectLexerProbe(number);
 
 // Controls 415-422: a function/class expression closes an expression, so the following slash is
 // division and a live helper/root mutation must remain visible.  The paired declaration forms
 // close a statement, so their following slash starts a regexp and the same spelling is masked.
 // These probes exercise anonymous and named functions/classes, then mutate the real completion
 // loop and workflow arrays to keep the regression at the actual source gates rather than in
-// isolated lexer examples.
+// isolated lexer examples. The full-source mutation probes are delegated to focused children so
+// parser/native allocations are reclaimed before the next large source is constructed.
 observeControls({ start: 415, end: 422 });
 for (const [number, source, expected] of [
   [415, 'const fn415 = function () {} / completeCurrentControlScope(415, true) / 2;', [415]],
@@ -4007,17 +4011,7 @@ for (const [number, source, expected] of [
   if (!passed) failures.push(`Control ${number}: function/class declaration-expression slash role mismatch (got ${JSON.stringify(actual)})`);
   completeCurrentControlScope(number, passed);
 }
-{
-  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
-    + fixtureSource.slice(completionMutationMarkerIndex).replace(
-      completionMutationMarker,
-      'const expression421 = function () {} / completeCurrentControlScope(number, true) / 2;',
-    );
-  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
-  const passed = violations.length === 1 && violations[0] === null;
-  if (!passed) failures.push(`Control 421: actual-loop function-expression mutation was not rejected (got ${JSON.stringify(violations)})`);
-  completeCurrentControlScope(421, passed);
-}
+expectLexerProbe(421);
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
     source,
@@ -4046,17 +4040,7 @@ for (const [number, source, expected] of [
   if (!passed) failures.push(`Control ${number}: class heritage-expression slash role mismatch (got ${JSON.stringify(actual)})`);
   completeCurrentControlScope(number, passed);
 }
-{
-  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
-    + fixtureSource.slice(completionMutationMarkerIndex).replace(
-      completionMutationMarker,
-      'const expression429 = class extends mixin({ value: class {} }) {} / completeCurrentControlScope(number, true) / 2;',
-    );
-  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
-  const passed = violations.length === 1 && violations[0] === null;
-  if (!passed) failures.push(`Control 429: actual-loop heritage-expression mutation was not rejected (got ${JSON.stringify(violations)})`);
-  completeCurrentControlScope(429, passed);
-}
+expectLexerProbe(429);
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
     source,
@@ -4086,17 +4070,7 @@ for (const [number, source, expected] of [
   if (!passed) failures.push(`Control ${number}: direct function heritage slash role mismatch (got ${JSON.stringify(actual)})`);
   completeCurrentControlScope(number, passed);
 }
-{
-  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
-    + fixtureSource.slice(completionMutationMarkerIndex).replace(
-      completionMutationMarker,
-      'const expression439 = class extends function() { { value: 1; } } {} / completeCurrentControlScope(number, true) / 2;',
-    );
-  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
-  const passed = violations.length === 1 && violations[0] === null;
-  if (!passed) failures.push(`Control 439: actual-loop direct function heritage mutation was not rejected (got ${JSON.stringify(violations)})`);
-  completeCurrentControlScope(439, passed);
-}
+expectLexerProbe(439);
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) => insertWorkflowMutation(
     source,
@@ -4126,15 +4100,7 @@ for (const [number, source, expected] of [
 // Controls 445-446: mutate the real completion loop with each keyword-named field spelling.  A
 // scanner that still treats the field as a construct hides the literal-true helper as a regexp.
 observeControls({ start: 445, end: 446 });
-for (const [number, keyword] of [[445, 'function'], [446, 'class']]) {
-  const replacement = `const fieldMutation${number} = class { ${keyword} = {} / completeCurrentControlScope(number, true) / 2; };`;
-  const mutated = completionMutationMarkerIndex < 0 ? null : fixtureSource.slice(0, completionMutationMarkerIndex)
-    + fixtureSource.slice(completionMutationMarkerIndex).replace(completionMutationMarker, replacement);
-  const violations = mutated === null ? [] : literalTrueCompletionViolations(mutated);
-  const passed = violations.length === 1 && violations[0] === null;
-  if (!passed) failures.push(`Control ${number}: actual-loop ${keyword}-field mutation was not rejected (got ${JSON.stringify(violations)})`);
-  completeCurrentControlScope(number, passed);
-}
+for (const number of [445, 446]) expectLexerProbe(number);
 
 // Controls 447-448: the same field spellings must remain visible when inserted into the live
 // workflow roots.  This protects the mutation gate from passing only because an isolated fixture
