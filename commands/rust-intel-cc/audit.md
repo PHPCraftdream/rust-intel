@@ -15,7 +15,7 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
 
 1. **Load the `rust-intel` skill.** This is the only source of rules. If the skill is unavailable, emit `⚠️ BLOCKED: skill rust-intel is not registered` and stop.
 
-2. **Pin the world.** Read `Cargo.toml` (and `CLAUDE.md`, if present). Record the exact versions of `tokio`, `axum`, `sqlx`, `reqwest`, `serde`, `hyper`, `clap`, and any other key dependency. Without this, §A1 (API hallucinations) cannot be checked — block instead of guessing.
+2. **Pin the world.** `Cargo.toml` declares a version *range* per dependency, not the exact version in use — read the actual resolved versions of `tokio`, `axum`, `sqlx`, `reqwest`, `serde`, `hyper`, `clap`, and any other key dependency from `Cargo.lock` (or `cargo metadata`), plus `CLAUDE.md` (if present). Without resolved versions, §A1 (API hallucinations) cannot be checked precisely — but unknown versions do **not** block: record the assumed versions in an `// ASSUMES:` block at the top of the report, flag every finding that relied on an assumed version, and ask the user to confirm (per the skill's Blocking protocol). Only the skill's three security-critical hard-block cases still stop the audit: an unstated crypto threat model (§B12), unstated `unsafe` caller invariants (§B5), a dependency the user did not name and whose existence is unverified (§A1).
 
 3. **Determine scope.**
    - If `$ARGUMENTS` is empty: walk `src/**/*.rs` relative to cwd.
@@ -60,7 +60,7 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
 # rust-cc-audit report
 
 **Scope:** <path>
-**Pinned versions:** tokio=X.Y, sqlx=A.B, ...
+**Resolved versions** (from `Cargo.lock`/`cargo metadata`): tokio=X.Y, sqlx=A.B, ...
 **Found:** N critical, M high, K medium, L info  (evidence: P proven, T traced, C pattern — P+T+C equals N+M+K+L)
 
 ---
@@ -128,7 +128,7 @@ Surface **only** the 🔴-tier occurrences — see the `rust-intel` skill's *Enf
 - **Don't invent findings.** If a category isn't activated, don't mention it. A short report beats a synthetic one.
 - **Report what you established, not what you suspect.** Label each finding's evidence honestly (`pattern` / `traced` / `proven`) and never label up: unfollowed paths stay `pattern`, and "I read it carefully" is not `proven`. Never weaken a check or stretch a calibration note to make something reportable — an empty section is an outcome; a manufactured finding is a defect in the audit itself.
 - **Don't "fix" in the repo.** Report only. Applying fixes is a separate step the user authorizes.
-- **Block on uncertainty.** If a crate version is unknown and §A1 needs it, emit a blocking message — don't guess.
+- **Don't guess versions — assume out loud.** If a check depends on a version and it can't be read from `Cargo.lock`/`cargo metadata`, record the assumed version in the report's `// ASSUMES:` block and continue — don't invent one silently, and don't block (versions are not one of the three hard-block cases).
 - **Don't restate the spec.** Reference the paragraph (`§B2`) instead of paraphrasing its text.
 
 ## Limits
