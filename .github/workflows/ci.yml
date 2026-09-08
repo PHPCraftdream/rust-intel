@@ -301,6 +301,7 @@ jobs:
               inventory=''
             done
           done
+          node "$helper" --foreign-preserve "$SURFACE"
 
   node-floor:
     name: Node.js 24.0.0 floor
@@ -446,6 +447,12 @@ jobs:
               }
             }
           }
+      - name: Preserve foreign content through PowerShell install/uninstall (${{ matrix.powershell }})
+        shell: pwsh
+        run: |
+          $helper = Join-Path $env:GITHUB_WORKSPACE 'dev\test-installer-recovery.mjs'
+          & node $helper '--foreign-preserve' 'powershell'
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell foreign-content preservation case failed with exit $LASTEXITCODE" }
 
   bash-floor:
     name: Bash 3.2 installer floor
@@ -533,3 +540,4 @@ jobs:
               inventory=''
             done
           done
+          node dev/test-installer-recovery.mjs --foreign-preserve bash

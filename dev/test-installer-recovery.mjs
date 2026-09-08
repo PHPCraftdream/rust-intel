@@ -9,24 +9,40 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
+// round-53 P1-01: install -> add unrelated foreign content inside a container the install
+// itself created -> uninstall with an affirmative confirmation answer available on stdin ->
+// the foreign content must survive. This is a separate, narrower lifecycle than the
+// boundary-abort matrix below (which never installs a full tree, adds foreign content inside a
+// created container, and supplies stdin input), so it takes its own minimal argv shape rather
+// than reusing operation/mode/boundary.
+const foreignPreserveMode = args[0] === '--foreign-preserve';
 const listMode = args[0] === '--list';
 const crossMode = args[0] === '--cross' || args[4] === 'cross';
 const commandArgs = args[0] === '--list' || args[0] === '--cross' ? args.slice(1) : args;
-const [surface, operation, mode, boundary] = commandArgs;
 const validSurfaces = new Set(['node-claude', 'node-codex', 'bash', 'powershell']);
-const validOperations = new Set(['install', 'uninstall']);
-const validModes = new Set(['fresh', 'upgrade', 'sparse']);
-const expectedArgCount = listMode ? 4 : crossMode ? 5 : 4;
-if (!validSurfaces.has(surface) || !validOperations.has(operation) || !validModes.has(mode)
-    || (!boundary && !listMode) || args.length !== expectedArgCount) {
-  console.error(listMode
-    ? 'usage: node dev/test-installer-recovery.mjs --list <surface> <operation> <mode>'
-    : 'usage: node dev/test-installer-recovery.mjs <surface> <operation> <mode> <boundary>');
-  process.exit(2);
-}
-if (mode === 'fresh' && operation === 'uninstall') {
-  console.error('fresh uninstall has no transaction to exercise');
-  process.exit(2);
+let surface, operation, mode, boundary;
+if (foreignPreserveMode) {
+  surface = args[1];
+  if (args.length !== 2 || !validSurfaces.has(surface)) {
+    console.error('usage: node dev/test-installer-recovery.mjs --foreign-preserve <surface>');
+    process.exit(2);
+  }
+} else {
+  [surface, operation, mode, boundary] = commandArgs;
+  const validOperations = new Set(['install', 'uninstall']);
+  const validModes = new Set(['fresh', 'upgrade', 'sparse']);
+  const expectedArgCount = listMode ? 4 : crossMode ? 5 : 4;
+  if (!validSurfaces.has(surface) || !validOperations.has(operation) || !validModes.has(mode)
+      || (!boundary && !listMode) || args.length !== expectedArgCount) {
+    console.error(listMode
+      ? 'usage: node dev/test-installer-recovery.mjs --list <surface> <operation> <mode>'
+      : 'usage: node dev/test-installer-recovery.mjs <surface> <operation> <mode> <boundary>');
+    process.exit(2);
+  }
+  if (mode === 'fresh' && operation === 'uninstall') {
+    console.error('fresh uninstall has no transaction to exercise');
+    process.exit(2);
+  }
 }
 
 const repo = path.resolve(import.meta.dirname, '..');
@@ -229,7 +245,7 @@ function command(target, operationName = operation) {
   return [powershellExecutable, ['-NoProfile', '-File', path.join(repo, operationName === 'install' ? 'rust-cc-install.ps1' : 'rust-cc-uninstall.ps1')], { CLAUDE_CONFIG_DIR: target }];
 }
 
-function run(target, abortBoundary, failAfter, operationName = operation) {
+function run(target, abortBoundary, failAfter, operationName = operation, stdinInput = undefined) {
   const [executableName, processArgs, variables] = command(target, operationName);
   const logPath = path.join(root, `hooks-${invocation++}.log`);
   fs.writeFileSync(logPath, '');
@@ -258,7 +274,9 @@ function run(target, abortBoundary, failAfter, operationName = operation) {
     const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
     argsForRun = ['bash', '-lc', `${forwarded.join(' ')} exec bash ${shellQuote(processArgs[2])}`];
   }
-  const result = spawnSync(executable, argsForRun, { cwd: repo, env, encoding: 'utf8', timeout: 120_000 });
+  const spawnOptions = { cwd: repo, env, encoding: 'utf8', timeout: 120_000 };
+  if (stdinInput !== undefined) spawnOptions.input = stdinInput;
+  const result = spawnSync(executable, argsForRun, spawnOptions);
   if (result.error?.code === 'ETIMEDOUT') throw new Error(`${surface} ${operationName}: installer child timed out after 120000ms`);
   if (result.error) throw result.error;
   if (result.signal) throw new Error(`${surface} ${operationName}: installer child terminated by ${result.signal}`);
@@ -350,7 +368,33 @@ function interruptAtBoundary(target, inventory, boundary, labelPrefix) {
 }
 
 try {
-  if (listMode) {
+  if (foreignPreserveMode) {
+    // Fresh, empty target: the install itself creates "skills" (node-codex: the surface's own
+    // container), so it is recorded as installer-created — the exact precondition round-53
+    // P1-01 requires for the cleanup primitive to even consider removing it.
+    const target = path.join(root, 'foreign preserve target');
+    fs.mkdirSync(target, { recursive: true });
+    const installed = run(target, undefined, undefined, 'install');
+    assertStatus(installed, 0, `${surface} foreign-preserve install`);
+    const foreignContainer = surface === 'node-codex'
+      ? path.join(target, 'unrelated-foreign-dir')
+      : path.join(target, 'skills', 'unrelated-foreign-skill');
+    const foreignFile = path.join(foreignContainer, 'SKILL.md');
+    write(foreignFile, 'do not delete me\n');
+    if (!present(foreignFile)) throw new Error(`${surface} foreign-preserve: setup failed to create foreign file at ${foreignFile}`);
+    // Answer every possible confirmation prompt with an affirmative Y — this is the round-53
+    // P1-01 repro itself: Remove-Item without -Recurse on a nonempty directory does not simply
+    // fail, it raises a "...has children... Recurse?" confirmation, and an available Y silently
+    // recurses and deletes everything inside. A correct non-recursive primitive
+    // (Directory.Delete($path, $false) on PowerShell; fs.rmdirSync/rmdir elsewhere) never
+    // prompts, so this stdin input is inert against a correct implementation.
+    const uninstalled = run(target, undefined, undefined, 'uninstall', 'Y\nY\nY\nY\nY\n');
+    assertStatus(uninstalled, 0, `${surface} foreign-preserve uninstall`);
+    if (!present(foreignFile)) {
+      throw new Error(`${surface} foreign-preserve: uninstall deleted a foreign, unrelated skill/file that was never owned by rust-intel (round-53 P1-01 regression) — expected ${foreignFile} to survive`);
+    }
+    console.log(`${surface} foreign-preserve: PASS (foreign content at ${foreignFile} survived install -> uninstall with an affirmative answer available on stdin)`);
+  } else if (listMode) {
     const target = path.join(root, 'inventory target');
     fixture(target);
     const backups = activeBackupIndices(target);

@@ -186,27 +186,40 @@ function Restore-TransactionRecord {
 }
 
 # rmdir-only: a container that is no longer empty or already gone is left untouched, so
-# content owned by anyone else can never be removed through this path. The bounded retry
-# absorbs transient sharing violations on a just-emptied container (antivirus and filter
-# drivers briefly hold directory handles, observed to outlast a 3s budget on GitHub Actions
-# Windows runners); a container that is genuinely not empty fails every attempt and is still
-# left untouched. On exhaustion the last exception is surfaced as a warning (not a throw, to
-# preserve the silent-skip contract) so a recurrence is diagnosable from CI logs.
+# content owned by anyone else can never be removed through this path. This MUST use
+# [System.IO.Directory]::Delete($path, $false) (recursive=false), never Remove-Item: without
+# -Recurse, Remove-Item on a nonempty directory does not fail outright — it raises a
+# confirmation ("...has children... Recurse?") and, if that confirmation is answered Y (e.g.
+# stdin already carries a Y for an earlier, unrelated prompt in the same invocation), silently
+# deletes the directory AND EVERY CHILD. That is not rmdir-only; round-53 review P1-01 reproduced
+# it deleting an unrelated, foreign skill after a real uninstall answered with Y. Directory.Delete
+# never prompts and never recurses regardless of the second argument's value — it throws
+# IOException immediately for a nonempty directory, with zero destructive fallback path.
+# A directory found nonempty at the pre-check is an immediate preserve/skip, not a retry
+# candidate — retrying only covers a transient failure (a lock outlasting the pre-check, or
+# antivirus/filter-driver interference on GitHub Actions Windows runners) on what was actually
+# empty a moment ago.
 function Remove-CreatedDirectories {
     param([object[]]$Entries)
     foreach ($entry in $Entries) {
         $existed = Test-Path -LiteralPath $entry -PathType Container
         if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "remove-created-dir: entry=$entry existed=$existed" + [Environment]::NewLine) }
-        if ($existed) {
-            $lastError = $null
-            $removed = $false
-            for ($attempt = 0; $attempt -lt 150; $attempt++) {
-                try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop; $removed = $true; break }
-                catch { $lastError = $_; Start-Sleep -Milliseconds 200 }
-            }
-            if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "remove-created-dir-result: entry=$entry removed=$removed error=$($lastError.Exception.Message)" + [Environment]::NewLine) }
-            if (-not $removed) { Write-Warning "Could not remove created directory after retrying: $entry ($($lastError.Exception.Message))" }
+        if (-not $existed) { continue }
+        $notEmpty = $false
+        try { $notEmpty = [bool]([IO.Directory]::EnumerateFileSystemEntries($entry) | Select-Object -First 1) } catch { }
+        if ($notEmpty) {
+            if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "remove-created-dir-result: entry=$entry removed=False error=not empty, preserved without retry" + [Environment]::NewLine) }
+            continue
         }
+        $lastError = $null
+        $removed = $false
+        for ($attempt = 0; $attempt -lt 150; $attempt++) {
+            try { [IO.Directory]::Delete($entry, $false); $removed = $true; break }
+            catch [IO.DirectoryNotFoundException] { $removed = $true; break }
+            catch { $lastError = $_; Start-Sleep -Milliseconds 200 }
+        }
+        if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "remove-created-dir-result: entry=$entry removed=$removed error=$($lastError.Exception.Message)" + [Environment]::NewLine) }
+        if (-not $removed) { Write-Warning "Could not remove created directory after retrying: $entry ($($lastError.Exception.Message))" }
     }
 }
 
