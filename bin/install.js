@@ -23,12 +23,15 @@ const {
   atomicInstall,
   prepareSkillStage,
   claudeOwnedPaths,
+  missingAncestorDirectories,
+  removeCreatedDirectories,
 } = require('./install-transaction.js');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 const SKILL_SRC = path.join(PKG_ROOT, 'skill');
 const COMMANDS_SRC = path.join(PKG_ROOT, 'commands', 'rust-intel-cc');
 const COMMANDS = ['audit', 'fix', 'plan']; // -> rust-cc-<name>.md (flattened, same as the shell installers)
+const CREATED_DIRS_MANIFEST = '.rust-intel-created-dirs';
 
 function usage() {
   console.log(`rust-intel installer
@@ -72,6 +75,22 @@ function canonicalCandidate(value) {
   return path.join(fs.realpathSync(current), ...tail);
 }
 
+// Containers this install will create, deduplicated across all replacement destinations,
+// deepest first, recorded relative to the target directory. Written into the staged skill
+// directory so a later uninstall can prove which empty containers it may remove; the
+// transaction journal only survives until commit. Relative entries keep the manifest
+// byte-identical for the same layout regardless of where the target lives.
+function manifestCandidates(destinations, target) {
+  const result = [];
+  for (const destination of destinations) {
+    for (const dir of missingAncestorDirectories(destination)) {
+      const relative = path.relative(target, dir);
+      if (!result.includes(relative)) result.push(relative);
+    }
+  }
+  return result;
+}
+
 function isWithin(child, parent) {
   const relative = path.relative(parent, child);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -102,12 +121,21 @@ function main() {
 
   if (uninstall) {
     console.log(`Uninstalling rust-intel from ${target} ...`);
+    // The manifest lists containers created by a committed install; read it before the
+    // transaction removes the skill directory.
+    let manifestDirs = [];
+    try {
+      manifestDirs = fs.readFileSync(path.join(skillDst, CREATED_DIRS_MANIFEST), 'utf8').split(/\r?\n/).filter(Boolean);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     atomicInstall({
       transactionParent: path.dirname(target),
       replacements: [],
       removals: ownedPaths,
       prepare: () => {},
     });
+    removeCreatedDirectories(manifestDirs.map((entry) => path.resolve(target, entry)));
     console.log('Done.');
     return;
   }
@@ -142,6 +170,17 @@ function main() {
       replacements[0].staged = path.join(stageRoot, 'skill');
       for (let index = 0; index < commandStageNames.length; index += 1) {
         replacements[index + 1].staged = path.join(stageRoot, commandStageNames[index]);
+      }
+      const manifestDirs = manifestCandidates([skillDst, commandsDst], target);
+      try {
+        for (const entry of fs.readFileSync(path.join(skillDst, CREATED_DIRS_MANIFEST), 'utf8').split(/\r?\n/).filter(Boolean)) {
+          if (!manifestDirs.includes(entry)) manifestDirs.push(entry);
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      if (manifestDirs.length > 0) {
+        fs.writeFileSync(path.join(stageRoot, 'skill', CREATED_DIRS_MANIFEST), `${manifestDirs.join('\n')}\n`);
       }
     },
   });

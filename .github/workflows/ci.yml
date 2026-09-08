@@ -376,9 +376,10 @@ jobs:
           # powershell.exe; use them for the successful install/uninstall path as well as testing
           # the underlying scripts directly for injected failures and restart boundaries.
           & $installBat
+          if ($LASTEXITCODE -ne 0) { throw "install .bat dispatch failed with exit code $LASTEXITCODE" }
           $knownGood = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
           $env:RUST_INTEL_INSTALL_ABORT_AT = 'after-backup-journal-0'
-          $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', $script) -Wait -PassThru -NoNewWindow
+          $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', "`"$script`"") -Wait -PassThru -NoNewWindow
           if ($abrupt.ExitCode -ne 86) { throw "abrupt PowerShell install exit code was $($abrupt.ExitCode)" }
           Remove-Item Env:RUST_INTEL_INSTALL_ABORT_AT
           & $script
@@ -400,10 +401,11 @@ jobs:
           if ($knownGood -ne $after) { throw 'PowerShell uninstall rollback changed the complete inventory' }
           Remove-Item Env:RUST_INTEL_INSTALL_FAIL_AFTER
           $env:RUST_INTEL_INSTALL_ABORT_AT = 'after-backup-journal-0'
-          $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', $uninstall) -Wait -PassThru -NoNewWindow
+          $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', "`"$uninstall`"") -Wait -PassThru -NoNewWindow
           if ($abrupt.ExitCode -ne 86) { throw "abrupt PowerShell uninstall exit code was $($abrupt.ExitCode)" }
           Remove-Item Env:RUST_INTEL_INSTALL_ABORT_AT
           & $uninstallBat
+          if ($LASTEXITCODE -ne 0) { throw "uninstall .bat dispatch failed with exit code $LASTEXITCODE" }
           if (Test-Path -LiteralPath (Join-Path $target 'skills\rust-intel')) { throw 'PowerShell uninstall left skill files' }
           if (-not (Test-Path -LiteralPath (Join-Path $target 'commands\keep.md'))) { throw 'PowerShell uninstall removed unrelated sibling' }
       - name: Exhaustively test PowerShell transaction boundaries (${{ matrix.powershell }})

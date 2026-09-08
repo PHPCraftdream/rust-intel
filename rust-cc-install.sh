@@ -224,6 +224,7 @@ TX_PARENT="$(dirname "$CLAUDE_DIR")"
 mkdir -p "$TX_PARENT"
 recover_transaction() {
     local tx="$1" journal="$1/journal" phase kind index status original destination backup
+    local -a created_dirs=()
     # The journal is published before staging and before any live path is moved.  A transaction
     # without one is therefore provably pre-live and its stage can be discarded safely.
     [[ -f "$journal" ]] || { rm -rf -- "$tx"; return; }
@@ -235,7 +236,7 @@ recover_transaction() {
     local -a seen=()
     while IFS=$'\t' read -r kind index status original destination; do
         [[ "$kind" != phase ]] || continue
-        [[ "$kind" == record ]] || continue
+        [[ "$kind" == record ]] || { [[ "$kind" == created && -n "$index" ]] && created_dirs+=("$index"); continue; }
         [[ "$index" =~ ^[0-9]+$ && "$index" -lt "${#OWNED[@]}" && -z "${seen[$index]:-}" ]] || { echo "Error: invalid installer transaction record index (recover from $tx)." >&2; return 1; }
         [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up || "$status" == installing || "$status" == installed || "$status" == restoring || "$status" == restored ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid installer transaction record (recover from $tx)." >&2; return 1; }
         seen[$index]=1
@@ -289,6 +290,9 @@ recover_transaction() {
     done < "$journal"
     [[ "$record_count" -eq "${#OWNED[@]}" ]] || { echo "Error: installer transaction record count does not match owned inventory (recover from $tx)." >&2; return 1; }
     if [[ "$phase" == committed || "$phase" == rolled-back ]]; then rm -rf -- "$tx"; return; fi
+    # Remove only the empty container directories this transaction itself created; rmdir
+    # deliberately leaves a non-empty directory alone.
+    for created_dir in ${created_dirs[@]+"${created_dirs[@]}"}; do rmdir -- "$created_dir" 2>/dev/null || :; done
     rm -rf -- "$tx"
 }
 
@@ -305,7 +309,7 @@ if [[ "${#pending_transactions[@]}" -gt 1 ]]; then
     echo "Error: multiple pending installer transactions require manual recovery: ${pending_transactions[*]}" >&2
     exit 1
 fi
-for pending in "${pending_transactions[@]}"; do recover_transaction "$pending"; done
+for pending in ${pending_transactions[@]+"${pending_transactions[@]}"}; do recover_transaction "$pending"; done
 
 TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-bash-tx.XXXXXX")"
 STAGE_ROOT="$TX_DIR/stage"
@@ -320,6 +324,7 @@ write_journal() {
         for index in ${!OWNED[@]}; do
         printf 'record\t%s\t%s\t%s\t%s\n' "$index" "${RECORD_STATUS[$index]}" "${RECORD_ORIGINAL[$index]}" "${OWNED[$index]}"
         done
+        for created_dir in ${CREATED_DIRS[@]+"${CREATED_DIRS[@]}"}; do printf 'created\t%s\n' "$created_dir"; done
     } > "$temporary"
     mv -- "$temporary" "$JOURNAL"
     abrupt_abort after-journal
@@ -333,6 +338,7 @@ BACKUP_PATHS=()
 BACKUP_INDICES=()
 RECORD_STATUS=()
 RECORD_ORIGINAL=()
+CREATED_DIRS=()
 for index in ${!OWNED[@]}; do
     RECORD_STATUS[$index]=pending
     if [[ -e "${OWNED[$index]}" || -L "${OWNED[$index]}" ]]; then RECORD_ORIGINAL[$index]=1; else RECORD_ORIGINAL[$index]=0; fi
@@ -379,6 +385,8 @@ rollback_transaction() {
         echo "Installer rollback incomplete; transaction retained for recovery: $TX_DIR" >&2
     else
         write_journal rolled-back || true
+        # rmdir-only: never remove a container that is no longer empty or already gone.
+        for created_dir in ${CREATED_DIRS[@]+"${CREATED_DIRS[@]}"}; do rmdir -- "$created_dir" 2>/dev/null || :; done
         rm -rf -- "$TX_DIR"
     fi
     trap - EXIT
@@ -422,6 +430,35 @@ while IFS= read -r -d '' source_file; do
     fi
 done < <(find "$REPO_DIR/skill" -type f \( -name '*.md' -o -name '*.js' \) -print0)
 
+# Record, inside the staged skill directory, the containers this install will create.  The
+# transaction journal dies at commit, so the manifest is what lets a later uninstall prove
+# which empty containers it may remove.  A manifest left by the install being replaced is
+# carried forward: the containers it lists were created by this install lineage.
+manifest_has_entry() {
+    [[ "$1" == *$'\n'"$2"$'\n'* ]]
+}
+MANIFEST_DIRS=()
+for container in "$CLAUDE_DIR/skills" "$COMMANDS_DIR"; do
+    if [[ ! -d "$container" ]]; then
+        MANIFEST_DIRS+=("$container")
+    fi
+done
+SEEN_MANIFEST_DIRS=$'\n'${MANIFEST_DIRS[@]+"${MANIFEST_DIRS[@]}"}$'\n'
+if [[ -f "$SKILL_DIR/.rust-intel-created-dirs" ]]; then
+    while IFS= read -r manifest_dir; do
+        if [[ -z "$manifest_dir" ]]; then continue; fi
+        if ! manifest_has_entry "$SEEN_MANIFEST_DIRS" "$manifest_dir"; then
+            MANIFEST_DIRS+=("$manifest_dir")
+            SEEN_MANIFEST_DIRS+="$manifest_dir"$'\n'
+        fi
+    done < "$SKILL_DIR/.rust-intel-created-dirs"
+fi
+if [[ "${#MANIFEST_DIRS[@]}" -gt 0 ]]; then
+    for container in ${MANIFEST_DIRS[@]+"${MANIFEST_DIRS[@]}"}; do
+        printf '%s\n' "${container#"$CLAUDE_DIR"/}"
+    done > "$STAGE_ROOT/skill/.rust-intel-created-dirs"
+fi
+
 backup_owned() {
     local destination="$1"
     if [[ -e "$destination" || -L "$destination" ]]; then
@@ -449,7 +486,15 @@ for index in ${!OWNED[@]}; do
     backup_owned "${OWNED[$index]}"
 done
 
-mkdir -p "$CLAUDE_DIR/skills" "$COMMANDS_DIR"
+for container in "$CLAUDE_DIR/skills" "$COMMANDS_DIR"; do
+    if [[ ! -d "$container" ]]; then
+        # Record the container durably before creating it so an interrupted install can
+        # never leak an unrecorded directory.
+        CREATED_DIRS+=("$container")
+        write_journal active
+        mkdir -p -- "$container"
+    fi
+done
 RECORD_STATUS[0]=installing; abrupt_abort before-replacement-0; write_journal active; abrupt_abort after-replacement-journal-0
 mv -- "$STAGE_ROOT/skill" "$SKILL_DIR"
 abrupt_abort after-replacement-rename-0

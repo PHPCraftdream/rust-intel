@@ -99,8 +99,10 @@ recover_transaction() {
     [[ "$phase" == prepared || "$phase" == active || "$phase" == committed || "$phase" == rolled-back || "$phase" == rollback-failed ]] || { echo "Error: invalid uninstall transaction phase (recover from $tx)." >&2; return 1; }
     local record_count=0
     local -a seen=()
+    local -a created_dirs=()
     while IFS=$'\t' read -r kind index status original destination; do
         [[ "$kind" != phase ]] || continue
+        if [[ "$kind" == created ]]; then created_dirs+=("$index"); continue; fi
         [[ "$kind" == record ]] || continue
         [[ "$index" =~ ^[0-9]+$ && "$index" -lt "${#OWNED[@]}" && -z "${seen[$index]:-}" ]] || { echo "Error: invalid uninstall transaction record index (recover from $tx)." >&2; return 1; }
         [[ "$destination" == "${OWNED[$index]}" && ( "$status" == pending || "$status" == backing-up || "$status" == backed-up || "$status" == installing || "$status" == installed || "$status" == restoring || "$status" == restored ) && ( "$original" == 0 || "$original" == 1 ) ]] || { echo "Error: invalid installer transaction record (recover from $tx)." >&2; return 1; }
@@ -152,6 +154,8 @@ recover_transaction() {
     done < "$journal"
     [[ "$record_count" -eq "${#OWNED[@]}" ]] || { echo "Error: uninstall transaction record count does not match owned inventory (recover from $tx)." >&2; return 1; }
     if [[ "$phase" == committed || "$phase" == rolled-back ]]; then rm -rf -- "$tx"; return; fi
+    # rmdir only: a directory that is no longer empty still has content that must be kept.
+    for created_dir in ${created_dirs[@]+"${created_dirs[@]}"}; do rmdir -- "$created_dir" 2>/dev/null || :; done
     rm -rf -- "$tx"
 }
 pending_transactions=()
@@ -165,7 +169,17 @@ if [[ "${#pending_transactions[@]}" -gt 1 ]]; then
     echo "Error: multiple pending installer transactions require manual recovery: ${pending_transactions[*]}" >&2
     exit 1
 fi
-for pending in "${pending_transactions[@]}"; do recover_transaction "$pending"; done
+for pending in ${pending_transactions[@]+"${pending_transactions[@]}"}; do recover_transaction "$pending"; done
+
+# A committed install records the containers it created inside the skill directory; read the
+# manifest before the transaction moves the skill directory away, so a successful uninstall can
+# remove those containers when empty.
+MANIFEST_DIRS=()
+if [[ -f "$SKILL_DIR/.rust-intel-created-dirs" ]]; then
+    while IFS= read -r manifest_dir; do
+        if [[ -n "$manifest_dir" ]]; then MANIFEST_DIRS+=("$manifest_dir"); fi
+    done < "$SKILL_DIR/.rust-intel-created-dirs"
+fi
 
 TX_DIR="$(mktemp -d "$TX_PARENT/.rust-intel-bash-uninstall.XXXXXX")"
 ROLLBACK_NEEDED=1
@@ -281,6 +295,8 @@ abrupt_abort before-commit; write_journal committed; abrupt_abort after-commit
 abrupt_abort before-cleanup
 rm -rf -- "$TX_DIR"
 abrupt_abort after-cleanup
+# rmdir-only: a directory that is no longer empty or already gone is deliberately left alone.
+for manifest_dir in ${MANIFEST_DIRS[@]+"${MANIFEST_DIRS[@]}"}; do rmdir -- "$CLAUDE_DIR/$manifest_dir" 2>/dev/null || :; done
 ROLLBACK_NEEDED=0
 trap - EXIT
 

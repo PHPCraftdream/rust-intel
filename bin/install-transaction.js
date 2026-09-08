@@ -43,6 +43,30 @@ function mkdirParent(value) {
   fs.mkdirSync(path.dirname(value), { recursive: true });
 }
 
+// Directories that do not exist yet on the way to `destination`, deepest first. The transaction
+// journals them before creating anything so a restart can always find and remove exactly the
+// containers it created.
+function missingAncestorDirectories(destination) {
+  const missing = [];
+  let current = path.dirname(path.resolve(destination));
+  while (!exists(current)) {
+    missing.unshift(current);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return missing;
+}
+
+// rmdir only: a container that is no longer empty (or already gone) is left untouched, so
+// content created by anyone else can never be deleted through this path.
+function removeCreatedDirectories(entries) {
+  if (!Array.isArray(entries)) return;
+  for (const entry of entries) {
+    try { fs.rmdirSync(entry); } catch (error) { /* empty-dir cleanup is best effort */ }
+  }
+}
+
 function syncDirectory(directory) {
   // Directory fsync is the POSIX durability barrier for rename-based transactions.  Windows does
   // not expose an equivalent through Node; the journal is still flushed before each state change.
@@ -107,6 +131,9 @@ function validateJournal(journal, transaction, owned) {
       throw new Error(`installer transaction backup is outside its backup root at record ${index}: ${transaction}`);
     }
   });
+  if (journal.createdDirectories !== undefined && (!Array.isArray(journal.createdDirectories) || journal.createdDirectories.some((entry) => typeof entry !== 'string'))) {
+    throw new Error(`invalid installer transaction createdDirectories: ${transaction}`);
+  }
   return journal;
 }
 
@@ -203,6 +230,7 @@ function recoverTransaction(transaction, owned) {
   if (unresolved.length) {
     throw new Error(`unfinished installer transaction requires recovery: ${transaction}\n${unresolved.join('\n')}`);
   }
+  removeCreatedDirectories(journal.createdDirectories);
   remove(transaction);
 }
 
@@ -271,6 +299,11 @@ function atomicInstall({ transactionParent, replacements, removals, prepare }) {
 
     for (const { destination, staged } of replacements) {
       if (!exists(staged)) throw new Error(`staged output is missing: ${staged}`);
+      const missingAncestors = missingAncestorDirectories(destination);
+      if (missingAncestors.length > 0) {
+        journal.createdDirectories = [...(journal.createdDirectories || []), ...missingAncestors];
+        durableWrite(journalFile, journal);
+      }
       mkdirParent(destination);
       const record = journal.records.find((entry) => entry.destination === destination);
       record.status = 'installing';
@@ -355,6 +388,7 @@ function atomicInstall({ transactionParent, replacements, removals, prepare }) {
     }
     journal.phase = 'rolled-back';
     durableWrite(journalFile, journal);
+    removeCreatedDirectories(journal.createdDirectories);
     remove(transaction);
     throw error;
   }
@@ -416,4 +450,5 @@ function claudeOwnedPaths(skillDestination, commandsDestination, commandNames) {
 
 module.exports = {
   atomicInstall, collectSkillFiles, prepareSkillStage, claudeOwnedPaths, exists, remove,
+  missingAncestorDirectories, removeCreatedDirectories,
 };

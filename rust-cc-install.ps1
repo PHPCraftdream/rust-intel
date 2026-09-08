@@ -51,6 +51,7 @@ Environment:
 }
 
 $ErrorActionPreference = 'Stop'
+$script:createdDirectories = @()
 if ($env:RUST_INTEL_INSTALL_FAIL_AFTER -and $env:RUST_INTEL_INSTALL_FAIL_AFTER -notmatch '^[1-9][0-9]*$') {
     throw 'RUST_INTEL_INSTALL_FAIL_AFTER must be a positive integer.'
 }
@@ -147,6 +148,7 @@ function Write-TransactionJournal {
     Abrupt-Abort 'before-journal'
     $payload = [ordered]@{ version = 1; phase = $Phase; records = @($Records) }
     if ($Failures.Count -gt 0) { $payload.rollbackFailures = @($Failures) }
+    if ($script:createdDirectories.Count -gt 0) { $payload.createdDirectories = @($script:createdDirectories) }
     $temporary = "$Path.tmp-$PID"
     $json = $payload | ConvertTo-Json -Depth 8
     $stream = New-Object IO.FileStream($temporary, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -183,6 +185,37 @@ function Restore-TransactionRecord {
     return $true
 }
 
+# rmdir-only: a container that is no longer empty or already gone is left untouched, so
+# content owned by anyone else can never be removed through this path.
+function Remove-CreatedDirectories {
+    param([object[]]$Entries)
+    foreach ($entry in $Entries) {
+        if (Test-Path -LiteralPath $entry -PathType Container) {
+            try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop } catch { }
+        }
+    }
+}
+
+# Containers this install will create, deepest first, deduplicated. Written into the staged
+# skill directory so a later uninstall can prove which empty containers it may remove; the
+# transaction journal only survives until commit. Entries are recorded relative to the target
+# directory so the manifest content is identical regardless of where the target lives.
+function Get-ManifestCandidates {
+    param([string[]]$Destinations)
+    $result = @()
+    foreach ($destination in $Destinations) {
+        $ancestor = [IO.Path]::GetFullPath((Split-Path -Parent $destination))
+        while (-not (Test-Path -LiteralPath $ancestor -PathType Container)) {
+            $relative = $ancestor.Substring($ClaudeDir.Length).TrimStart('\','/')
+            if ($result -notcontains $relative) { $result += $relative }
+            $parent = Split-Path -Parent $ancestor
+            if ($parent -eq $ancestor) { break }
+            $ancestor = $parent
+        }
+    }
+    return $result
+}
+
 function Recover-Transaction {
     param([string]$Transaction, [string[]]$Owned)
     $journalPath = Join-Path $Transaction 'journal.json'
@@ -207,6 +240,12 @@ function Recover-Transaction {
         }
         $expectedBackup = [IO.Path]::GetFullPath((Join-Path $backupRoot ([string]$recordIndex)))
         if ([IO.Path]::GetFullPath([string]$record.backup) -ne $expectedBackup) { throw "Installer transaction backup is outside its backup root: $Transaction" }
+    }
+    # Re-seed from the journal so mid-recovery journal rewrites (restore status writes) keep
+    # carrying the created-directories list until recovery completes.
+    $script:createdDirectories = @()
+    if ($journal.PSObject.Properties['createdDirectories'] -and $null -ne $journal.createdDirectories) {
+        $script:createdDirectories = @($journal.createdDirectories | ForEach-Object { [string]$_ })
     }
     if ($journal.phase -eq 'committed' -or $journal.phase -eq 'rolled-back') {
         Remove-Item -LiteralPath $Transaction -Recurse -Force
@@ -257,6 +296,11 @@ function Recover-Transaction {
         }
     }
     if ($failures.Count -gt 0) { throw "Unfinished installer transaction requires recovery: $Transaction`n$($failures -join "`n")" }
+    $createdEntries = @()
+    if ($null -ne $journal -and $journal.PSObject.Properties['createdDirectories'] -and $null -ne $journal.createdDirectories) {
+        $createdEntries = @($journal.createdDirectories | ForEach-Object { [string]$_ })
+    }
+    Remove-CreatedDirectories $createdEntries
     Remove-Item -LiteralPath $Transaction -Recurse -Force
 }
 
@@ -295,7 +339,28 @@ foreach ($file in $skillFiles) {
     $relative = $file.FullName.Substring($SkillSourceDir.Length).TrimStart('\','/')
     $staged = Join-Path $stageSkill $relative
     if (-not (Test-Path -LiteralPath $staged -PathType Leaf)) { throw "Staged skill file is missing: $relative" }
-    if ((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $staged).Hash) { throw "Staged skill file differs: $relative" }
+    $sourceHash = $null
+    $stagedHash = $null
+    try {
+        $sourceHash = (Get-FileHash -LiteralPath $file.FullName).Hash
+        $stagedHash = (Get-FileHash -LiteralPath $staged).Hash
+    } catch [System.Management.Automation.CommandNotFoundException] {
+        throw "Get-FileHash is not available in this PowerShell session (Microsoft.PowerShell.Utility failed to resolve); cannot validate staged skill file: $relative"
+    }
+    if ($sourceHash -ne $stagedHash) { throw "Staged skill file differs: $relative" }
+}
+
+$manifestDirs = Get-ManifestCandidates @($SkillDir, $CommandsDir)
+$previousManifest = Join-Path $SkillDir '.rust-intel-created-dirs'
+if (Test-Path -LiteralPath $previousManifest -PathType Leaf) {
+    # Carry forward the manifest of the install being replaced: the containers it lists were
+    # created by this install lineage.
+    foreach ($entry in @(Get-Content -LiteralPath $previousManifest | ForEach-Object { [string]$_ })) {
+        if ($entry -ne '' -and $manifestDirs -notcontains $entry) { $manifestDirs += $entry }
+    }
+}
+if ($manifestDirs.Count -gt 0) {
+    Set-Content -LiteralPath (Join-Path $stageSkill '.rust-intel-created-dirs') -Value $manifestDirs
 }
 
 $replacements = @(@{ Destination = $SkillDir; Staged = $stageSkill })
@@ -328,6 +393,20 @@ try {
         Write-TransactionJournal $journalPath 'active' $records
     }
     foreach ($replacement in $replacements) {
+        # Journal any not-yet-existing ancestor containers durably BEFORE creating them, so an
+        # interrupted install can never leak an unrecorded directory.
+        $missingAncestors = @()
+        $ancestor = [IO.Path]::GetFullPath((Split-Path -Parent $replacement.Destination))
+        while (-not (Test-Path -LiteralPath $ancestor -PathType Container)) {
+            $missingAncestors = , $ancestor + $missingAncestors
+            $parent = Split-Path -Parent $ancestor
+            if ($parent -eq $ancestor) { break }
+            $ancestor = $parent
+        }
+        if ($missingAncestors.Count -gt 0) {
+            $script:createdDirectories = @($script:createdDirectories) + $missingAncestors
+            Write-TransactionJournal $journalPath 'active' $records
+        }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $replacement.Destination) | Out-Null
         $record = $records | Where-Object { $_.destination -eq $replacement.Destination }
         $record.status = 'installing'
@@ -378,6 +457,7 @@ try {
         throw "Installer failed and rollback is incomplete; recover from $txDir`n$($rollbackFailures -join "`n")"
     }
     Write-TransactionJournal $journalPath 'rolled-back' $records
+    Remove-CreatedDirectories $script:createdDirectories
     Remove-Item -LiteralPath $txDir -Recurse -Force
     throw
 }

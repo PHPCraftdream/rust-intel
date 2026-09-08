@@ -40,6 +40,7 @@ Environment:
 }
 
 $ErrorActionPreference = 'Stop'
+$script:createdDirectories = @()
 
 function Abrupt-Abort {
     param([string]$Boundary)
@@ -68,6 +69,7 @@ function Write-TransactionJournal {
     Abrupt-Abort 'before-journal'
     $payload = [ordered]@{ version = 1; phase = $Phase; records = @($Records) }
     if ($Failures.Count -gt 0) { $payload.rollbackFailures = @($Failures) }
+    if ($script:createdDirectories.Count -gt 0) { $payload.createdDirectories = @($script:createdDirectories) }
     $temporary = "$Path.tmp-$PID"
     $json = $payload | ConvertTo-Json -Depth 8
     $stream = New-Object IO.FileStream($temporary, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -104,6 +106,17 @@ function Restore-TransactionRecord {
     return $true
 }
 
+# rmdir-only: a container that is no longer empty or already gone is left untouched, so
+# content owned by anyone else can never be removed through this path.
+function Remove-CreatedDirectories {
+    param([object[]]$Entries)
+    foreach ($entry in $Entries) {
+        if (Test-Path -LiteralPath $entry -PathType Container) {
+            try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop } catch { }
+        }
+    }
+}
+
 function Recover-Transaction {
     param([string]$Transaction, [string[]]$Owned)
     $journalPath = Join-Path $Transaction 'journal.json'
@@ -126,6 +139,12 @@ function Recover-Transaction {
             ($record.originalPresent -isnot [bool])) { throw "Invalid uninstall transaction record $recordIndex; recover manually from $Transaction" }
         $expectedBackup = [IO.Path]::GetFullPath((Join-Path $backupRoot ([string]$recordIndex)))
         if ([IO.Path]::GetFullPath([string]$record.backup) -ne $expectedBackup) { throw "Uninstall transaction backup is outside its backup root: $Transaction" }
+    }
+    # Re-seed from the journal so mid-recovery journal rewrites (restore status writes) keep
+    # carrying the created-directories list until recovery completes.
+    $script:createdDirectories = @()
+    if ($journal.PSObject.Properties['createdDirectories'] -and $null -ne $journal.createdDirectories) {
+        $script:createdDirectories = @($journal.createdDirectories | ForEach-Object { [string]$_ })
     }
     if ($journal.phase -eq 'committed' -or $journal.phase -eq 'rolled-back') { Remove-Item -LiteralPath $Transaction -Recurse -Force; return }
     $failures = @()
@@ -164,6 +183,11 @@ function Recover-Transaction {
         } elseif ($record.status -eq 'backed-up' -or ($record.status -eq 'backing-up' -and -not $destinationPresent)) { $failures += "$destination`: backup state is incomplete" }
     }
     if ($failures.Count -gt 0) { throw "Unfinished uninstall transaction requires recovery: $Transaction`n$($failures -join "`n")" }
+    $createdEntries = @()
+    if ($null -ne $journal -and $journal.PSObject.Properties['createdDirectories'] -and $null -ne $journal.createdDirectories) {
+        $createdEntries = @($journal.createdDirectories | ForEach-Object { [string]$_ })
+    }
+    Remove-CreatedDirectories $createdEntries
     Remove-Item -LiteralPath $Transaction -Recurse -Force
 }
 
@@ -183,6 +207,15 @@ if ($pendingTransactions.Count -gt 1) {
     throw "Multiple pending installer transactions require manual recovery: $($pendingTransactions.FullName -join ', ')"
 }
 foreach ($pending in $pendingTransactions) { Recover-Transaction $pending.FullName $owned }
+
+# A committed install records the containers it created inside the skill directory; read the
+# manifest before the transaction moves the skill directory away, so a successful uninstall can
+# remove those containers when empty.
+$manifestDirs = @()
+$manifestFile = Join-Path $SkillDir '.rust-intel-created-dirs'
+if (Test-Path -LiteralPath $manifestFile -PathType Leaf) {
+    $manifestDirs = @(Get-Content -LiteralPath $manifestFile | ForEach-Object { [string]$_ } | Where-Object { $_ -ne '' })
+}
 $txDir = Join-Path $txParent ('.rust-intel-ps-uninstall-' + [IO.Path]::GetRandomFileName())
 $backupRoot = Join-Path $txDir 'backup'
 New-Item -ItemType Directory -Force -Path $txDir | Out-Null
@@ -212,6 +245,7 @@ try {
     Abrupt-Abort 'before-cleanup'
     Remove-Item -LiteralPath $txDir -Recurse -Force
     Abrupt-Abort 'after-cleanup'
+    Remove-CreatedDirectories @($manifestDirs | ForEach-Object { Join-Path $ClaudeDir $_ })
 } catch {
     $rollbackFailures = @()
     for ($recordIndex = $records.Count - 1; $recordIndex -ge 0; $recordIndex--) {
