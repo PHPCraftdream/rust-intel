@@ -107,12 +107,17 @@ function Restore-TransactionRecord {
 }
 
 # rmdir-only: a container that is no longer empty or already gone is left untouched, so
-# content owned by anyone else can never be removed through this path.
+# content owned by anyone else can never be removed through this path. The bounded retry
+# absorbs transient sharing violations on a just-emptied container (antivirus and filter
+# drivers briefly hold directory handles); a container that is genuinely not empty fails
+# every attempt and is still left untouched.
 function Remove-CreatedDirectories {
     param([object[]]$Entries)
     foreach ($entry in $Entries) {
         if (Test-Path -LiteralPath $entry -PathType Container) {
-            try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop } catch { }
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 100 }
+            }
         }
     }
 }

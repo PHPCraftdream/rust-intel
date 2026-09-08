@@ -379,7 +379,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "install .bat dispatch failed with exit code $LASTEXITCODE" }
           $knownGood = (& node (Join-Path $source 'dev\snapshot-install.mjs') $target | Out-String)
           $env:RUST_INTEL_INSTALL_ABORT_AT = 'after-backup-journal-0'
-          $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', "`"$script`"") -Wait -PassThru -NoNewWindow
+          # Start-Process passes the calling session's PSModulePath to the child verbatim (and
+          # re-adds a pwsh-flavored path even when the variable is cleared), so a powershell.exe
+          # child resolves Microsoft.PowerShell.Utility to the Core-only PowerShell 7 copy and
+          # cannot autoload Get-FileHash. Pin the child-visible value to the Windows PowerShell
+          # machine default for the duration of the call; a pwsh child prepends its own edition's
+          # directories ahead of it, so both matrix runtimes resolve their inbox modules.
+          $savedModulePath = $env:PSModulePath
+          try {
+            $env:PSModulePath = "$env:ProgramFiles\WindowsPowerShell\Modules;$env:windir\System32\WindowsPowerShell\v1.0\Modules"
+            $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', "`"$script`"") -Wait -PassThru -NoNewWindow
+          } finally { $env:PSModulePath = $savedModulePath }
           if ($abrupt.ExitCode -ne 86) { throw "abrupt PowerShell install exit code was $($abrupt.ExitCode)" }
           Remove-Item Env:RUST_INTEL_INSTALL_ABORT_AT
           & $script
@@ -401,7 +411,11 @@ jobs:
           if ($knownGood -ne $after) { throw 'PowerShell uninstall rollback changed the complete inventory' }
           Remove-Item Env:RUST_INTEL_INSTALL_FAIL_AFTER
           $env:RUST_INTEL_INSTALL_ABORT_AT = 'after-backup-journal-0'
-          $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', "`"$uninstall`"") -Wait -PassThru -NoNewWindow
+          $savedModulePath = $env:PSModulePath
+          try {
+            $env:PSModulePath = "$env:ProgramFiles\WindowsPowerShell\Modules;$env:windir\System32\WindowsPowerShell\v1.0\Modules"
+            $abrupt = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-File', "`"$uninstall`"") -Wait -PassThru -NoNewWindow
+          } finally { $env:PSModulePath = $savedModulePath }
           if ($abrupt.ExitCode -ne 86) { throw "abrupt PowerShell uninstall exit code was $($abrupt.ExitCode)" }
           Remove-Item Env:RUST_INTEL_INSTALL_ABORT_AT
           & $uninstallBat

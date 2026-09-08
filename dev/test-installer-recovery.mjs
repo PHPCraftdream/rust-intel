@@ -238,6 +238,15 @@ function run(target, abortBoundary, failAfter, operationName = operation) {
   else delete env.RUST_INTEL_INSTALL_ABORT_AT;
   if (failAfter) env.RUST_INTEL_INSTALL_FAIL_AFTER = String(failAfter);
   else delete env.RUST_INTEL_INSTALL_FAIL_AFTER;
+  // A pwsh parent session exports a PSModulePath that resolves Microsoft.PowerShell.Utility to
+  // the Core-only PowerShell 7 copy, so a spawned powershell.exe child cannot autoload
+  // Get-FileHash. Drop the variable for PowerShell-surface children; each runtime then rebuilds
+  // its own edition-correct module path (mirrors the rust-cc-*.bat wrappers and the
+  // Start-Process handling in .github/workflows/ci.yml). The installer scripts only use inbox
+  // modules, so nothing else depends on an inherited value.
+  if (surface === 'powershell' && process.platform === 'win32') {
+    delete env.PSModulePath;
+  }
   let executable = executableName;
   let argsForRun = processArgs;
   if (executable === 'wsl.exe') {
