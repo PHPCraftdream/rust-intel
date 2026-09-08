@@ -367,10 +367,13 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 // weakening the large-input controls. The child emits a structured semantic observation on normal
 // completion; the parent judges it against the control's expected result.
 const lexerProbeScript = path.join(root, 'dev', 'validate-lexer-probes.mjs');
-// Keep each resource-heavy probe below the host's normal V8 reservation. This is a lower cap,
-// not a heap increase: the probes' deterministic 2,000,001-code-unit workload fits comfortably
-// within it, while a future accidental growth fails in the focused child instead of taking down
-// the long-lived fixture parent.
+// Cap each focused probe child (controls 399, 400, and 409-478 — synthetic inputs of at most
+// ~100,001 code units) below the host's normal V8 reservation. This is a lower cap, not a heap
+// increase: a future accidental input growth fails in the focused child instead of taking down the
+// long-lived fixture parent. The multi-million-unit differential inputs (controls 401/402/458/459
+// /491/492/493/494) do NOT run under this cap: their children spawn through
+// runValidateAgainstMutatedFiles, which passes no --max-old-space-size, so the former OOM tension
+// of capping a 2,000,001-unit workload at 64 MB no longer exists.
 const lexerProbeHeapMb = 64;
 function runLexerProbe(controlId, timeoutMs = 120_000) {
   const command = [process.execPath, `--max-old-space-size=${lexerProbeHeapMb}`, lexerProbeScript, String(controlId)];
@@ -405,12 +408,21 @@ function runLexerProbe(controlId, timeoutMs = 120_000) {
   return result;
 }
 // Mutation anchors inside dev/js-lexer.mjs used by the behavioral-differential controls below.
-// Each is verified to occur exactly once in the file, so a lost anchor means the mutation did
-// not apply (the differential reports it as skipped and the control fails).
+// String.prototype.replace with a string pattern rewrites only the FIRST occurrence, so a lost or
+// duplicated anchor would silently move a mutation; every mutate() below therefore asserts
+// exactly-one-occurrence at run time via anchorOccursExactlyOnce and returns null otherwise (the
+// differential reports that as skipped and the control fails closed).
+const anchorOccursExactlyOnce = (source, ...anchors) =>
+  anchors.every((anchor) => source.split(anchor).length === 2);
 const BUDGET_LINE = 'const MAX_LEXICAL_OPERATIONS = 2_000_000;';
 const STEP_BLOCK = '  const step = () => {\n    operations += 1;\n    if (operations > MAX_LEXICAL_OPERATIONS) throw new Error(\'JavaScript lexical scan exceeded its deterministic budget\');\n  };';
 const NAME_LINE = 'const COMPLETION_NAME = \'completeCurrentControlScope\';';
 const COMMENT_IF = '    if (character === \'/\' && next === \'*\') {';
+
+// The budget-exceeded throw lives inside STEP_BLOCK; error-valued differentials rewrite its
+// message to carry a run-time nonce (round-48 P2-1) so no pre-canned static message can match.
+const BUDGET_THROW = "throw new Error('JavaScript lexical scan exceeded its deterministic budget');";
+const BUDGET_ERROR_NONCE_SPAN = 2 ** 48 - 1; // node:crypto randomInt requires max - min <= 2**48 - 1
 
 const expectedLexerObservations = new Map([
   [399, { kind: 'error', name: 'Error', message: 'JavaScript lexical nesting exceeded its deterministic budget' }],
@@ -433,9 +445,9 @@ const expectedLexerObservations = new Map([
   [477, { kind: 'completion-violations', ids: [null] }],
   [478, { kind: 'completion-violations', ids: [null] }],
 ]);
-function expectLexerProbe(controlId, { expected } = {}) {
+function expectLexerProbe(controlId) {
   const result = runLexerProbe(controlId);
-  const expectedObservation = expected ?? expectedLexerObservations.get(controlId);
+  const expectedObservation = expectedLexerObservations.get(controlId);
   const passed = result.status === 0 && !result.signal && !result.error
     && result.payload?.controlId === controlId
     && JSON.stringify(result.payload?.observation) === JSON.stringify(expectedObservation);
@@ -451,10 +463,13 @@ function expectLexerProbe(controlId, { expected } = {}) {
 // semantic observation to equal the outcome only genuinely executing that mutated lexer can
 // produce. The probe vehicle itself is byte-identical in both trees, so no text-level property
 // of it (presence, arrangement, occurrence counts, position pins — the round-43 through round-47
-// bypass class) can distinguish the runs; only executing the mutated spot can. Every expected
-// index/id below was verified by actually running the mutation against the real scanner.
-// A mutate() that returns null (anchor lost) fails the control, matching the skipped handling
-// of controls 486/488.
+// bypass class) can distinguish the runs; only executing the mutated spot can. No
+// invocation-ordinal property can either: the differentials execute in a per-run randomized
+// order (see the shuffled block below), and error-valued expectations carry run-time nonces
+// (round-48 P2-1). Every expected index/id below was verified by actually running the mutation
+// against the real scanner.
+// A mutate() that returns null (anchor lost or duplicated) fails the control, matching the
+// skipped handling of controls 486/488.
 function expectJsLexerDifferential(controlId, probeId, mutate, expected) {
   const result = runValidateAgainstMutatedFiles(['dev/js-lexer.mjs'], mutate, {
     script: 'dev/validate-lexer-probes.mjs',
@@ -470,7 +485,7 @@ function expectJsLexerDifferential(controlId, probeId, mutate, expected) {
   const passed = !result.skipped && !result.executionFailure && result.status === 0
     && payload?.controlId === probeId
     && JSON.stringify(payload?.observation) === JSON.stringify(expected);
-  if (result.skipped) failures.push(`Control ${controlId}: required dev/js-lexer.mjs anchor was not found`);
+  if (result.skipped) failures.push(`Control ${controlId}: required dev/js-lexer.mjs anchor was not found or does not occur exactly once`);
   else if (result.executionFailure) failures.push(`Control ${controlId}: focused lexer child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
   else if (!passed) failures.push(`Control ${controlId}: expected observation ${JSON.stringify(expected)}, got status ${result.status ?? 'null'}, output: ${result.output.trim()}`);
   completeCurrentControlScope(controlId, passed);
@@ -4044,21 +4059,17 @@ expectLexerProbe(399);
 
 // Controls 400-402: delimiter mismatches fail closed without a backward stack walk, and the
 // shared lexer accepts work exactly at its operation budget but rejects work above it. Controls
-// 401 and 402 are behavioral differentials: the unmodified tree must accept the exactly
-// 2,000,000-unit marker input with the canonical diagnostic at the marker's index, and reject
-// the 2,000,001-unit input one operation above the budget; controls 458/459/491/492 mutate
-// dev/js-lexer.mjs itself to prove those outcomes are caused by the scanner actually executing.
-// Each large-input probe runs in a short-lived child so V8 native allocation zones cannot
-// accumulate across the full fixture process; elapsed time is intentionally not part of the
-// assertion.
-observeControls({ start: 400, end: 402 });
+// 401 and 402 are behavioral differentials executed from the shuffled block after control 457
+// (round-48 P2-1): the unmodified tree must accept the exactly 2,000,000-unit marker input with
+// the canonical diagnostic at the marker's index, and reject the 2,000,001-unit input one
+// operation above the budget; controls 458/459/491/492 mutate dev/js-lexer.mjs itself to prove
+// those outcomes are caused by the scanner actually executing. Each large-input probe runs in a
+// short-lived child so V8 native allocation zones cannot accumulate across the full fixture
+// process; elapsed time is intentionally not part of the assertion.
+observeControls(400);
 expectLexerProbe(400);
-expectJsLexerDifferential(401, 401, (source) => source, {
-  kind: 'diagnostics', inputLength: 2_000_000, ids: [902], indexes: [1_999_962],
-});
-expectJsLexerDifferential(402, 402, (source) => source, {
-  kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget',
-});
+// The 401 and 402 differentials are registered, executed, and completed inside the shuffled
+// anti-vacuity block below; their scope headers live there.
 
 // Controls 403-404: private names are IdentifierName tokens even when their spelling is a
 // keyword.  A live division after `this.#if()` must remain visible, while a real regexp in the
@@ -4324,33 +4335,152 @@ observeControls(457);
 completeCurrentControlScope(457, passed);
 }
 
+// Controls 401, 402, 458, 459, 491, 492, 493, and 494 — the anti-vacuity differentials — are
+// registered, executed, and completed as ONE group in a per-run randomized order (round-48
+// P2-1). The probe vehicle is invoked once per differential with its probe id as argv, and a
+// facade vehicle can persist state outside the temp tree (os.tmpdir() outlives it), so a FIXED
+// execution order would map each invocation ordinal of a probe id to exactly one expected
+// outcome — answerable from canned data with no scan at all. Randomizing the order per run
+// with a Fisher-Yates shuffle driven by crypto.randomInt destroys that mapping: the vehicle
+// cannot know which mutation (or none) this invocation's temp tree carries. Where the expected
+// outcome is an ERROR, the mutation also embeds a run-time-random nonce in the message thrown
+// by the mutated lexer itself (control 459's random K already worked this way), so a canned
+// static message cannot match an error-valued expectation even by luck; success-valued
+// expectations (401, 491, 492, 493, 494) cannot carry a nonce without changing their verified
+// semantics and rely on the shuffle alone. Each differential still registers, spawns, and
+// completes its own control before the next one spawns, so the one-spawn-per-control
+// attribution is unchanged. Residual, unchanged from the stated threat model: a vehicle that
+// greps the mutated temp-tree lexer (nonce included) and simulates the effect would still
+// defeat this — a deliberate, visible forgery, not a plausible refactor.
+//
+// Control 401 (probe argv 401, identity run): the unmodified tree must accept the exactly
+// 2,000,000-unit marker input with the canonical diagnostic at the marker's index.
+//
+// Control 402 (probe argv 402): the 2,000,001-unit input — one operation above the budget —
+// must be REJECTED. The mutation rewrites only the budget throw's message text to carry the
+// nonce: the condition, the constant, and every other byte of dev/js-lexer.mjs are untouched,
+// so the rejection stays causal (operations > MAX_LEXICAL_OPERATIONS must fire for real) while
+// the expected message becomes unknowable in advance.
+//
 // Control 458: differential M-A — lower the scanner's operation budget by one and the 401 input
 // must be REJECTED. Together with control 401 this pins the operations actually charged for the
 // 2,000,000-unit input to exactly the budget constant — a facade that does not charge one
 // operation per input unit cannot trip the lowered budget. The former source-inventory pin on
 // the shared observation module is retired together with that module: rounds 43-47 each found a
-// text-arrangement bypass of one of those pins.
-observeControls(458);
-expectJsLexerDifferential(458, 401, (source) => {
-  if (!source.includes(BUDGET_LINE)) return null;
-  return source.replace(BUDGET_LINE, 'const MAX_LEXICAL_OPERATIONS = 1_999_999;');
-}, { kind: 'error', name: 'Error', message: 'JavaScript lexical scan exceeded its deterministic budget' });
-
+// text-arrangement bypass of one of those pins. Round-48 P2-1: the expected error message now
+// also carries the run-time nonce.
+//
 // Control 459: differential M-B — inject a throw at a run-time-random operation count K directly
 // inside step(), after the increment. The K-specific message and the index it reports can only
 // be produced by a scan that genuinely advances index in lockstep with the charged operations
 // through the filler — a facade that never calls step(), including one that merely reads
 // MAX_LEXICAL_OPERATIONS and compares the input length against it, cannot know when the random
 // K will hit (verified: at the K-th step the scan's index equals K for K in [2, 1_999_961]).
-observeControls(459);
-{
-  const probeOperation = randomInt(2, 1_999_962);
-  expectJsLexerDifferential(459, 401, (source) => {
-    if (!source.includes(STEP_BLOCK)) return null;
-    const injected = `    if (operations === ${probeOperation}) throw new Error(\`lexical operation probe reached ${probeOperation} at index \${index}\`);\n`;
-    const mutatedStepBlock = STEP_BLOCK.replace('    operations += 1;\n', (line) => line + injected);
-    return source.replace(STEP_BLOCK, (anchor) => mutatedStepBlock);
-  }, { kind: 'error', name: 'Error', message: `lexical operation probe reached ${probeOperation} at index ${probeOperation}` });
+//
+// Control 491: differential M-D — raise the budget by one and the 402 input — one unit LONGER
+// than the old budget — must be ACCEPTED with the canonical diagnostic at the marker's index.
+// Together with control 402 this proves the rejection is caused by the budget constant itself,
+// not by a separately fakeable length check.
+//
+// Control 492: differential M-E — rename the completion identifier inside the lexer itself and
+// the 401 input must produce NO diagnostics — the reported diagnostic is computed by the real
+// completion-detection layer against the lexer's own constant, not fabricated from the input
+// text. The former callee-identity pin on the shared observation module is retired together
+// with that module.
+//
+// Controls 493-494: masking-liveness differentials (M-C). On a 1,000,000-unit input whose decoy
+// completion call sits inside a block comment after 400,000 filler units, the unmodified tree
+// must suppress the decoy (block-comment masking genuinely runs), and disabling the scanner's
+// block-comment branch must make the decoy live code and detected. Without this pair, a facade
+// that charges one operation per unit but returns the source unmasked would be behaviorally
+// indistinguishable from the real scanner on the pure-x-plus-marker inputs of controls
+// 401/402/458/459/491/492, which contain no comments at all.
+const budgetNonce402 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
+const budgetMessage402 = `JavaScript lexical scan exceeded its deterministic budget (gate nonce ${budgetNonce402})`;
+const budgetNonce458 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
+const budgetMessage458 = `JavaScript lexical scan exceeded its deterministic budget (gate nonce ${budgetNonce458})`;
+const probeOperation459 = randomInt(2, 1_999_962);
+const differentials = [
+  {
+    controlId: 401,
+    probeId: 401,
+    mutate: (source) => source,
+    expected: { kind: 'diagnostics', inputLength: 2_000_000, ids: [902], indexes: [1_999_962] },
+  },
+  {
+    controlId: 402,
+    probeId: 402,
+    mutate: (source) => {
+      if (!anchorOccursExactlyOnce(source, STEP_BLOCK)) return null;
+      return source.replace(STEP_BLOCK, (anchor) => anchor.replace(BUDGET_THROW, () =>
+        `throw new Error('${budgetMessage402}');`));
+    },
+    expected: { kind: 'error', name: 'Error', message: budgetMessage402 },
+  },
+  {
+    controlId: 458,
+    probeId: 401,
+    mutate: (source) => {
+      if (!anchorOccursExactlyOnce(source, BUDGET_LINE, STEP_BLOCK)) return null;
+      return source
+        .replace(BUDGET_LINE, 'const MAX_LEXICAL_OPERATIONS = 1_999_999;')
+        .replace(STEP_BLOCK, (anchor) => anchor.replace(BUDGET_THROW, () =>
+          `throw new Error('${budgetMessage458}');`));
+    },
+    expected: { kind: 'error', name: 'Error', message: budgetMessage458 },
+  },
+  {
+    controlId: 459,
+    probeId: 401,
+    mutate: (source) => {
+      if (!anchorOccursExactlyOnce(source, STEP_BLOCK)) return null;
+      const injected = `    if (operations === ${probeOperation459}) throw new Error(\`lexical operation probe reached ${probeOperation459} at index \${index}\`);\n`;
+      const mutatedStepBlock = STEP_BLOCK.replace('    operations += 1;\n', (line) => line + injected);
+      return source.replace(STEP_BLOCK, (anchor) => mutatedStepBlock);
+    },
+    expected: { kind: 'error', name: 'Error', message: `lexical operation probe reached ${probeOperation459} at index ${probeOperation459}` },
+  },
+  {
+    controlId: 491,
+    probeId: 402,
+    mutate: (source) => {
+      if (!anchorOccursExactlyOnce(source, BUDGET_LINE)) return null;
+      return source.replace(BUDGET_LINE, 'const MAX_LEXICAL_OPERATIONS = 2_000_001;');
+    },
+    expected: { kind: 'diagnostics', inputLength: 2_000_001, ids: [902], indexes: [1_999_963] },
+  },
+  {
+    controlId: 492,
+    probeId: 401,
+    mutate: (source) => {
+      if (!anchorOccursExactlyOnce(source, NAME_LINE)) return null;
+      return source.replace(NAME_LINE, "const COMPLETION_NAME = 'completeCurrentControlScope_mutated';");
+    },
+    expected: { kind: 'diagnostics', inputLength: 2_000_000, ids: [], indexes: [] },
+  },
+  {
+    controlId: 493,
+    probeId: 493,
+    mutate: (source) => source,
+    expected: { kind: 'diagnostics', inputLength: 1_000_000, ids: [902], indexes: [400_001] },
+  },
+  {
+    controlId: 494,
+    probeId: 493,
+    mutate: (source) => {
+      if (!anchorOccursExactlyOnce(source, COMMENT_IF)) return null;
+      return source.replace(COMMENT_IF, "    if (false && character === '/' && next === '*') {");
+    },
+    expected: { kind: 'diagnostics', inputLength: 1_000_000, ids: [902, 777], indexes: [400_001, 999_960] },
+  },
+];
+for (let differentialIndex = differentials.length - 1; differentialIndex > 0; differentialIndex -= 1) {
+  const swapWith = randomInt(0, differentialIndex + 1);
+  [differentials[differentialIndex], differentials[swapWith]] = [differentials[swapWith], differentials[differentialIndex]];
+}
+for (const { controlId, probeId, mutate, expected } of differentials) {
+  observeControls(controlId);
+  expectJsLexerDifferential(controlId, probeId, mutate, expected);
 }
 
 // Control 460: the focused helper's developer-facing control argument is canonical-only.  A
@@ -4369,9 +4499,9 @@ observeControls(460);
   completeCurrentControlScope(460, passed);
 }
 
-// Control 485: a workflow run step may not reference a script that is absent from the tree. Recent
-// rounds shipped ci.yml steps invoking dev/validate-all.mjs and a helper script before either file
-// existed, so per-commit CI was red by
+// Control 485: a workflow run step may not reference a script that is absent from the tree. Three
+// commits in the round-42 window shipped ci.yml steps invoking dev/validate-all.mjs and
+// dev/validate-lexer-observations.mjs before either file existed, so per-commit CI was red by
 // construction; this control proves the validator's run-step existence check rejects the shape.
 observeControls(485);
 {
@@ -4488,44 +4618,6 @@ observeControls(490);
   });
   expectFixture(result, 'Control 490: workflow-level RUST_INTEL_VALIDATE_TIMEOUT_MS override is rejected', 1, ['must not set RUST_INTEL_VALIDATE_TIMEOUT_MS'], 490);
 }
-
-// Control 491: differential M-D — raise the budget by one and the 402 input — one unit LONGER
-// than the old budget — must be ACCEPTED with the canonical diagnostic at the marker's index.
-// Together with control 402 this proves the rejection is caused by the budget constant itself,
-// not by a separately fakeable length check.
-observeControls(491);
-expectJsLexerDifferential(491, 402, (source) => {
-  if (!source.includes(BUDGET_LINE)) return null;
-  return source.replace(BUDGET_LINE, 'const MAX_LEXICAL_OPERATIONS = 2_000_001;');
-}, { kind: 'diagnostics', inputLength: 2_000_001, ids: [902], indexes: [1_999_963] });
-
-// Control 492: differential M-E — rename the completion identifier inside the lexer itself and
-// the 401 input must produce NO diagnostics — the reported diagnostic is computed by the real
-// completion-detection layer against the lexer's own constant, not fabricated from the input
-// text. The former callee-identity pin on the shared observation module is retired together
-// with that module.
-observeControls(492);
-expectJsLexerDifferential(492, 401, (source) => {
-  if (!source.includes(NAME_LINE)) return null;
-  return source.replace(NAME_LINE, "const COMPLETION_NAME = 'completeCurrentControlScope_mutated';");
-}, { kind: 'diagnostics', inputLength: 2_000_000, ids: [], indexes: [] });
-
-// Controls 493-494: masking-liveness differentials (M-C). On a 1,000,000-unit input whose decoy
-// completion call sits inside a block comment after 400,000 filler units, the unmodified tree
-// must suppress the decoy (block-comment masking genuinely runs), and disabling the scanner's
-// block-comment branch must make the decoy live code and detected. Without this pair, a facade
-// that charges one operation per unit but returns the source unmasked would be behaviorally
-// indistinguishable from the real scanner on the pure-x-plus-marker inputs of controls
-// 401/402/458/459/491/492, which contain no comments at all.
-observeControls(493);
-expectJsLexerDifferential(493, 493, (source) => source, {
-  kind: 'diagnostics', inputLength: 1_000_000, ids: [902], indexes: [400_001],
-});
-observeControls(494);
-expectJsLexerDifferential(494, 493, (source) => {
-  if (!source.includes(COMMENT_IF)) return null;
-  return source.replace(COMMENT_IF, "    if (false && character === '/' && next === '*') {");
-}, { kind: 'diagnostics', inputLength: 1_000_000, ids: [902, 777], indexes: [400_001, 999_960] });
 
 for (const fixture of cases) {
   const source = fs.readFileSync(path.join(fixtureRoot, fixture.file), 'utf8');
