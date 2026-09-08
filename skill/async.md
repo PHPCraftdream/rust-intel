@@ -64,20 +64,49 @@
 
 **Pattern for the not-cancel-safe boundary**:
 ```rust
-// Framing state must live OUTSIDE the future whose cancellation must be
-// survivable: a read_message built on read_exact is NOT cancel-safe
-// (cancellation after a partial read loses framing progress — it inherits
-// read_exact's property, see the look-alike list below). Here partial reads
-// accumulate in the caller-owned `buf`, so cancelling `handle` mid-frame
-// loses nothing — the next call resumes decoding where the last one stopped.
-/// cancel-safe: yes (read is cancel-safe, write+ack is detached via spawn)
-async fn handle(stream: TcpStream, db: Arc<Db>, buf: &mut Vec<u8>) -> Result<()> {
-    let (mut reader, mut writer) = stream.into_split(); // OwnedReadHalf + OwnedWriteHalf
-    let data = read_message(&mut reader, buf).await?;   // cancel-safe up to here
-    // Critical section detached from caller cancellation:
+// The connection state must be caller-owned across cancellation TOO, not
+// just the framing buffer. The trap, one level past "read_exact is not
+// cancel-safe": a `handle` that takes the `TcpStream` by value and calls
+// `into_split()` INSIDE the cancellable future compiles and keeps `buf` in
+// the caller, but cancelling that future mid-frame drops BOTH owned halves
+// and destroys the connection — `buf` survives while the peer's next read
+// returns EOF (probed on tokio 1.53.1: one partial byte in `buf`, EOF at the
+// peer). `read` being cancel-safe makes the READ resumable; it does not keep
+// a connection the future OWNS alive across the cancellation.
+//
+// Correct shape — split BEFORE the cancellable scope; the caller keeps both
+// owned halves and the framing buffer for the whole session; the cancellable
+// future only BORROWS the read half; the write half reaches the detached
+// critical section through a shared handle at the commit point, so no
+// cancellation path can drop either half:
+//
+//   let (mut reader, writer) = stream.into_split();  // BEFORE any cancellable scope
+//   let writer = Arc::new(Mutex::new(writer));       // tokio::sync::Mutex — §B2 allows holding its guard across .await
+//   let mut buf = Vec::new();
+//   // timeout(.., handle(&mut reader, &writer, db.clone(), &mut buf)) may be
+//   // cancelled repeatedly mid-frame; each cancellation drops borrows only,
+//   // and the next call resumes on the SAME connection.
+//
+// (A read_message built on `read_exact` is still NOT cancel-safe — it
+// inherits read_exact's property, see the look-alike list below; caller-owned
+// state does not fix that.)
+/// cancel-safe: yes (read is cancel-safe; halves + buffer are caller-owned —
+/// this future only borrows; write+ack is detached via spawn at the commit
+/// point)
+async fn handle(
+    reader: &mut OwnedReadHalf,          // borrowed — survives cancellation
+    writer: &Arc<Mutex<OwnedWriteHalf>>, // shared handle — survives cancellation
+    db: Arc<Db>,
+    buf: &mut Vec<u8>,
+) -> Result<()> {
+    let data = read_message(reader, buf).await?;   // cancel-safe up to here
+    // Critical section detached from caller cancellation; the write half is
+    // SHARED into the task (Arc clone) at the commit point, never moved out
+    // of the caller:
+    let writer = Arc::clone(writer);
     tokio::spawn(async move {
         db.insert(&data).await?;
-        send_ack(&mut writer).await?;
+        send_ack(&mut *writer.lock().await).await?;
         Ok::<_, Error>(())
     }).await?
 }
@@ -88,8 +117,9 @@ async fn handle(stream: TcpStream, db: Arc<Db>, buf: &mut Vec<u8>) -> Result<()>
 // byte already read. The same function built on `read_exact` would NOT be.
 // The read side must be a MUTABLE AsyncRead — `AsyncReadExt::read` takes
 // `&mut self`, so the old shared-`&TcpStream` shape does not compile; pass
-// the `OwnedReadHalf` from `into_split()` (or `&mut TcpStream` when the
-// write side is not needed concurrently).
+// the `OwnedReadHalf` from `into_split()` by REFERENCE (or `&mut TcpStream`
+// when the write side is not needed concurrently) — never own the stream or
+// the halves INSIDE the cancellable future.
 async fn read_message(reader: &mut OwnedReadHalf, buf: &mut Vec<u8>) -> io::Result<Bytes> {
     loop {
         if let Some(len) = try_frame_len(buf)? {  // complete frame buffered?
@@ -375,7 +405,7 @@ This category is the `select!`-specific application of §B3. The general rule (`
 - `tokio::spawn(async move { ... tracing::info!(...) ... })` (or the equivalent `Handle::spawn`/`Runtime::spawn` method forms — the rule covers any future-spawning API, free function or runtime-handle method, plus any local-runtime/builder path of the same shape) inside a request handler with an active span, *without* attaching the parent span — via `.in_current_span()` **or** an explicit `.instrument(parent_span)` (both from `tracing::Instrument`; either satisfies the rule, the defect is spawning with no span attached) — the spawned future runs outside the parent span.
 - Reading `Span::current()` *inside* the spawned future body and expecting it to be the parent — by the time the future runs, the thread-local has been reset.
 - Using `tokio::task::spawn_blocking` (or the `Handle::spawn_blocking`/`Runtime::spawn_blocking` method forms) and assuming the parent span is preserved — `spawn_blocking` moves work to a separate blocking-pool thread; the span is lost there too.
-- Storing per-request context in a `thread_local!`, writing it before an `.await` and reading it after, on a multi-thread runtime. This is the *general* form of the span hazard above (which is one instance of it): a task can migrate to a **different worker thread** at any `.await`, so the value read after the await belongs to *whatever other task last ran on the new worker* — or the thread-local default — not to this task. The corruption is silent (wrong request-id / tenant / locale / auth context propagated), compiles, and passes single-threaded tests. Use `tokio::task_local!` (the value travels *with the task* across awaits and thread hops) for per-task context; or confine the task to one thread via a current-thread runtime / `LocalSet` when a true thread-local is unavoidable.
+- Storing per-request context in a std `thread_local!`, writing it before an `.await` and reading it after. Thread migration is only ONE of the two corruption mechanisms — this is the *general* form of the span hazard above (which is one instance of it): on a multi-thread runtime a task can migrate to a **different worker thread** at any `.await`, so the value read after the await belongs to *whatever other task last ran on the new worker* — or the thread-local default — not to this task. A current-thread runtime / `LocalSet` prevents the migration but NOT the hazard, because it does not prevent **interleaving on the one thread**: task A writes `tenant = 1` and yields at an `.await`; task B, scheduled on the **same thread**, writes `tenant = 2`; task A resumes on that same thread and reads `tenant = 2` — reproducible deterministically with two plain futures polled on one thread, no runtime required. Either mechanism is silent (wrong request-id / tenant / locale / **auth context** propagated; compiles; passes single-threaded tests) — and when the state carries tenant/auth data this is cross-request security contamination, not just broken correlation. Use `tokio::task_local!` (the value travels *with the task* across awaits, interleavings and thread hops — and out-of-scope access fails loudly instead of returning stale data; see the `spawn_blocking` note below) or context **explicitly passed** into the future (a parameter / a field of the async block). A true OS `thread_local!` is acceptable only when the whole usage interval has **exclusive ownership of the thread** — no other task is polled on it between this task's write and its read — or the context is explicitly restored on **every single poll**; "it's all on one OS thread" (current-thread runtime, `LocalSet`) is not that proof — it rules out migration only.
 - Logging PII through `{:?}` / `#[derive(Debug)]` / `tracing` fields — email, full name, phone, address, government ID, card number, IP. §B12 covers cryptographic *secrets* by field name, but PII is a separate compliance class (GDPR / PCI / CCPA): it compiles, tests pass, and the leak surfaces only in production logs at audit time. Classify PII fields and redact them (a redacting newtype, `tracing` field filtering, or skip via `#[derive(Debug)]` customization).
 - `#[tracing::instrument]` (or `#[instrument(ret)]`/`#[instrument(err)]`) on a function whose parameters or return/error values are secret material or a full request body, without `skip`/`skip_all`: by default the macro records **every argument as a span field, formatted with `fmt::Debug`** — `#[instrument] async fn login(pool, email, password)` puts the plaintext password into every span-aware log line and trace exporter; `(ret)` records the return value (a minted token); `(err)` records the error's `Display` (e.g. one embedding a connection string). It compiles, tests are green (nothing asserts on log content), and the leak surfaces in production logs/trace backends. REQUIRED: `#[instrument(skip(password))]`, or `#[instrument(skip_all, fields(user = %email))]` keeping only explicit, non-sensitive fields, or a self-redacting type (`"<redacted>"` `Debug` newtype, `secrecy::SecretBox` — §B12). 🔴 when a parameter is secret material (same class as §B12's Debug-leak, arrived at through a different formatter); 🟡 for PII/payload size (a multi-MB body also materializes into every span — a §E5 log-volume cost).
 - Untrusted input logged via `tracing::info!("... {} ...", user_input)` or `format!`/`println!` passes raw control characters (ANSI escapes, newlines) through unescaped — only `{:?}` escapes them. Into a **plain-text or terminal** log sink this lets an attacker forge log lines, clear the terminal, or inject ANSI (a structured/JSON sink is largely immune). For values reaching such a sink as free text, log via `{:?}` or sanitize control characters, and keep the logging/subscriber stack patched against known log-injection advisories — the worked instance is tracing-subscriber RUSTSEC-2025-0055 (ANSI escape injection via logged input; patched ≥ 0.3.20).
