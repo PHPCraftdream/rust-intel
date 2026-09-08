@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-      - uses: dtolnay/rust-toolchain@86e7197484018ef6aaa9255d186f6ce1754276dd # 1.97.0
+      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
 
       - name: Verify pinned Rust toolchain
         shell: bash
@@ -30,7 +30,7 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
           rustc_release="$(rustc -vV)"
-          grep '^release: 1.97.0$' >/dev/null <<<"$rustc_release"
+          grep '^release: 1.97.1$' >/dev/null <<<"$rustc_release"
       - name: Check for trailing whitespace across the tracked tree
         # Diffs the empty tree against the working tree so every tracked line is treated as an
         # addition and checked — a whole-repo invariant, not just the current PR's diff.
