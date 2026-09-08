@@ -195,13 +195,16 @@ function Restore-TransactionRecord {
 function Remove-CreatedDirectories {
     param([object[]]$Entries)
     foreach ($entry in $Entries) {
-        if (Test-Path -LiteralPath $entry -PathType Container) {
+        $existed = Test-Path -LiteralPath $entry -PathType Container
+        if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "remove-created-dir: entry=$entry existed=$existed" + [Environment]::NewLine) }
+        if ($existed) {
             $lastError = $null
             $removed = $false
             for ($attempt = 0; $attempt -lt 150; $attempt++) {
                 try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop; $removed = $true; break }
                 catch { $lastError = $_; Start-Sleep -Milliseconds 200 }
             }
+            if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "remove-created-dir-result: entry=$entry removed=$removed error=$($lastError.Exception.Message)" + [Environment]::NewLine) }
             if (-not $removed) { Write-Warning "Could not remove created directory after retrying: $entry ($($lastError.Exception.Message))" }
         }
     }
@@ -362,14 +365,17 @@ foreach ($file in $skillFiles) {
 }
 
 $manifestDirs = Get-ManifestCandidates @($SkillDir, $CommandsDir)
+if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "manifest-candidates: skilldir=$SkillDir commandsdir=$CommandsDir entries=[$($manifestDirs -join ';')]" + [Environment]::NewLine) }
 $previousManifest = Join-Path $SkillDir '.rust-intel-created-dirs'
-if (Test-Path -LiteralPath $previousManifest -PathType Leaf) {
+$previousManifestPresent = Test-Path -LiteralPath $previousManifest -PathType Leaf
+if ($previousManifestPresent) {
     # Carry forward the manifest of the install being replaced: the containers it lists were
     # created by this install lineage.
     foreach ($entry in @(Get-Content -LiteralPath $previousManifest | ForEach-Object { [string]$_ })) {
         if ($entry -ne '' -and $manifestDirs -notcontains $entry) { $manifestDirs += $entry }
     }
 }
+if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "manifest-write: previous-present=$previousManifestPresent final-entries=[$($manifestDirs -join ';')]" + [Environment]::NewLine) }
 if ($manifestDirs.Count -gt 0) {
     Set-Content -LiteralPath (Join-Path $stageSkill '.rust-intel-created-dirs') -Value $manifestDirs
 }

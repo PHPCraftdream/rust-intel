@@ -116,13 +116,16 @@ function Restore-TransactionRecord {
 function Remove-CreatedDirectories {
     param([object[]]$Entries)
     foreach ($entry in $Entries) {
-        if (Test-Path -LiteralPath $entry -PathType Container) {
+        $existed = Test-Path -LiteralPath $entry -PathType Container
+        if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "remove-created-dir: entry=$entry existed=$existed" + [Environment]::NewLine) }
+        if ($existed) {
             $lastError = $null
             $removed = $false
             for ($attempt = 0; $attempt -lt 150; $attempt++) {
                 try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop; $removed = $true; break }
                 catch { $lastError = $_; Start-Sleep -Milliseconds 200 }
             }
+            if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "remove-created-dir-result: entry=$entry removed=$removed error=$($lastError.Exception.Message)" + [Environment]::NewLine) }
             if (-not $removed) { Write-Warning "Could not remove created directory after retrying: $entry ($($lastError.Exception.Message))" }
         }
     }
@@ -224,9 +227,11 @@ foreach ($pending in $pendingTransactions) { Recover-Transaction $pending.FullNa
 # remove those containers when empty.
 $manifestDirs = @()
 $manifestFile = Join-Path $SkillDir '.rust-intel-created-dirs'
-if (Test-Path -LiteralPath $manifestFile -PathType Leaf) {
+$manifestFilePresent = Test-Path -LiteralPath $manifestFile -PathType Leaf
+if ($manifestFilePresent) {
     $manifestDirs = @(Get-Content -LiteralPath $manifestFile | ForEach-Object { [string]$_ } | Where-Object { $_ -ne '' })
 }
+if ($env:RUST_INTEL_INSTALL_ABORT_LOG) { [IO.File]::AppendAllText($env:RUST_INTEL_INSTALL_ABORT_LOG, "manifest-read: file=$manifestFile present=$manifestFilePresent entries=[$($manifestDirs -join ';')]" + [Environment]::NewLine) }
 $txDir = Join-Path $txParent ('.rust-intel-ps-uninstall-' + [IO.Path]::GetRandomFileName())
 $backupRoot = Join-Path $txDir 'backup'
 New-Item -ItemType Directory -Force -Path $txDir | Out-Null

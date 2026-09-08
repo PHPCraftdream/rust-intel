@@ -411,7 +411,7 @@ try {
     assertStatus(restarted, 0, `${surface} ${operation} ${mode} ${boundary} ${crossMode ? 'cross-' : ''}restart`);
     clearCrossOracleCorruption();
     const actualSnapshot = snapshot(actualTarget);
-    if (actualSnapshot !== expected) throw new Error(`${surface} ${operation} ${mode} ${boundary} ${crossMode ? 'cross-' : ''}restart did not produce clean-operation inventory\nexpected=${expected}\nactual=${actualSnapshot}`);
+    if (actualSnapshot !== expected) throw new Error(`${surface} ${operation} ${mode} ${boundary} ${crossMode ? 'cross-' : ''}restart did not produce clean-operation inventory\nexpected=${expected}\nactual=${actualSnapshot}\nrestart-diagnostics=${JSON.stringify(restarted.hooks)}`);
     if (crossMode && (injected.length !== 1 || injected[0].target !== actualTarget)) {
       throw new Error(`${surface} ${operation}: cross-operation oracle corruption was also applied to the expected side`);
     }
