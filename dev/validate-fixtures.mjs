@@ -437,18 +437,25 @@ const BUDGET_ERROR_NONCE_SPAN = 2 ** 48 - 1; // node:crypto randomInt requires m
 // when — the nonce fired and the completion pass ran at that full input length. The expected
 // observation of each of those controls is its former diagnostics PLUS that trailing entry. The
 // nonce is drawn fresh per differential per run and travels only into the mutated file and the
-// parent's own expectation, so no vehicle can construct a success-valued expectation without
-// genuinely executing the mutated scan through its final charged operation: identifying which
-// differential a tree is (by order, elimination within a probe argv group, os.tmpdir() memory,
-// file size, or a cheap behavioral probe) no longer helps, because identification does not
-// produce the answer. The `source.length` guard is load-bearing: the completion-detection layer
+// parent's own expectation. What the draw actually buys is narrower than "no vehicle can
+// construct the expectation without executing": identifying which differential a tree is (by
+// order, elimination within a probe argv group, os.tmpdir() memory, file size, or a cheap
+// behavioral probe) no longer CONSTRUCTS the answer, and no cheaper-than-full-scan execution
+// path to the nonce exists. A vehicle that reads the mutated file's text instead of executing
+// it can still recover the injected nonce literal and construct every expected observation —
+// round-51 P2-1 measured an 18-line forged insertion doing exactly that, 8/8 across 6 runs —
+// so this gate assumes a non-forging vehicle as well as a non-forging lexer (round-52 P2-17).
+// The `source.length` guard is load-bearing: the completion-detection layer
 // charges at a different rate than the scan layer, so without the guard a facade could try to
 // satisfy the observation by running only the completion layer at full length while
-// under-charging the scan itself. Accepted residual, stated where the claim is made
-// (README/CHANGELOG round-50): a dev/js-lexer.mjs deliberately written to read its own mutation
-// — the injected nonce literal included — as ordinary program state can reproduce any of this;
-// that is the definitional boundary of mutation testing, not a gap specific to this gate, and
-// that file's integrity remains a review obligation.
+// under-charging the scan itself. Accepted residuals, stated where the claim is made (README
+// round-52 wording): TWO deliberate forgeries can defeat this gate, and neither is a gap
+// specific to it — (1) a probe vehicle forged to read the mutated tree's text instead of
+// executing it (the nonce literal is recoverable from that text), and (2) a dev/js-lexer.mjs
+// deliberately written to read its own mutation — the injected nonce literal included — as
+// ordinary program state. Both are the definitional boundary of mutation testing; the probe
+// vehicle's honesty and the lexer file's integrity remain review obligations, not proven
+// properties.
 const applyScanCompletionNonce = (source, scanOps, inputLength, nonce) => {
   if (!anchorOccursExactlyOnce(source, BUDGET_LINE, STEP_BLOCK, COMPLETION_RETURN)) return null;
   return source
@@ -503,7 +510,11 @@ function expectLexerProbe(controlId) {
 // expected observation — every success-valued expectation additionally carries a run-time
 // scan-completion nonce and every error-valued expectation a run-time message nonce or K
 // (round-48 P2-1, round-50 P2-1). Every expected index/id below was verified by actually running
-// the mutation against the real scanner.
+// the mutation against the real scanner. For an honest vehicle that outcome is reachable only
+// by executing the mutated scan; a vehicle forged to read the mutated tree's text can emit it
+// without executing (round-51 P2-1), so these differentials assume a non-forging vehicle as
+// well as a non-forging lexer (round-52 P2-17), and their coverage claims attach only to the
+// mutations actually tested.
 // A mutate() that returns null (anchor lost or duplicated) fails the control, matching the
 // skipped handling of controls 486/488.
 function expectJsLexerDifferential(controlId, probeId, mutate, expected, probeInputLength) {
@@ -4382,19 +4393,24 @@ completeCurrentControlScope(457, passed);
 // 2,000,001 input length) as argv. A facade vehicle can persist state outside the temp tree
 // (os.tmpdir() outlives it), so it CAN identify which differential each honest invocation was —
 // by its result's shape, by elimination within a probe argv group, by remembered order, by
-// fs.statSync on its tree, or by a small behavioral probe. Round-50 P2-1: every one of those
-// identification channels is now worthless, because identification does not construct an
-// answer. Each success-valued differential's expected observation includes a trailing
+// fs.statSync on its tree, or by a small behavioral probe. It can also skip identification
+// entirely and read the mutated file's text (round-51 P2-1). Round-50 P2-1: every one of the
+// identification channels is worthless on its own, because identification alone does not
+// construct an answer — but reading the mutated text does, which is why the gate's assumption
+// of a non-forging vehicle is stated wherever the claim is made. Each success-valued
+// differential's expected observation includes a trailing
 // diagnostic entry `{ index: <input length>, id: <nonce> }` whose nonce is drawn fresh per
 // differential per run (below) and exists only inside the mutated tree's own lexer and the
 // parent's expectation — and that entry materializes only when the mutated lexer's own step()
 // has charged exactly that differential's measured final operation count for that differential's
-// exact input. Knowing "this tree is control 401" produces nothing; only completing the real
-// scan does. That is what retired the round-48/49 countermeasures as dead weight: the shuffle
-// (round-48 P2-1), the length-equalization padding (round-49 P2-1 channel A), and the
-// 491/492/494 branch draws (round-49 P2-1 channel B) all made identification expensive without
-// ever making it profitable — a vehicle that fingerprints its tree perfectly still cannot
-// produce a single expected success observation without the honest scan.
+// exact input. Knowing "this tree is control 401" produces nothing by itself; executing the
+// real scan produces the answer — and so, for a vehicle willing to forge, does reading the
+// mutated file's text. That is what retired the round-48/49 countermeasures as dead weight:
+// the shuffle (round-48 P2-1), the length-equalization padding (round-49 P2-1 channel A), and
+// the 491/492/494 branch draws (round-49 P2-1 channel B) all made identification expensive
+// without ever making it profitable — a vehicle that merely fingerprints its tree still cannot
+// produce a single expected success observation without either the honest scan or a deliberate
+// forgery that reads the mutated text (the residual stated at applyScanCompletionNonce).
 //
 // Per-control shape (the scanner charges at most one operation per code unit, and whitespace is
 // charged nothing; marker = ';completeCurrentControlScope(902, true)', 39 units, so the callee
@@ -4484,13 +4500,61 @@ const budgetMessage458 = `JavaScript lexical scan exceeded its deterministic bud
 const probeOperation459 = randomInt(2, 1_999_962);
 // Round-50 P2-1 scan-completion nonces: one fresh 48-bit draw per success-valued differential
 // per run, same span as the error-valued message nonces. Each nonce travels only two places —
-// into its own mutated tree's lexer and into the parent's expectation — never into argv, the
-// environment, or any other channel a vehicle can read without executing the mutated scan.
-const nonce401 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
-const nonce491 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
-const nonce492 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
-const nonce493 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
-const nonce494 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
+// into its own mutated tree's lexer and into the parent's expectation — never into argv or the
+// environment. That confinement does not make the nonce unreadable: the mutated file is itself
+// text a probe vehicle can read without executing it, and a vehicle forged to do exactly that
+// can recover the nonce literal and answer all eight differentials (round-51 P2-1, measured).
+// This gate therefore assumes a NON-FORGING VEHICLE as well as a non-forging lexer (round-52
+// P2-17); its coverage claims attach only to the mutations actually tested.
+//
+// Round-52 P3-01: the injected `reachedNonce` uses 0 as its "not reached" sentinel, so a drawn
+// zero would collide with it — the `reachedNonce !== 0` guard would read a genuinely-reached
+// nonce as never-reached and silently drop the trailing diagnostic. node:crypto randomInt is
+// inclusive of its lower bound and exclusive of its upper bound, so the floor is 1, not 0, and
+// the guard in drawScanCompletionNonce turns any out-of-contract draw into a loud failure
+// instead of a silently lost diagnostic. The randomIntSource seam exists only so the
+// deterministic zero-boundary control below can force a draw of exactly 0 and require that
+// rejection.
+let randomIntSource = randomInt;
+const drawScanCompletionNonce = () => {
+  const nonce = randomIntSource(1, BUDGET_ERROR_NONCE_SPAN);
+  if (!Number.isSafeInteger(nonce) || nonce < 1 || nonce >= BUDGET_ERROR_NONCE_SPAN) {
+    throw new Error(`scan-completion nonce draw violated its contract (expected 1 <= nonce < ${BUDGET_ERROR_NONCE_SPAN}, got ${nonce})`);
+  }
+  return nonce;
+};
+const nonce401 = drawScanCompletionNonce();
+const nonce491 = drawScanCompletionNonce();
+const nonce492 = drawScanCompletionNonce();
+const nonce493 = drawScanCompletionNonce();
+const nonce494 = drawScanCompletionNonce();
+// Deterministic zero-boundary control (round-52 P3-01), run on every fixture execution: force
+// the draw to exactly 0 and require the explicit rejection above, and require real draws to
+// stay inside [1, BUDGET_ERROR_NONCE_SPAN). A regression that reopens the zero/sentinel
+// collision must fail here, loudly, instead of losing a trailing diagnostic inside an otherwise
+// green run. This check is deliberately not a registered control id: it guards the draws above,
+// spawns nothing, and leaves the registry totals untouched.
+{
+  const realRandomIntSource = randomIntSource;
+  let forcedZeroRejection = null;
+  randomIntSource = () => 0;
+  try {
+    drawScanCompletionNonce();
+  } catch (error) {
+    forcedZeroRejection = error instanceof Error ? error.message : String(error);
+  } finally {
+    randomIntSource = realRandomIntSource;
+  }
+  let realDrawsInContract = true;
+  for (let index = 0; index < 128 && realDrawsInContract; index += 1) {
+    const drawn = drawScanCompletionNonce();
+    realDrawsInContract = Number.isSafeInteger(drawn) && drawn >= 1 && drawn < BUDGET_ERROR_NONCE_SPAN;
+  }
+  if (forcedZeroRejection === null || !realDrawsInContract) {
+    failures.push(`zero-boundary nonce control failed: forced-zero draw ${forcedZeroRejection === null ? 'was accepted — the reachedNonce sentinel collision would silently drop the trailing diagnostic' : `was rejected (${forcedZeroRejection})`}${realDrawsInContract ? '' : ', and/or a real draw fell outside [1, BUDGET_ERROR_NONCE_SPAN)'}`);
+  }
+  progress(`zero-boundary nonce control: forced-zero draw ${forcedZeroRejection === null ? 'NOT rejected' : 'rejected'}, real draws ${realDrawsInContract ? 'in contract' : 'OUT of contract'}`);
+}
 const differentials = [
   {
     controlId: 401,
