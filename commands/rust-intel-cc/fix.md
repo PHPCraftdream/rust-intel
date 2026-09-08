@@ -21,10 +21,11 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    - Panic / runtime stack trace (has `thread 'main' panicked` or a backtrace).
    - Natural-language anomaly (deadlock, OOM, slow, intermittent flake).
 
-3. **Request context when needed:**
-   - For a compiler error — need the relevant source lines (or the file path). If neither is provided, ask. **Don't guess.**
-   - For runtime symptoms — need `Cargo.toml` for versions and a repro scenario, if the category depends on either (§A1, §B4).
-   - If context is insufficient, emit a blocking message in the spec's canonical form.
+3. **Request context — block only on the three security-critical cases:**
+   - For a compiler error — need the relevant source lines (or the file path). If neither is provided, state your reading of the error as an explicit assumption, give the general form of the fix, and ask for the actual fragment — don't fabricate code you haven't seen.
+   - For runtime symptoms — need the resolved versions (`Cargo.lock`/`cargo metadata`; `Cargo.toml` only declares ranges) and a repro scenario, if the category depends on either (§A1, §B4).
+   - **Hard-block** — the spec's canonical ⚠️ BLOCKED form — only on the core's irreversible / security-critical three: cryptographic code with an unstated threat model (§B12); `unsafe` code with unstated caller-upheld invariants (§B5); a dependency the user did not name and whose existence is unverified (§A1).
+   - Every other gap — unknown versions, missing source, an unclear cancellation context — does **not** block: proceed with explicitly stated assumptions, each recorded in an `// ASSUMES:` comment block at the top of the answer, and ask the user to confirm (per the skill's Blocking protocol).
 
 4. **Map to a category.** Use the routing table below — it is **only a router** (symptom → category number). The actual rule wording, BANNED/REQUIRED bullets, and remediation guidance live in the skill, never duplicated here. Whenever a new category lands in the `rust-intel` skill, extend this routing table accordingly. Table is non-exhaustive — when no row matches, read the spec's taxonomy directly.
 
@@ -69,16 +70,16 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | Crypto op is remotely timing-attackable with no code bug; `cargo audit` flags an open advisory on `rsa` | §B12 (Marvin / RUSTSEC-2023-0071 — keep advisory-carrying ops off attacker-timed paths) |
    | Byte-at-a-time plaintext recovery; a decrypt endpoint returns distinguishable "bad padding" vs "MAC failed" errors | §B24 (decryption-failure oracle — collapse to one opaque error; error context stops at the crypto boundary, cf. §C2) |
    | `HashMap::get` returns `None` but the value was inserted | §B16 (Eq/Hash contract mismatch) |
-   | A worker pins at 100% CPU on a regex match / request times out on a specific input; the engine is `fancy-regex` / `onig` / `pcre2` | §B16 (ReDoS — catastrophic backtracking on untrusted input; keep untrusted input on the linear `regex` crate, else size-cap + hard match timeout) |
+   | A worker pins at 100% CPU on a regex match / request times out on a specific input; the engine is `fancy-regex` / `onig` / `pcre2` | §B16 (ReDoS — catastrophic backtracking on untrusted input: keep untrusted input on the linear `regex` crate, or on a backtracking engine require BOTH an enforced input-size cap AND an engine-native step-limit/interrupt — or a killable subprocess; a `std::thread` + `recv_timeout` "timeout" or `tokio::time::timeout` around `spawn_blocking` is NOT a hard timeout — the detached thread / blocking closure keeps running the match) |
    | panic `already borrowed: BorrowMutError` | §B17 (RefCell reentrant borrow) |
    | `unsafe impl Send` / `unsafe impl Sync` without SAFETY justification | §B18 |
    | `untagged` enum deserializes to wrong variant | §B20 (variant shape overlap) |
    | OOM / process abort decompressing a small gzip/zip/tar body though the compressed size was capped | §B7 (decompression bomb — the compressed cap bounds the wrong side; `.take(MAX+1)` on the decoder's output) |
-   | Stack overflow / SIGSEGV re-deserializing an already-parsed `serde_json::Value` (`from_value`/`IgnoredAny`/`flatten`) or on deeply-nested YAML, though "serde_json has a recursion limit" | §B7 (the 128 limit is parse-phase only; AST re-deserialize bypasses it; verify the pinned serde_yaml version — depth checks landed in 0.8.4 per RUSTSEC-2018-0005 and the crate is now unmaintained — `serde_stacker` / cap depth pre-parse) |
+   | Stack overflow / SIGSEGV re-deserializing an already-parsed `serde_json::Value` (`from_value`/`IgnoredAny`/`flatten`) or on deeply-nested YAML, though "serde_json has a recursion limit" | §B7 (the 128 limit is parse-phase only; AST re-deserialize bypasses it; verify the pinned serde_yaml version — depth checks landed in 0.8.4 per RUSTSEC-2018-0005 and the crate is now unmaintained — cap depth/input pre-parse; `serde_stacker` is stack growth WITHIN such a budget, not an alternative to one) |
    | Files appeared outside the extraction directory, or an extracted link overwrote something in `/etc`, `~/.ssh`, or the app root | §C2 (zip-slip/tar-slip — archive entry names are attacker-authored paths; reject `..`/absolute/rooted names, link entries and special files per entry; `cap-std`/`openat` when the destination is attacker-mutable) |
    | Disk or inodes exhausted by an archive that was small on the wire and whose individual entries were all tiny | §B7 (per-entry caps do not bound the aggregate — cap total bytes, entry count, and nesting depth against one shared budget) |
    | Untrusted length clamp passes but allocation still OOMs; `count * item_size` clamped then allocated | §B7 / §B26 (release-wrap multiply passes the clamp, original count OOMs — `checked_mul`; CWE-190→789) |
-   | Client smuggles an extra/typo'd/duplicate JSON field past validation (mass assignment; duplicate handling depends on the parser path) | §B20 (missing `deny_unknown_fields` on an untrusted request struct; reject or canonicalize duplicate keys at the boundary) |
+   | Client smuggles an extra/typo'd/duplicate JSON field past validation (mass assignment; duplicate handling depends on the parser path) | §B20 (reject or canonicalize duplicate keys at the boundary; `deny_unknown_fields` on the untrusted request struct — but it does NOT stop assignment to a *known* sensitive field like `is_admin`: use a request-specific DTO or an explicit writable-field allowlist) |
    | Deserialization ~2× slower / whole body allocated / errors lose position after adding `#[serde(flatten)]` or an internally-tagged enum | §B20 (flatten flips serde into buffer-everything `Content` mode — §E2; keep it off hot/untrusted paths) |
    | Task started but no way to cancel or observe completion | §B21 (dropped JoinHandle) |
    | Owner's `Drop` never runs / a periodic task outlives its owner / `_exits_on_drop` test hangs | §B21 (timer task holds a strong `Arc` to its owner — hold `Weak`, exit on `upgrade()==None`) |
@@ -108,7 +109,7 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | A feature's tests are green but using it end-to-end fails or corrupts data; tests only check a config flag / header / status string — never exercise the behavior | §D1a (façade fitted to the test — Goodhart on the suite; add one end-to-end test that *uses* the feature, not just one that asserts it was announced) |
    | Works in tests, breaks in prod: wrong arithmetic only in release, timeout only at real data sizes, race only under real concurrency | §D3 (test/prod divergence) — release-wrap → §B26, scale → §E3/§B7, interleaving → §B13/§B9 |
    | CI reads green but a test actually hangs; `SLOW`/`TIMEOUT` lines never surfaced; test command piped through `grep`/`head` | §D4 (filtered live pipe without `set -o pipefail` masks the hang — gate on the runner or tee-to-file-then-grep; root-cause the hang) |
-   | Windows: `LNK1104: cannot open file '…exe'` on a test/bench binary after a flaky run | §D5 (a zombie test process holds its own `.exe` — reap stray `<crate>-<hex>.exe` at run start; the real fix is the hang, §D4) |
+   | Windows: `LNK1104: cannot open file '…exe'` on a test/bench binary after a flaky run | §D5 (a zombie test process holds its own `.exe` — reap only the child PID(s)/process tree your own run recorded as its own, never by matching the `<crate>-<hex>.exe` filename (a concurrent job can produce the identical filename); the real fix is the hang, §D4) |
    | Own tests and round-trip green, but interop with the real peer / reference implementation / published vectors fails | §F1 (spec conformance — both halves share the same misreading; verify against the external oracle) |
    | Behavior contradicts what README/SECURITY.md/docs promise (token logged, untrusted input trusted, write not durable) | §F2 (documented guarantees — the doc, not the call graph, defines the boundary) |
    | Connection/FD/gauge leaks on error paths; a peer that connects and stalls pins a task forever; EOF busy-loop or peer never sees close | §F3 (boundary/error-path lifecycle; §B21/§B4 twins; no-timeout read on untrusted peer) |
@@ -148,13 +149,13 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
 
 **Preventive rule.** <one line from the spec>
 
-**Run after.** `cargo clippy -- -W clippy.await_holding_lock` (for §B2), `miri` (for §B5), `tokio-console` (for §B11), etc.
+**Run after.** `cargo clippy -- -W clippy::await_holding_lock` (for §B2), `miri` (for §B5), `tokio-console` (for §B11), etc.
 ```
 
 ## Behavioral principles
 
 - **Root cause, not symptom.** "Just add `.clone()` to make it compile" is a forbidden answer; see §C5. First ask whether ownership can be restructured.
-- **Don't guess versions.** If the fix depends on a version (`axum::Server::bind` disappeared in 0.7), request `Cargo.toml` — don't invent.
+- **Don't guess versions.** If the fix depends on a version (`axum::Server::bind` disappeared in 0.7), request the resolved versions from `Cargo.lock`/`cargo metadata` — don't invent; if they can't be read, state the assumed version explicitly and proceed (stated assumptions — versions are not one of the three hard-block cases).
 - **Acknowledge uncertainty.** The spec warns explicitly: ~50% of LLM cancel-safety assessments in empirical testing were confidently wrong (§B3). If the symptom touches cancel-safety, enumerate every `.await` point and prove — don't assert.
 - **Don't restate the solution in disguise.** If you've already named the cause as §B2, don't recite its rules in full — reference.
 

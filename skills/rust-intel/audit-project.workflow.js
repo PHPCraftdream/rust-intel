@@ -88,7 +88,7 @@ const SCOPER_SCHEMA = {
   type: 'object',
   required: ['versions', 'files', 'artifactFiles', 'claudeMdNotes', 'docsFiles', 'docsDigest'],
   properties: {
-    versions: { type: 'string', description: 'pinned versions from Cargo.toml (edition, key deps + their versions, tokio/etc)' },
+    versions: { type: 'string', description: 'actual resolved versions from Cargo.lock / cargo metadata — Cargo.toml only states declared ranges (edition, key deps + their resolved versions, tokio/etc)' },
     files: { type: 'array', items: { type: 'string' }, description: 'list of *.rs source files, excluding target/ and generated files' },
     artifactFiles: {
       type: 'object',
@@ -212,7 +212,7 @@ function scoperPrompt() {
 
 Target crate dir: ${args.target}
 
-1. Read ${args.target}/Cargo.toml. Report the Rust edition, and the pinned versions of dependencies that matter for auditing (async runtime, sync/concurrency, serialization, crypto, FFI/bindgen, etc.) — name + version each.
+1. Report the Rust edition from ${args.target}/Cargo.toml, and resolve the actual versions of the dependencies that matter for auditing (async runtime, sync/concurrency, serialization, crypto, FFI/bindgen, etc.) from ${args.target}/Cargo.lock or, failing that, by running \`cargo metadata\` in ${args.target} — Cargo.toml declares version ranges, not the exact version in use — name + resolved version each.
 2. If ${args.target}/CLAUDE.md exists, read it and capture any project-specific constraints that change what counts as a finding (allowed unsafe, MSRV, forbidden deps, etc.). Otherwise leave empty.
 3. Inventory the *.rs source files under ${args.target}, EXCLUDING target/ and generated files (build script output, *.gen.rs, OUT_DIR). Return their paths in files.
 4. Inventory non-Rust artifacts in artifactFiles: Cargo.toml/workspace manifests, Cargo.lock or other lockfiles, rust-toolchain* and rust-toolchain.toml, .cargo/config*, deny/audit policy files, CI workflow YAML, Docker/build/release scripts, build.rs/proc-macro inputs, headers/bindgen files, and FFI/linker configuration. Exclude target/ and generated output but do not omit checked-in scripts or policy files.

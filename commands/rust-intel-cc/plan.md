@@ -15,11 +15,13 @@ Catches mistakes at the design stage, while rolling them back is still cheap. Th
 
 1. **Load the `rust-intel` skill.** If unavailable, emit `⚠️ BLOCKED: skill rust-intel is not registered` and stop.
 
-2. **Pin the world.** Read `Cargo.toml` and `CLAUDE.md` (if present). Record versions. If they're missing or insufficient for the task, ask — don't invent.
+2. **Pin the world.** `Cargo.toml` declares a version *range* per dependency, not the exact version in use — read the actual resolved versions from `Cargo.lock` (or `cargo metadata`), plus `CLAUDE.md` (if present). Record the resolved versions. If they're missing or insufficient for the task, ask — don't invent.
 
 3. **Run the trigger table.** Match phrases from `$ARGUMENTS` against the trigger table in the `rust-intel` skill (the "Self-monitoring" section near the top of the spec). Record **every** activated category — the table is the source of truth for the phrase→category mapping; this command does not duplicate it. If ≥2 categories fire, flag the task as high-risk and enumerate exactly which ones the plan defends against.
 
-4. **Pre-flight checklist.** Walk the 7-question Pre-flight checklist defined at the end of the `rust-intel` skill (section "Pre-flight checklist"). For each question, ask the user only if the answer isn't already implied by context or by step 2. Don't ask all seven mechanically — that becomes noise. The skill is the canonical source of question wording; this command does not duplicate it.
+4. **Pre-flight checklist.** Walk the 9-question Pre-flight checklist defined at the end of the `rust-intel` skill (section "Pre-flight checklist"). For each question, ask the user only if the answer isn't already implied by context or by step 2. Don't ask all nine mechanically — that becomes noise. The skill is the canonical source of question wording; this command does not duplicate the checklist, but the two questions most often dropped at plan time are quoted verbatim from it so they cannot be skipped:
+   - **Reference**: "does this code claim conformance to anything external (spec, RFC, format, reference impl, the project's own docs)? If yes — have I read the claimed reference, and can I name the edge cases it mandates? (Tier F)"
+   - **Inverse pair**: "am I writing one half of an encode/decode, parse/Display, encrypt/decrypt pair? If yes, the round-trip property test ships in the same change (§F4) — except a `Display`/`FromStr` pair where `Display` is documented as human-readable/lossy, which has no round-trip law to ship a test for."
 
 5. **Compose the plan.** Format:
 
@@ -33,7 +35,7 @@ Catches mistakes at the design stage, while rolling them back is still cheap. Th
 **Risk level:** high (3 categories)
 
 ## Context
-- Stack: tokio 1.X, sqlx 0.Y (from Cargo.toml)
+- Stack: tokio 1.X, sqlx 0.Y (resolved versions from `Cargo.lock`/`cargo metadata`)
 - Crate type: library / binary
 - Idioms from CLAUDE.md: <if any>
 
@@ -56,7 +58,7 @@ Catches mistakes at the design stage, while rolling them back is still cheap. Th
 ## After implementation (Post-flight)
 - `cargo clippy -- -W clippy::await_holding_lock -W clippy::unwrap_used ...`
 - If any `unsafe` is added — `cargo +nightly miri test`.
-- Surface in the summary: `unsafe`, `unwrap`, `Arc<Mutex<_>>`, `unbounded_channel`, new dependencies (§A1 defense).
+- Surface in the summary — file:line + justification each — every 🔴-tier item from the skill's Enforcement tiers (e.g. `unsafe`, `unbounded_channel`, a new dependency (§A1 defense)). Red-only: `unwrap` and routine `Arc<Mutex<_>>` are noted inline at write time, not enumerated in the summary.
 ```
 
 6. **If any blockers are unresolved — stop, don't proceed with the plan.** Emit a blocking message in the spec's canonical form listing what's needed from the user.
