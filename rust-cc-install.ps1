@@ -214,14 +214,30 @@ function Remove-CreatedDirectories {
 # skill directory so a later uninstall can prove which empty containers it may remove; the
 # transaction journal only survives until commit. Entries are recorded relative to the target
 # directory so the manifest content is identical regardless of where the target lives.
+#
+# The relative path is built by walking leaf names (Split-Path -Leaf / -Parent) down to
+# $claudeDirFull rather than slicing $ancestor with $ClaudeDir.Length: a raw $ClaudeDir string
+# and a GetFullPath()-derived $ancestor are not guaranteed to share a byte-identical prefix on
+# every .NET/PowerShell edition (observed producing a corrupted entry like "ces\skills" instead
+# of "skills" on a GitHub Actions Windows runner, never reproduced locally) — comparing two
+# values that both went through GetFullPath removes the dependency on that prefix matching.
 function Get-ManifestCandidates {
     param([string[]]$Destinations)
+    $claudeDirFull = [IO.Path]::GetFullPath($ClaudeDir)
     $result = @()
     foreach ($destination in $Destinations) {
         $ancestor = [IO.Path]::GetFullPath((Split-Path -Parent $destination))
         while (-not (Test-Path -LiteralPath $ancestor -PathType Container)) {
-            $relative = $ancestor.Substring($ClaudeDir.Length).TrimStart('\','/')
-            if ($result -notcontains $relative) { $result += $relative }
+            $leaves = @()
+            $walker = $ancestor
+            while ($walker -ne $claudeDirFull) {
+                $leaves = @((Split-Path -Leaf $walker)) + $leaves
+                $nextWalker = [IO.Path]::GetFullPath((Split-Path -Parent $walker))
+                if ($nextWalker -eq $walker) { break }
+                $walker = $nextWalker
+            }
+            $relative = $leaves -join '\'
+            if ($relative -ne '' -and $result -notcontains $relative) { $result += $relative }
             $parent = Split-Path -Parent $ancestor
             if ($parent -eq $ancestor) { break }
             $ancestor = $parent
