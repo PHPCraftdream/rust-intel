@@ -188,15 +188,21 @@ function Restore-TransactionRecord {
 # rmdir-only: a container that is no longer empty or already gone is left untouched, so
 # content owned by anyone else can never be removed through this path. The bounded retry
 # absorbs transient sharing violations on a just-emptied container (antivirus and filter
-# drivers briefly hold directory handles); a container that is genuinely not empty fails
-# every attempt and is still left untouched.
+# drivers briefly hold directory handles, observed to outlast a 3s budget on GitHub Actions
+# Windows runners); a container that is genuinely not empty fails every attempt and is still
+# left untouched. On exhaustion the last exception is surfaced as a warning (not a throw, to
+# preserve the silent-skip contract) so a recurrence is diagnosable from CI logs.
 function Remove-CreatedDirectories {
     param([object[]]$Entries)
     foreach ($entry in $Entries) {
         if (Test-Path -LiteralPath $entry -PathType Container) {
-            for ($attempt = 0; $attempt -lt 30; $attempt++) {
-                try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 100 }
+            $lastError = $null
+            $removed = $false
+            for ($attempt = 0; $attempt -lt 150; $attempt++) {
+                try { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop; $removed = $true; break }
+                catch { $lastError = $_; Start-Sleep -Milliseconds 200 }
             }
+            if (-not $removed) { Write-Warning "Could not remove created directory after retrying: $entry ($($lastError.Exception.Message))" }
         }
     }
 }
