@@ -52,8 +52,9 @@ function checkControl(id) {
     // marker id from argv. The ';' separator is load-bearing (a completion call directly after
     // an ordinary word token is suppressed as non-canonical). Control 401's filler keeps its
     // input at exactly 2,000,000 code units — the scanner's exact operation budget; the 402
-    // branch takes its length from argv because the fixture parent draws it at run time
-    // (round-49 P2-1: the length is transport, not a constant of the probe).
+    // branch takes its length from argv (round-50: the length is again the fixed 2,000,001 for
+    // both 402 and 491, and argv remains the transport so the vehicle stays byte-identical
+    // across every temp tree).
     const marker = ';completeCurrentControlScope(902, true)';
     const length = id === 401 ? 2_000_000 : probeInputLength;
     const input = 'x'.repeat(length - marker.length) + marker;
