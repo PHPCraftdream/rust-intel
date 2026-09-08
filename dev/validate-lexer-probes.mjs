@@ -13,6 +13,8 @@ const fixtureSource = fs.readFileSync(path.join(root, 'dev', 'validate-fixtures.
 const rawControlId = process.argv[2] || '';
 const canonicalControlId = /^(?:0|[1-9]\d*)$/u.test(rawControlId) ? Number(rawControlId) : NaN;
 const controlId = Number.isSafeInteger(canonicalControlId) ? canonicalControlId : NaN;
+const rawProbeInputLength = process.argv[3] || '';
+const probeInputLength = /^(?:0|[1-9]\d*)$/u.test(rawProbeInputLength) ? Number(rawProbeInputLength) : NaN;
 const supportedControls = new Set([399, 400, 401, 402, 409, 410, 411, 412, 413, 414, 421, 429, 439, 445, 446, 473, 474, 475, 476, 477, 478, 493]);
 
 function completionMutation(replacement) {
@@ -48,11 +50,12 @@ function checkControl(id) {
     // The parent mutates dev/js-lexer.mjs in a temp-tree copy of this script's directory and
     // judges the observation; nothing here self-reports success, samples telemetry, or reads a
     // marker id from argv. The ';' separator is load-bearing (a completion call directly after
-    // an ordinary word token is suppressed as non-canonical), and the filler keeps control 401's
-    // input at exactly 2,000,000 code units — the scanner's exact operation budget (control 402
-    // is one unit above it).
+    // an ordinary word token is suppressed as non-canonical). Control 401's filler keeps its
+    // input at exactly 2,000,000 code units — the scanner's exact operation budget; the 402
+    // branch takes its length from argv because the fixture parent draws it at run time
+    // (round-49 P2-1: the length is transport, not a constant of the probe).
     const marker = ';completeCurrentControlScope(902, true)';
-    const length = id === 401 ? 2_000_000 : 2_000_001;
+    const length = id === 401 ? 2_000_000 : probeInputLength;
     const input = 'x'.repeat(length - marker.length) + marker;
     return { observation: observe(() => literalTrueCompletionDiagnostics(input), input.length) };
   }
@@ -115,6 +118,11 @@ function observe(run, inputLength) {
 
 if (!supportedControls.has(controlId)) {
   console.error(`ERROR: unsupported lexer probe control ${rawControlId || '<missing>'}`);
+  process.exit(2);
+}
+
+if (controlId === 402 && !Number.isSafeInteger(probeInputLength)) {
+  console.error('ERROR: lexer probe control 402 requires a canonical integer input length argument');
   process.exit(2);
 }
 

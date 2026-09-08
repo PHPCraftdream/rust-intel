@@ -367,11 +367,13 @@ function runValidateAgainstMutatedCopy(mutateReadme) {
 // weakening the large-input controls. The child emits a structured semantic observation on normal
 // completion; the parent judges it against the control's expected result.
 const lexerProbeScript = path.join(root, 'dev', 'validate-lexer-probes.mjs');
-// Cap each focused probe child (controls 399, 400, and 409-478 — synthetic inputs of at most
-// ~100,001 code units) below the host's normal V8 reservation. This is a lower cap, not a heap
-// increase: a future accidental input growth fails in the focused child instead of taking down the
-// long-lived fixture parent. The multi-million-unit differential inputs (controls 401/402/458/459
-// /491/492/493/494) do NOT run under this cap: their children spawn through
+// Cap each focused probe child (controls 399, 400, and 409-478 — the largest of their inputs is
+// the whole dev/validate-fixtures.mjs source, ~266,000 code units today and growing with every
+// control added, plus the 100,001-delimiter stress inputs of controls 399/400) below the host's
+// normal V8 reservation. This is a lower cap, not a heap increase: a future accidental input growth
+// fails in the focused child instead of taking down the long-lived fixture parent. The
+// 2,000,000-unit differential inputs (controls 401/402/458/459/491/492) and the 1,000,000-unit
+// masking inputs (controls 493/494) do NOT run under this cap: their children spawn through
 // runValidateAgainstMutatedFiles, which passes no --max-old-space-size, so the former OOM tension
 // of capping a 2,000,001-unit workload at 64 MB no longer exists.
 const lexerProbeHeapMb = 64;
@@ -470,10 +472,12 @@ function expectLexerProbe(controlId) {
 // against the real scanner.
 // A mutate() that returns null (anchor lost or duplicated) fails the control, matching the
 // skipped handling of controls 486/488.
-function expectJsLexerDifferential(controlId, probeId, mutate, expected) {
+function expectJsLexerDifferential(controlId, probeId, mutate, expected, probeInputLength) {
   const result = runValidateAgainstMutatedFiles(['dev/js-lexer.mjs'], mutate, {
     script: 'dev/validate-lexer-probes.mjs',
-    args: [String(probeId)],
+    args: probeInputLength === undefined
+      ? [String(probeId)]
+      : [String(probeId), String(probeInputLength)],
     timeoutMs: 120_000,
   });
   let payload = null;
@@ -4337,38 +4341,67 @@ completeCurrentControlScope(457, passed);
 
 // Controls 401, 402, 458, 459, 491, 492, 493, and 494 — the anti-vacuity differentials — are
 // registered, executed, and completed as ONE group in a per-run randomized order (round-48
-// P2-1). The probe vehicle is invoked once per differential with its probe id as argv, and a
-// facade vehicle can persist state outside the temp tree (os.tmpdir() outlives it), so a FIXED
-// execution order would map each invocation ordinal of a probe id to exactly one expected
-// outcome — answerable from canned data with no scan at all. Randomizing the order per run
-// with a Fisher-Yates shuffle driven by crypto.randomInt destroys that mapping: the vehicle
-// cannot know which mutation (or none) this invocation's temp tree carries. Where the expected
-// outcome is an ERROR, the mutation also embeds a run-time-random nonce in the message thrown
-// by the mutated lexer itself (control 459's random K already worked this way), so a canned
-// static message cannot match an error-valued expectation even by luck; success-valued
-// expectations (401, 491, 492, 493, 494) cannot carry a nonce without changing their verified
-// semantics and rely on the shuffle alone. Each differential still registers, spawns, and
-// completes its own control before the next one spawns, so the one-spawn-per-control
-// attribution is unchanged. Residual, unchanged from the stated threat model: a vehicle that
-// greps the mutated temp-tree lexer (nonce included) and simulates the effect would still
-// defeat this — a deliberate, visible forgery, not a plausible refactor.
+// P2-1). The probe vehicle is invoked once per differential with its probe id (and, where the
+// input length is itself a run-time draw, that length) as argv, and a facade vehicle can persist
+// state outside the temp tree (os.tmpdir() outlives it), so a FIXED execution order would map
+// each invocation ordinal of a probe id to exactly one expected outcome — answerable from canned
+// data with no scan at all. Randomizing the order per run with a Fisher-Yates shuffle driven by
+// crypto.randomInt destroys that mapping.
 //
-// Control 401 (probe argv 401, identity run): the unmodified tree must accept the exactly
-// 2,000,000-unit marker input with the canonical diagnostic at the marker's index.
+// Round-49 P2-1: the shuffle alone protects nothing, because two invocations differ in exactly
+// one file — the temp tree's dev/js-lexer.mjs — and ANY function of that file is a discriminator
+// the vehicle can evaluate cheaply. Two such channels were demonstrated against the round-48
+// fix: (A) fs.statSync().size fingerprinted every mutation once the nonce-bearing messages made
+// 402/458 length-changing — one stat per invocation identified the differential, and the five
+// success-valued controls (401, 491, 492, 493, 494) were answerable from canned data with zero
+// scanning; (B) small-input behavioral probes (a 39-unit marker input and a 43-unit
+// decoy-inside-a-comment input, under 100 charged operations together) separated 492/493/494
+// from their identity siblings. Both channels are closed structurally, not by pinning the
+// vehicle:
 //
-// Control 402 (probe argv 402): the 2,000,001-unit input — one operation above the budget —
-// must be REJECTED. The mutation rewrites only the budget throw's message text to carry the
-// nonce: the condition, the constant, and every other byte of dev/js-lexer.mjs are untouched,
-// so the rejection stays causal (operations > MAX_LEXICAL_OPERATIONS must fire for real) while
-// the expected message becomes unknowable in advance.
+// - Length equalization (closes A): every mutated tree in a run — the identity runs of controls
+//   401 and 493 included — is padded after all executable code to ONE common byte length
+//   computed from this run's own draws, so the temp tree's file size is the same for every
+//   differential of a probe argv and a statSync has nothing to read. The pad is a trailing line
+//   comment: semantically inert, outside every mutation anchor, and moving no asserted index —
+//   the scanner scans the fixture-built input string, never its own source, so the pad is never
+//   charged an operation.
+// - Scan-locked success expectations (closes B, and deepens A): a success-valued expectation is
+//   now derived from at least one run-time draw that is observable only through the mutated
+//   source text (the accepted residual: a second interpreter of the code under test) or through
+//   a scan that costs what the honest scan costs. Control 491 draws a 50/50 accept/reject
+//   branch, with the argv-carried input length distributed identically on both branches so argv
+//   leaks nothing. Control 492 always renames the completion constant — cheap for a facade to
+//   detect, but the detection does not reveal which of two 50/50 expectations applies. Control
+//   494 gates the block-comment branch behind a random operation threshold, so below the
+//   threshold the tree is behaviorally indistinguishable from the unmutated scanner on every
+//   input a facade can afford, and the identity run (493) and the mutated run stay mutually
+//   ambiguous until a scan reaches past the threshold.
+//
+// Per-control shape (the scanner charges at most one operation per code unit, and whitespace is
+// charged nothing; marker = ';completeCurrentControlScope(902, true)', 39 units, so the callee
+// index of an accepted marker-at-end input is always inputLength - 38):
+//
+// Control 401 (probe argv 401, identity run): the tree byte-identical to the real scanner except
+// for inert length-equalizer padding must accept the exactly 2,000,000-unit marker input with
+// the canonical diagnostic at the marker's index. An identity run has no lever to make its own
+// answer unknowable, so its defense IS the ambiguity: at equal size and identical sub-budget
+// behavior it cannot be separated from controls 458/459 without a scan that reaches the budget.
+//
+// Control 402 (probe argv 402, input length 2,000,001 passed in argv): the 2,000,001-unit input
+// — one operation above the unmutated budget — must be REJECTED. The mutation rewrites only the
+// budget throw's message text to carry the nonce: the condition, the constant, and every other
+// byte of dev/js-lexer.mjs are untouched, so the rejection stays causal (operations >
+// MAX_LEXICAL_OPERATIONS must fire for real) while the expected message remains unknowable in
+// advance.
 //
 // Control 458: differential M-A — lower the scanner's operation budget by one and the 401 input
-// must be REJECTED. Together with control 401 this pins the operations actually charged for the
-// 2,000,000-unit input to exactly the budget constant — a facade that does not charge one
-// operation per input unit cannot trip the lowered budget. The former source-inventory pin on
-// the shared observation module is retired together with that module: rounds 43-47 each found a
-// text-arrangement bypass of one of those pins. Round-48 P2-1: the expected error message now
-// also carries the run-time nonce.
+// must be REJECTED on its final charged operation. Together with control 401 this pins the
+// operations actually charged for the 2,000,000-unit input to exactly the budget constant — a
+// facade that does not charge one operation per input unit cannot trip the lowered budget. The
+// former source-inventory pin on the shared observation module is retired together with that
+// module. Round-48 P2-1: the expected error message carries the run-time nonce. Round-49 P2-1:
+// the tree is length-equalized to its argv-401 siblings.
 //
 // Control 459: differential M-B — inject a throw at a run-time-random operation count K directly
 // inside step(), after the increment. The K-specific message and the index it reports can only
@@ -4377,29 +4410,78 @@ completeCurrentControlScope(457, passed);
 // MAX_LEXICAL_OPERATIONS and compares the input length against it, cannot know when the random
 // K will hit (verified: at the K-th step the scan's index equals K for K in [2, 1_999_961]).
 //
-// Control 491: differential M-D — raise the budget by one and the 402 input — one unit LONGER
-// than the old budget — must be ACCEPTED with the canonical diagnostic at the marker's index.
-// Together with control 402 this proves the rejection is caused by the budget constant itself,
-// not by a separately fakeable length check.
+// Control 491: differential M-D (probe argv 402, input length drawn at run time and passed in
+// argv) — the budget is raised to a random 2,000,000 + h, and a 50/50 draw picks the branch. On
+// accept, the input length L (strictly longer than the OLD canonical budget) satisfies
+// L ≤ 2,000,000 + h, and the scan must complete with the canonical diagnostic at L - 38;
+// together with control 402 this proves an above-old-budget input is accepted only because the
+// budget constant moved, not by a separately fakeable length check. On reject, L is exactly one
+// operation ABOVE the raised budget and the scan must throw the nonce'd message on its final
+// charged operation — re-pinning the exact one-above-budget boundary at a per-run random point.
+// The offset m = L - 2,000,001 is drawn once and shared by both branches (accept draws
+// h ∈ [m + 1, 64]; reject sets h = m), so L's argv-visible distribution is identical whether
+// the run accepts or rejects: which branch a run is in is not derivable from argv, file size,
+// or any sub-budget probe.
 //
-// Control 492: differential M-E — rename the completion identifier inside the lexer itself and
-// the 401 input must produce NO diagnostics — the reported diagnostic is computed by the real
-// completion-detection layer against the lexer's own constant, not fabricated from the input
-// text. The former callee-identity pin on the shared observation module is retired together
-// with that module.
+// Control 492: differential M-E (probe argv 401) — the completion identifier inside the lexer
+// itself is renamed, so a full 2,000,000-unit scan of the 401 input produces NO diagnostics:
+// the reported diagnostic is computed by the real completion-detection layer against the
+// lexer's own constant, not fabricated from the input text. The former callee-identity pin on
+// the shared observation module is retired together with that module. Round-49 P2-1: the run
+// also draws, 50/50, whether the scan happens at the exact budget (accepted — the proof above,
+// which additionally re-pins operations ≤ the budget in the renamed tree) or one operation
+// below it (rejected on a nonce'd message). A facade can detect the rename with a small marker
+// probe, but that detection does not reveal which expectation applies — only the scan does.
 //
-// Controls 493-494: masking-liveness differentials (M-C). On a 1,000,000-unit input whose decoy
-// completion call sits inside a block comment after 400,000 filler units, the unmodified tree
-// must suppress the decoy (block-comment masking genuinely runs), and disabling the scanner's
-// block-comment branch must make the decoy live code and detected. Without this pair, a facade
-// that charges one operation per unit but returns the source unmasked would be behaviorally
-// indistinguishable from the real scanner on the pure-x-plus-marker inputs of controls
-// 401/402/458/459/491/492, which contain no comments at all.
+// Controls 493-494: masking-liveness differentials (M-C) on a 1,000,000-unit input whose decoy
+// completion call sits inside a block comment after 400,000 filler units; the marker call sits
+// at index 400,001 and the decoy's opening '/' reaches the comment-branch check at operation
+// 999,958 (measured: T ≤ 999,957 keeps the decoy live, T = 999,958 masks it). Control
+// 493 (identity run): the decoy is suppressed — block-comment masking genuinely runs at scale.
+// Control 494 gates the scanner's block-comment branch behind `operations <= T` for a
+// per-run random T in [2, 999,957]; every comment opening at or below operation T is still
+// masked exactly as in the unmutated scanner, while the decoy — always beyond T — becomes live
+// code and is detected at index 999,960 (ids [902, 777] with the marker). T is drawn uniformly
+// across almost the whole input, so no probe a facade can afford (any sub-1,000,000-operation
+// input, including the 43-unit decoy probe that identified these controls before round 49)
+// can distinguish the 494 tree from the identity tree except by a ~1/500,000 draw: the pair is
+// mutually ambiguous below ~1,000,000 charged operations, and only a scan reaching the decoy
+// region separates them. Without this pair, a facade that charges one operation per unit but
+// returns the source unmasked would be behaviorally indistinguishable from the real scanner on
+// the pure-x-plus-marker inputs of the other differentials, which contain no comments at all.
+//
+// The 401/402 scope headers in this block are spelled with a PARENTHETICAL, not a colon, after
+// the control number on purpose: dev/validate.mjs inventories source labels with
+// /^\/\/ Controls? (\d+)(?:-(\d+))?:[ \t]/gm, and those two ids' inventory entries already live
+// at the `// Controls 400-402:` range label above the shuffled block — normalizing these
+// headers to a colon would fail the core validator phase with a duplicate-label error. The
+// inverse is equally load-bearing: the colon-bearing `// Control 458:`, `// Control 459:`,
+// `// Control 491:`, and `// Control 492:` headers ARE those controls' only inventory entries
+// (493/494 are covered by the `// Controls 493-494:` range label), so none of them may be
+// reworded into a parenthetical either (round-49 P3-3).
 const budgetNonce402 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
 const budgetMessage402 = `JavaScript lexical scan exceeded its deterministic budget (gate nonce ${budgetNonce402})`;
 const budgetNonce458 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
 const budgetMessage458 = `JavaScript lexical scan exceeded its deterministic budget (gate nonce ${budgetNonce458})`;
 const probeOperation459 = randomInt(2, 1_999_962);
+// Round-49 P2-1 success-branch draws. offset491 ∈ [1, 63] is the shared branch-masked offset:
+// L491 = 2,000,001 + offset491 on BOTH branches, so argv cannot hint the branch; accept draws
+// the headroom h ∈ [offset491 + 1, 64] (budget strictly above L), reject sets h = offset491
+// (budget exactly one below L, so the throw lands on the final charged operation).
+const offset491 = randomInt(1, 64);
+const acceptsAtRaisedBudget491 = randomInt(0, 2) === 0;
+const budgetHeadroom491 = acceptsAtRaisedBudget491 ? randomInt(offset491 + 1, 65) : offset491;
+const budgetConstant491 = 2_000_000 + budgetHeadroom491;
+const probeInputLength491 = 2_000_001 + offset491;
+const budgetNonce491 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
+const budgetMessage491 = `JavaScript lexical scan exceeded its deterministic budget (gate nonce ${budgetNonce491})`;
+const acceptsDespiteRenamedConstant492 = randomInt(0, 2) === 0;
+const budgetNonce492 = randomInt(0, BUDGET_ERROR_NONCE_SPAN);
+const budgetMessage492 = `JavaScript lexical scan exceeded its deterministic budget (gate nonce ${budgetNonce492})`;
+// T must stay at or below 999,957: the decoy's comment-branch check fires at operation 999,958
+// (measured), so every draw in [2, 999,957] leaves the decoy live and every sub-decoy probe
+// masked exactly as in the unmutated scanner.
+const commentMaskCutoff494 = randomInt(2, 999_958);
 const differentials = [
   {
     controlId: 401,
@@ -4410,6 +4492,7 @@ const differentials = [
   {
     controlId: 402,
     probeId: 402,
+    probeInputLength: 2_000_001,
     mutate: (source) => {
       if (!anchorOccursExactlyOnce(source, STEP_BLOCK)) return null;
       return source.replace(STEP_BLOCK, (anchor) => anchor.replace(BUDGET_THROW, () =>
@@ -4443,20 +4526,36 @@ const differentials = [
   {
     controlId: 491,
     probeId: 402,
+    probeInputLength: probeInputLength491,
     mutate: (source) => {
-      if (!anchorOccursExactlyOnce(source, BUDGET_LINE)) return null;
-      return source.replace(BUDGET_LINE, 'const MAX_LEXICAL_OPERATIONS = 2_000_001;');
+      if (!anchorOccursExactlyOnce(source, BUDGET_LINE, STEP_BLOCK)) return null;
+      return source
+        .replace(BUDGET_LINE, `const MAX_LEXICAL_OPERATIONS = ${budgetConstant491};`)
+        .replace(STEP_BLOCK, (anchor) => anchor.replace(BUDGET_THROW, () =>
+          `throw new Error('${budgetMessage491}');`));
     },
-    expected: { kind: 'diagnostics', inputLength: 2_000_001, ids: [902], indexes: [1_999_963] },
+    expected: acceptsAtRaisedBudget491
+      ? { kind: 'diagnostics', inputLength: probeInputLength491, ids: [902], indexes: [probeInputLength491 - 38] }
+      : { kind: 'error', name: 'Error', message: budgetMessage491 },
   },
   {
     controlId: 492,
     probeId: 401,
     mutate: (source) => {
-      if (!anchorOccursExactlyOnce(source, NAME_LINE)) return null;
-      return source.replace(NAME_LINE, "const COMPLETION_NAME = 'completeCurrentControlScope_mutated';");
+      const anchors = acceptsDespiteRenamedConstant492 ? [NAME_LINE] : [NAME_LINE, BUDGET_LINE, STEP_BLOCK];
+      if (!anchorOccursExactlyOnce(source, ...anchors)) return null;
+      let mutated = source.replace(NAME_LINE, "const COMPLETION_NAME = 'completeCurrentControlScope_mutated';");
+      if (!acceptsDespiteRenamedConstant492) {
+        mutated = mutated
+          .replace(BUDGET_LINE, 'const MAX_LEXICAL_OPERATIONS = 1_999_999;')
+          .replace(STEP_BLOCK, (anchor) => anchor.replace(BUDGET_THROW, () =>
+            `throw new Error('${budgetMessage492}');`));
+      }
+      return mutated;
     },
-    expected: { kind: 'diagnostics', inputLength: 2_000_000, ids: [], indexes: [] },
+    expected: acceptsDespiteRenamedConstant492
+      ? { kind: 'diagnostics', inputLength: 2_000_000, ids: [], indexes: [] }
+      : { kind: 'error', name: 'Error', message: budgetMessage492 },
   },
   {
     controlId: 493,
@@ -4469,18 +4568,52 @@ const differentials = [
     probeId: 493,
     mutate: (source) => {
       if (!anchorOccursExactlyOnce(source, COMMENT_IF)) return null;
-      return source.replace(COMMENT_IF, "    if (false && character === '/' && next === '*') {");
+      return source.replace(COMMENT_IF, `    if (operations <= ${commentMaskCutoff494} && character === '/' && next === '*') {`);
     },
     expected: { kind: 'diagnostics', inputLength: 1_000_000, ids: [902, 777], indexes: [400_001, 999_960] },
   },
 ];
+// Round-49 P2-1 channel A: file size must not fingerprint the mutation. Every mutated tree in a
+// run — the identity runs of controls 401 and 493 included — is written at ONE common byte
+// length derived from this run's own draws, so the temp tree's dev/js-lexer.mjs has the same
+// size for every differential of a probe argv and a statSync cannot separate identity from
+// mutation. The pad is a trailing line comment after all executable code: semantically inert,
+// outside every mutation anchor, never scanned (the scanner charges the fixture-built input, not
+// its own source), and moving no asserted diagnostic index. Padding the largest tree by the
+// note's own length guarantees the per-tree deficit is never negative.
+const differentialLexerSource = fs.readFileSync(path.join(root, 'dev', 'js-lexer.mjs'), 'utf8');
+const differentialPaddingNote = '\n// anti-vacuity differential padding: every mutated tree in a run is written at one common byte length so no file-size side channel can fingerprint the mutation (round-49 P2-1).';
+const commonDifferentialTreeSize = Math.max(...differentials.map((differential) => {
+  const mutated = differential.mutate(differentialLexerSource);
+  if (mutated === null) throw new Error('anti-vacuity differential anchor is missing from dev/js-lexer.mjs');
+  return Buffer.byteLength(mutated);
+})) + differentialPaddingNote.length;
+for (const differential of differentials) {
+  const rawMutate = differential.mutate;
+  differential.mutate = (source) => {
+    const mutated = rawMutate(source);
+    if (mutated === null) return null;
+    const deficit = commonDifferentialTreeSize - Buffer.byteLength(mutated);
+    if (deficit < differentialPaddingNote.length) throw new Error('anti-vacuity differential padding deficit is smaller than the padding note');
+    return mutated + differentialPaddingNote + ' '.repeat(deficit - differentialPaddingNote.length);
+  };
+}
 for (let differentialIndex = differentials.length - 1; differentialIndex > 0; differentialIndex -= 1) {
   const swapWith = randomInt(0, differentialIndex + 1);
   [differentials[differentialIndex], differentials[swapWith]] = [differentials[swapWith], differentials[differentialIndex]];
 }
-for (const { controlId, probeId, mutate, expected } of differentials) {
+let anyDifferentialFailed = false;
+for (const { controlId, probeId, mutate, expected, probeInputLength } of differentials) {
   observeControls(controlId);
-  expectJsLexerDifferential(controlId, probeId, mutate, expected);
+  const failureCountBefore = failures.length;
+  expectJsLexerDifferential(controlId, probeId, mutate, expected, probeInputLength);
+  if (failures.length > failureCountBefore) anyDifferentialFailed = true;
+}
+// Round-49 P3-4: the gate is nondeterministic by design (shuffle order plus per-run draws), so
+// any differential failure prints the full per-run randomness to stderr and a red CI run is
+// diagnosable without reproducing it. Nothing is printed on a green run.
+if (anyDifferentialFailed) {
+  console.error(`anti-vacuity differential reproduction info (round-49 P3-4; per-run draws, not a seed): execution order ${JSON.stringify(differentials.map((differential) => differential.controlId))}, budgetNonce402=${budgetNonce402}, budgetNonce458=${budgetNonce458}, probeOperation459=${probeOperation459}, offset491=${offset491}, acceptsAtRaisedBudget491=${acceptsAtRaisedBudget491}, budgetHeadroom491=${budgetHeadroom491}, probeInputLength491=${probeInputLength491}, budgetNonce491=${budgetNonce491}, acceptsDespiteRenamedConstant492=${acceptsDespiteRenamedConstant492}, budgetNonce492=${budgetNonce492}, commentMaskCutoff494=${commentMaskCutoff494}`);
 }
 
 // Control 460: the focused helper's developer-facing control argument is canonical-only.  A
