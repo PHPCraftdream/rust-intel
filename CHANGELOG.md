@@ -10,6 +10,8 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 **Field ownership transfer.** Added `mem::take`, `Option::take`, and `mem::replace` to §E2/§C5 and the substitution catalog, with buffer-reuse and failure-contract conditions. Refined §B19 to distinguish intentional handoff from failed restoration and to state the limits of drop-guard recovery.
 
+**Performance guidance.** Expanded §E2/§E3/§E5 and the substitution catalog with destination-buffer reuse, shared-slice retention, capacity-growth policy, sparse-map scans, partial top-k selection, cached sort keys, and reusable record buffers. Each recommendation states its ownership, failure, ordering or input-bound constraints and retains §E6's measurement discipline; primary API contracts are recorded in the source ledger.
+
 **Node.js runtime floor raised to 24.** This is a support-policy choice targeting the current LTS line, not an API requirement: `fs.cpSync` has been available since Node 16.7.0 and explains the former floor. `package.json` now declares `node >=24.0.0`; both validators and both npm installers enforce that floor at process startup. The primary validation and publish jobs run on the current Node 24 line, while CI also keeps a distinct exact `24.0.0` floor job with validation and npm-installer smoke coverage. Earlier review entries that mention Node 16.7.0 remain historical records of the then-supported environment and are superseded by this entry.
 
 **The planned next release is `0.7.0` (MINOR).** Raising the runtime/install floor makes previously working installs on older Node lines fail, so it is classified by the compatibility rule above even though the numbered spec categories and BANNED/REQUIRED shapes are unchanged.
