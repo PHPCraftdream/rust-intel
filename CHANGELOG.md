@@ -8,6 +8,8 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+**Spec consistency review, round 6.** Distinguished path patches from git pinning, facade macro re-exports from generated-path resolution, and implicit/built-in cfgs from custom declarations. Corrected build-script environment tracking and scoped feature unification to the selected build graph, retaining isolated-consumer checks. A no-new-dependency constraint now preserves the requested behavior rather than implying permission for an unsupported case.
+
 **Spec consistency review, round 5.** Scoped crypto-error opacity to authentication boundaries and removed the implication that prehashing alone hides secret length. Corrected Windows argument-encoding guarantees, allowed deliberate `SameSite=None; Secure` flows with CSRF controls, and distinguished recursive directory ensure from exclusive creation.
 
 **Spec consistency review, round 4.** Corrected positional-field compatibility under `#[non_exhaustive]`, private-test access and support-crate limits, and release-test panic-strategy coverage. Scoped Serde contract tests to supported directions and intentional untagged priority; replaced whole-input buffering and universal slowdown claims with pinned, path-dependent behavior.
