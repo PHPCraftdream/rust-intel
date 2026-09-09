@@ -1686,11 +1686,11 @@ if (fixtureControlCount !== null) {
 }
 
 function sectionAfterHeading(source, heading) {
-  const start = source.indexOf(heading);
-  if (start < 0) return null;
-  const bodyStart = start + heading.length;
-  const nextHeading = source.slice(bodyStart).search(/^##\s/m);
-  return source.slice(bodyStart, nextHeading < 0 ? source.length : bodyStart + nextHeading);
+  const headings = [...source.matchAll(/^##(?:[ \t]|$)[^\r\n]*/gm)];
+  const index = headings.findIndex((match) => match[0] === heading);
+  if (index < 0) return null;
+  const bodyStart = headings[index].index + heading.length;
+  return source.slice(bodyStart, headings[index + 1]?.index ?? source.length);
 }
 
 const fixtureCountClaims = [
@@ -1706,13 +1706,21 @@ const fixtureCountClaims = [
   },
 ];
 const changelogText = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const unreleasedChangelog = sectionAfterHeading(changelogText, '## [Unreleased]');
 if (unreleasedChangelog === null) errors.push('CHANGELOG.md: missing current ## [Unreleased] section for fixture-count validation');
+let currentChangelog = unreleasedChangelog ?? '';
+if (unreleasedChangelog !== null && !unreleasedChangelog.trim()) {
+  const latestRelease = /^## \[([^\]\r\n]+)\] — \d{4}-\d{2}-\d{2}(?=\r?$)/m.exec(changelogText);
+  if (!latestRelease || latestRelease[1] !== packageJson.version) {
+    errors.push('CHANGELOG.md: empty Unreleased requires the latest dated release to match package.json version');
+  } else currentChangelog = sectionAfterHeading(changelogText, latestRelease[0]) ?? '';
+}
 fixtureCountClaims.push({
   file: 'CHANGELOG.md',
-  label: 'CHANGELOG.md current Unreleased fixture count',
+  label: 'CHANGELOG.md current fixture count',
   pattern: /\bfixture suite has (\d+) controls\b/g,
-  text: unreleasedChangelog,
+  text: currentChangelog,
 });
 for (const claim of fixtureCountClaims) {
   const text = claim.text ?? fs.readFileSync(path.join(root, claim.file), 'utf8');
@@ -2023,7 +2031,6 @@ for (const [relative, importToken, workToken] of runtimeGuardContracts) {
 }
 
 const plugin = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin/plugin.json'), 'utf8'));
-const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const claudePlugin = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
 if (packageJson.engines?.node !== '>=24.0.0') errors.push('package.json engine floor must be exactly >=24.0.0');
 if (MIN_NODE_VERSION !== '24.0.0') errors.push('bin/node-version.js runtime floor must be exactly 24.0.0');

@@ -1,49 +1,75 @@
-# Publish rust-intel-cc to npm on every version tag (v*).
-#
-# The tag is the release trigger, but it does NOT set the version: the tag names a committed
-# tree for this run, so rewriting manifests in the runner's checkout after the tag exists
-# would publish a version the tagged tree itself never had. Instead: bump package.json,
-# .claude-plugin/plugin.json, and .codex-plugin/plugin.json locally with
-# `node dev/set-release-version.mjs <version>`, commit that, THEN tag `v<version>`. This workflow
-# only VERIFIES the tag matches what was committed (dev/check-release-version.mjs) and fails the
-# release otherwise — see that script's header for why verify-not-rewrite is the correct model.
-#
-# Requires the NPM_TOKEN repository secret (npm Granular Access Token with
-# read/write on the package, or a classic Automation token):
-#   gh secret set NPM_TOKEN --repo PHPCraftdream/rust-intel
+# Publish stable GitHub Releases via npm Trusted Publishing.
+# Binding: PHPCraftdream/rust-intel, npm-publish.yml, no environment.
+# Commit all three manifest versions before tagging; never rewrite the tagged tree.
 
 name: npm-publish
 
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 
 permissions:
   contents: read
-  id-token: write # npm --provenance
+  actions: read
+  id-token: write
 
-# A tag push has occasionally been observed firing this workflow twice for the same ref (both
-# runs targeting the same tag ref). Serialize same-tag runs instead of racing them — a
-# concurrent second `npm publish` for a version the first run just published is not a new
-# problem, but running it in parallel rather than after is what turned it into a failed run.
+# Serialize retries for the same release.
 concurrency:
-  group: npm-publish-${{ github.ref }}
+  group: npm-publish-${{ github.event.release.tag_name }}
   cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   publish:
+    if: ${{ github.repository == 'PHPCraftdream/rust-intel' && !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
-      - name: Verify tag matches committed manifests
-        run: node dev/check-release-version.mjs "${GITHUB_REF_NAME#v}"
+      - name: Verify release metadata and npm OIDC support
+        run: |
+          node --input-type=module - "$RELEASE_TAG" "$(npm --version)" <<'NODE'
+          import { isValidSemver } from './dev/semver.mjs';
+          const [tag, npmVersion] = process.argv.slice(2);
+          const version = tag.slice(1);
+          if (!tag.startsWith('v') || !isValidSemver(version) || /[-+]/.test(version)) {
+            throw new Error('Stable releases require a vMAJOR.MINOR.PATCH tag.');
+          }
+          const parts = npmVersion.split('.').map(Number);
+          if (!isValidSemver(npmVersion) || !parts.every(Number.isSafeInteger)
+            || parts[0] < 11 || (parts[0] === 11 && (parts[1] < 5 || (parts[1] === 5 && parts[2] < 1)))) {
+            throw new Error('npm Trusted Publishing requires npm >=11.5.1.');
+          }
+          console.log(`Release ${tag}; npm ${npmVersion} supports Trusted Publishing.`);
+          NODE
+          node dev/check-release-version.mjs "${RELEASE_TAG#v}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Require successful CI for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PASSED_RUNS="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" -f event=push -f status=success -f per_page=1 --jq '.total_count')"
+          if ! [[ "$PASSED_RUNS" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::The release commit needs a successful validate workflow. Finish CI, then re-run this release workflow.'
+            exit 1
+          fi
 
       - name: Sanity checks
         run: |
@@ -77,15 +103,9 @@ jobs:
           test -f /tmp/codex-sandbox/rust-intel/references/sources.md
 
       - name: Publish
-        # Idempotent: a queued duplicate run (see the concurrency group above) reaches this step
-        # after the first run already published the same tag's version. That is a no-op, not a
-        # failure — BUT "a package with this version exists" is not proof it is the SAME package:
-        # this repo does not have GitHub immutable releases / tag protection enabled, so a tag is
-        # technically movable. Don't take "version exists" on faith — compare the local tarball's
-        # integrity hash against what the registry actually has, and fail loudly on a mismatch
-        # instead of silently treating a different artifact as this run's own duplicate.
+        # Skip a duplicate only when registry and local tarball integrity agree.
         run: |
-          PKG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="${RELEASE_TAG#v}"
           if npm view "rust-intel-cc@$PKG_VERSION" version >/dev/null 2>&1; then
             REGISTRY_INTEGRITY="$(npm view "rust-intel-cc@$PKG_VERSION" dist.integrity)"
             LOCAL_INTEGRITY="$(npm pack --dry-run --json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>console.log(JSON.parse(d)[0].integrity))')"
@@ -99,5 +119,3 @@ jobs:
             exit 1
           fi
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

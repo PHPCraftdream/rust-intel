@@ -2,12 +2,12 @@
 // Fixture-level regression probes for the calibration seed in examples/fixtures/.
 // Zero dependencies; run with Node >= 24.0.0.
 //
-// Scope, stated honestly: 494 hand-written controls: README category-count and physical-temp-path
+// Scope, stated honestly: 500 hand-written controls: README category-count and physical-temp-path
 // containment checks; the two anchored trigger-table contracts, project-fence state, table-boundary
 // integrity/stress, bounded code-span duplicate/signature and unsupported-style probes; workflow
 // MODULES/AUDIT_UNITS parsing, deep-freeze, coverage, declaration/reachability, mutation, and
 // JavaScript lexical-boundary controls; and Node 24 floor, guard, and CI-job controls. Of these,
-// 419 spawn child processes (390 validator children and 29 focused lexer/helper children), and 75
+// 425 spawn child processes (396 validator children and 29 focused lexer/helper children), and 75
 // run in-process (including direct, rule-text, and crude source oracles; see ruleTextControls and
 // B5/B26 below). They verify that the seed still discriminates positive from negative and that
 // the categories it cites still exist and are still routed — nothing more. They are NOT a recall
@@ -97,7 +97,7 @@ const progress = (message) => {
 // labels are only a secondary inventory for review readability. Every control section invokes
 // observeControls on its live path, and the observed set is the sole source of the final report.
 // Keep this literal independent from the scope header so either side can detect drift.
-const CONTROL_REGISTRY_TOTAL = 494;
+const CONTROL_REGISTRY_TOTAL = 500;
 function createControlRegistry(total) {
   const declared = new Set(Array.from({ length: total }, (_, index) => index + 1));
   const registered = new Set();
@@ -666,7 +666,7 @@ for (const [number, file, mutate, label, expectedNeedle] of [
   [386, 'CHANGELOG.md', (source) => source.replace(
     /(?<=\*\*Net tooling state\.\*\*[\s\S]*?fixture suite has )\d+(?= controls\b)/,
     (count) => String(Number.parseInt(count, 10) - 1),
-  ), 'CHANGELOG current fixture count', 'CHANGELOG.md current Unreleased fixture count'],
+  ), 'CHANGELOG current fixture count', 'CHANGELOG.md current fixture count'],
   [387, 'README.md', (source) => source.replace(
     /(The validator fixture suite currently has \*\*\d+\*\* controls\.)/,
     '$1 Historical v0.6.0 documentation records 379 controls.',
@@ -684,6 +684,28 @@ for (const [number, file, mutate, label, expectedNeedle] of [
     else if (result.executionFailure) failures.push(`Control ${number}: ${label}: validator child failed to execute (${result.error || result.signal || 'unknown execution failure'})`);
     else if (!passed) failures.push(`Control ${number}: ${label}: historical qualified count caused an unexpected failure: ${result.output.trim()}`);
     completeCurrentControlScope(number, passed);
+  }
+}
+
+// Controls 495-500: release rollover and current-count selection.
+observeControls({ start: 495, end: 500 });
+{
+  const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  const countClaim = (count) => `**Net tooling state.** The fixture suite has ${count} controls.\n`;
+  const release = (body, releaseVersion = version) => `## [${releaseVersion}] — 2026-09-09\n\n### Release details\n\n${body}\n`;
+  const changelog = (unreleased, releases) => `# Changelog\n\n## [Unreleased]\n\n${unreleased}\n${releases}`;
+  const current = countClaim(CONTROL_REGISTRY_TOTAL);
+  const stale = countClaim(CONTROL_REGISTRY_TOTAL - 1);
+  for (const [id, source, status, needles] of [
+    [495, changelog('', release(current) + release(stale, '0.0.0')), 0, []],
+    [496, changelog(current, release(stale)), 0, []],
+    [497, changelog(stale, release(current)), 1, ['CHANGELOG.md current fixture count: states']],
+    [498, changelog('Pending changes.\n', release(current)), 1, ['CHANGELOG.md current fixture count: expected exactly one']],
+    [499, changelog('', release(current, '0.0.0') + release(current)), 1, ['empty Unreleased requires the latest dated release to match package.json version']],
+    [500, release(current), 1, ['missing current ## [Unreleased] section']],
+  ]) {
+    const result = runValidateAgainstMutatedFiles(['CHANGELOG.md'], () => source);
+    expectFixture(result, `Control ${id}: changelog release rollover`, status, needles, id);
   }
 }
 

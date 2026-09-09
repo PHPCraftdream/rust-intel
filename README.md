@@ -4,7 +4,7 @@
 
 # rust-intel
 
-**v0.6.0 (2026-08-19).** New category **§C12/§C12a** — reaching for a world-recognized crate instead of reinventing a solved problem (27 utility rows + 2 infrastructure rows, each gated on a nameable silent-failure input; the HTML-sanitization and Markdown-rendering rows are 🔴), plus a §A1 "default-of-an-earlier-era" bullet and new phrase/code-pattern triggers. Numbered categories now **59** (Tier C now runs §C1–§C12). See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.7.0 (2026-09-09).** Broad correctness and source-alignment review, expanded ownership/performance guidance, transactional installers, and hardened validation. Node.js **24+** is now required for npm installation and repository tooling. Numbered categories now **59** (unchanged; Tier C runs §C1–§C12). See [`CHANGELOG.md`](CHANGELOG.md).
 
 A living specification that defends against the systematic mistakes LLMs make when writing Rust.
 
@@ -43,11 +43,13 @@ Its supported Markdown surface is explicit:
 
 ## Status
 
-**Unreleased (in preparation, not tagged).** The current tree is pre-bump: manifests and the release banner remain `v0.6.0`, while the next package release is planned as **MINOR `0.7.0`**. Repository tooling requires Node.js 24 or newer; the current Node 24 and exact `24.0.0` CI definitions are present, but no current-head CI result is claimed here.
+**v0.7.0 (2026-09-09).** The npm, Claude Code, and Codex manifests are aligned at `0.7.0`. This is a **MINOR** release because the Node.js runtime/install floor rises to **24.0.0**; the existing **59** numbered categories are unchanged. The release brings cross-module correctness fixes, eight additional spec-consistency passes, performance/ownership guidance, and installer/validator hardening. See [`CHANGELOG.md`](CHANGELOG.md).
 
-The validator fixture suite currently has **494** controls. Of these, **419** spawn child processes (**390** validator-entrypoint and **29** focused lexer/helper children), and **75** run in-process; the fixture registry machine-checks that split against the spawns it actually routes. Focused children return structured semantic observations that the parent judges against each control's expected outcome. The eight anti-vacuity differentials (controls 401, 402, 458, 459, and 491–494) are a vacuity test of the fixture's own evidence, not an integrity proof of `dev/js-lexer.mjs`. Their coverage claims attach only to the mutations actually tested, and the mechanism assumes a non-forging vehicle as well as a non-forging lexer: for an honest vehicle, the probe's observations for those controls are produced by executing the temp-tree copy of `dev/js-lexer.mjs` through its final charged operation, and the differentials detect the accidental shortcuts measured against this mechanism (an early return above one million code units fails all eight differentials — 402/458/459 on the missing budget throw, the five success-valued controls on the missing nonce entry — and a scanner that stops charging inside identifier runs fails all eight as well). What they cannot detect — by the definition of mutation testing, not by oversight — is either of two deliberate forgeries: a probe vehicle forged to read the temp-tree copy's text instead of executing it recovers the injected nonce literals and answers all eight differentials without any scan (measured in round 51 with an 18-line insertion, 8/8 across 6 runs), and a `dev/js-lexer.mjs` deliberately written to read its own mutation and reproduce its effect. Two files can defeat this gate, not one; both files' integrity is a review obligation, and no control other than these eight exercises the lexer above the ~275,000-code-unit fixture source. The separate `dev/test-installer-recovery.mjs` matrix covers installer interruption/restart behavior. The bounded JavaScript scanner rejects mismatched delimiters, preserves private-name roles, tracks class-body roles across brace-bearing `extends` expressions, and handles ordinary, static, private, computed, string, and numeric class-field names. The round-42 partial fixes (`ef20ca5`, `14a672a`, `49dd4f0`) add the latter field-name coverage, parameterized `pwsh`/`powershell.exe` recovery plus Windows validator lanes, and — in `49dd4f0` — the sequential core/fixture coordinator (`dev/validate-all.mjs`) and its then shared semantic oracle (`dev/validate-lexer-observations.mjs`; retired and deleted by the round-47 anti-vacuity gate rebuild — see `CHANGELOG.md`). The ordinary Windows coordinator has passed, and the earlier `0xC0000409` fixture fault has not reproduced, in three runs against `49dd4f0` (the round-43 reviewed head, 484 controls) on Node v24.12.0 / Windows 10.0.19045: two ordinary `npm run validate` coordinator runs (276.451 s, 285.209 s) and one progress-instrumented fixture-only run (246.310 s, 484/484 controls, last live control 460), all exit 0. Those runs predate the round-43, round-44, and round-45 fixing passes, so no measurement exists at any fixing state's committed tree except the round-44 fixing run recorded in the CHANGELOG — taken before that pass's final documentation edits, so the measured tree differs from the committed one in exactly the files edited afterwards (368 s, exit 0, 486/486 controls, same host) — and the round-45 fixing run recorded in the CHANGELOG (344 s, exit 0, 490/490 controls, same host; measured at that pass's tree with every code and documentation fix in place except the insertion of its own figures). This is non-reproduction evidence only, not a demonstrated fix, and independent review and exact-head CI remain required.
+The validator fixture suite currently has **500** controls. Of these, **425** spawn child processes (**396** validator-entrypoint and **29** focused lexer/helper children), and **75** run in-process; the fixture registry machine-checks that split against the spawns it actually routes. Six release-rollover controls verify empty `Unreleased` handling, current-count selection, and rejection of stale, missing, or mismatched release metadata. The separate `dev/test-installer-recovery.mjs` matrix covers installer interruption/restart behavior across Node, Bash, Windows PowerShell, and pwsh.
 
-Release readiness still requires clean ordinary validation, the complete same/cross recovery matrix, independent HS review, and exact-head CI. The documented Windows contract is process interruption, not sudden-power-loss durability; no closure, version bump, tag, push, or publication is claimed.
+The eight lexer anti-vacuity differentials (controls 401, 402, 458, 459, and 491–494) detect the measured accidental scanner shortcuts, not deliberate forgery by the probe vehicle or lexer. Both files' integrity remains a review obligation. The two Rust calibration cases remain a regression seed, not a measurement of audit recall.
+
+**Release verification.** [Round 54](docs/reviews/latest-commits-review-round-54-2026-09-09-0213.md) closed the reviewed P0/P1 blockers; the later spec-consistency fixes and their evidence are recorded in the changelog and review reports. The [publish workflow](.github/workflows/npm-publish.yml) requires a successful full `validate` run for the exact release commit, then reruns validation, checks all three manifest versions, and smoke-tests both npm installers before publishing through OIDC with provenance. Historical CI results do not substitute for that release-commit check. Windows recovery guarantees cover process interruption, not sudden power loss.
 
 **v0.6.0 (2026-08-19).** Added §C12/§C12a and related §A1 default-of-an-earlier-era coverage; numbered categories reached **59**. This entry backfills the release's omitted Status record. See [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -114,7 +116,7 @@ rust-intel/
 ├── bin/install-transaction.js           # Shared transactional installer engine
 ├── bin/install-codex.js                # Codex user-skill installer (rust-intel-codex)
 ├── bin/node-version.js                 # Shared Node.js floor guard
-├── package.json                        # npm package manifest (published on release tags by CI)
+├── package.json                        # npm package manifest (published on GitHub Releases by CI)
 ├── dev/                                # Validation, mirror, release, and review utilities
 │   ├── validate-all.mjs                # Isolated core + fixture validation coordinator
 │   ├── validate.mjs                    # Repository validator; runs the fixture suite unless RUST_INTEL_SKIP_NESTED_FIXTURES=1
@@ -129,7 +131,7 @@ rust-intel/
 │   ├── check-release-version.mjs       # Verify a release tag matches all manifests
 │   ├── semver.mjs                      # Shared version parsing/comparison helpers
 │   └── review-modules.workflow.js      # Fan-out review workflow helper
-├── .github/workflows/npm-publish.yml   # Publishes rust-intel-cc to npm on every v* tag
+├── .github/workflows/npm-publish.yml   # Publishes stable GitHub Releases to npm via OIDC
 ├── .github/workflows/ci.yml            # Repository validation and Node floor checks
 ├── README.md                           # This file
 ├── CHANGELOG.md                        # Version history
@@ -179,7 +181,7 @@ npx rust-intel-cc --user        # user-global:   ~/.claude/
 npx rust-intel-cc --uninstall   # inverse (add --user for global)
 ```
 
-Same layout as the shell installers below: skill in `<target>/skills/rust-intel/`, commands flattened to `/rust-cc-audit`, `/rust-cc-fix`, `/rust-cc-plan`. Published to npm automatically on every release tag.
+Same layout as the shell installers below: skill in `<target>/skills/rust-intel/`, commands flattened to `/rust-cc-audit`, `/rust-cc-fix`, `/rust-cc-plan`. Published to npm automatically when a stable GitHub Release is published, after the release checks pass; pushing a tag alone does not publish a package.
 
 #### 3. Shell installers (from a clone; `--symlink` for development)
 
@@ -272,21 +274,55 @@ Details: [`commands/README.md`](commands/README.md).
 
 ## Maintaining
 
+### npm Trusted Publisher setup
+
+For the `rust-intel-cc` package, add this connection in npm **Settings → Trusted publishing**:
+
+| Field | Value |
+| --- | --- |
+| Publisher | `GitHub Actions` |
+| Label (optional) | `rust-intel GitHub Releases` |
+| Organization or user | `PHPCraftdream` |
+| Repository | `rust-intel` |
+| Workflow filename | `npm-publish.yml` (filename only) |
+| Environment name | Leave empty; this workflow has no GitHub environment |
+| Allow npm publish | Enabled |
+
+Click **Set up connection**. Direct `npm publish` must be allowed for automatic publication;
+stage-only permission requires a separate approval. [npm's trusted publishing guide](https://docs.npmjs.com/trusted-publishers/)
+documents the exact, case-sensitive binding and the npm **11.5.1+** / Node **22.14.0+** requirements.
+This repository uses Node 24 and checks the bundled npm version without upgrading dependencies.
+
+The workflow uses a GitHub-hosted runner and `id-token: write`; no `NPM_TOKEN` repository secret
+is needed. It checks out the release event's exact commit, requires successful `ci.yml` push
+validation for that SHA, validates all three manifests against the stable `vMAJOR.MINOR.PATCH`
+tag, runs local checks and installer smoke tests, and publishes with provenance. Publishing a
+draft or prerelease does not publish an npm package. A retry skips publication only when the
+existing registry tarball's integrity matches the local package.
+
+After the first successful OIDC publication, select npm's restrictive Publishing access option
+that requires 2FA and disallows bypass-2FA tokens, then click **Update Package Settings**.
+That restriction does not disable Trusted Publishing. Revoke obsolete npm automation tokens
+and remove the old `NPM_TOKEN` GitHub secret if present; do not remove a token used by another
+workflow or package. Saving the npm connection is not an authentication test: OIDC is exercised
+by the real publish operation, not `npm whoami` or `npm pack --dry-run`.
+
 ### Release checklist
 
-The Node.js floor raise from 16.7.0 to 24.0.0 removes a previously supported runtime in the 0.x
-series, so the next release is a **MINOR `0.7.0`**, not a patch. Record that decision before starting
-the release; routine reviews must not change the version or release notes implicitly.
+The Node.js floor raise to 24.0.0 is the compatibility reason for **MINOR `0.7.0`**.
+For later releases, classify changes using the policy at the top of `CHANGELOG.md`;
+routine reviews must not change versions or release notes implicitly. Commit, push, tag,
+and publication each require explicit authorization.
 
-1. Decide and record the bump level; for the Node-floor release, use `0.7.0`.
+1. Decide and record the target version and release date.
 2. Run `node dev/set-release-version.mjs <version>` and review the three manifest changes.
    Run `node dev/calibrate-release-version.mjs` to exercise abrupt-exit recovery at every journal
    and rename boundary, requiring the hook's exact child status `86`, plus a nonexistent-boundary
    normal-completion negative control, injected failures after replacements 1–3, and cleanup against
    temporary known-good copies. If a release process is interrupted, `node dev/set-release-version.mjs --recover`
    performs recovery without changing versions.
-3. Update the README version banner, keeping the exact validator-pinned sentence `Numbered categories now **N**`, and add the release's entry to **Status**. When cutting the release, remove or replace the point-in-time `Unreleased (in preparation, not tagged)` paragraph so it cannot remain beside the released entry. Retain and verify the existing `v0.6.0 (2026-08-19)` entry, add the new `v0.7.0` entry above it, keep entries in reverse chronological order, and put a blank line between every entry.
-4. In `CHANGELOG.md`, insert a fresh empty `## [Unreleased]` section above the release, then move the current Unreleased body under `## [0.7.0] — <release-date>` (or the selected version/date). Re-check the fixture-control count against the header in `dev/validate-fixtures.mjs` (currently **494**) and update the changelog's count if it changed; rewrite the planned-bump sentence in past tense (for example, `This release is \`0.7.0\` (MINOR) because ...`) rather than shipping an imperative instruction.
+3. Update the README version banner, keeping the exact validator-pinned sentence `Numbered categories now **N**`, and add the dated release entry to **Status** above earlier releases, with a blank line between entries. Replace stale preparation claims and distinguish local evidence from CI on the release commit. Mark publication complete only after the registry and release-triggered publish workflow confirm it.
+4. In `CHANGELOG.md`, insert a fresh empty `## [Unreleased]` above `## [<version>] — <release-date>` and move the completed changes into the dated release. Re-check the fixture-control count against the header in `dev/validate-fixtures.mjs` (currently **500**) and update the changelog's count if it changed. The validator checks a populated `Unreleased`, or, when it is empty, the latest dated release matching `package.json`. Keep exactly one unqualified `fixture suite has N controls` claim in that current section; qualify historical counts and replace planned-bump instructions with the actual release decision.
 5. Run the repository checks: `npm run validate`, `npm pack --dry-run`, the mirror check, and the
    release-version check (`node dev/check-release-version.mjs <version>`).
 6. Commit the release changes with a descriptive message.
@@ -304,7 +340,8 @@ the release; routine reviews must not change the version or release notes implic
    git push origin v<version>
    ```
 
-9. Confirm the tag-triggered validation and npm publish workflows completed successfully.
+9. In GitHub **Releases → Draft a new release**, select the existing `v<version>` tag, add the release notes, leave **Set as a pre-release** unchecked, and click **Publish release**. This `release.published` event triggers npm publication; pushing the tag alone does not.
+10. Confirm `npm-publish` completed successfully and `npm view rust-intel-cc@<version> version` reports the intended version. If the workflow stopped because CI was not yet green, finish the `validate` run for that exact SHA and re-run the failed release workflow. Do not move the tag to a different commit to retry.
 
 ## Spec architecture
 
