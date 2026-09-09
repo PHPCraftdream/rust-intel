@@ -8,6 +8,8 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+**Spec consistency review, round 2.** Restricted the single-shot hasher exception to randomized foldhash, separated overflow checks from debug assertions, corrected the subtraction-guard advice, and distinguished fallible length validation from programmer assertions. Equality/hash guidance now follows the chosen equivalence relation, including bit-identity float keys, while retaining the project lint-policy requirement.
+
 **Spec consistency review.** Corrected §B19's blanket preference for a growing iteration bound, retained §B7's resource budgets for iterative traversal, and clarified newtype runtime destruction and edition-2024 tail-result lifetimes. Aligned the final checklists and audit adapter with the scoped Blocking protocol: missing evidence is reported during inspection, while affected implementations still require their security prerequisites.
 
 **Field ownership transfer.** Added `mem::take`, `Option::take`, and `mem::replace` to §E2/§C5 and the substitution catalog, with buffer-reuse and failure-contract conditions. Refined §B19 to distinguish intentional handoff from failed restoration and to state the limits of drop-guard recovery.
