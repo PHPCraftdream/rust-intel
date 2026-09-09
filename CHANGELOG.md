@@ -8,6 +8,8 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+**Spec consistency review, round 8.** Corrected read-only sharing bounds, Arc/Weak lifecycle conditions, lock-call and single-thread async race guidance. Protected single-flight entries before initialization as well as while running, bounded pinned admission, and separated cumulative counters from live-work gauges. Clarified broadcast reliability, receiver-directed close/drain, and nested panic containment during Drop.
+
 **Spec consistency review, round 7.** Corrected initialization and raw-access preconditions, distinguished unique-ownership Send/Sync proofs from synchronization, and made FFI thread affinity an independent requirement. Clarified Drop-based drop-check, C ABI buffer/string transport and role-specific borrowed/output/owned pointer contracts; valid controls were checked with Miri.
 
 **Spec consistency review, round 6.** Distinguished path patches from git pinning, facade macro re-exports from generated-path resolution, and implicit/built-in cfgs from custom declarations. Corrected build-script environment tracking and scoped feature unification to the selected build graph, retaining isolated-consumer checks. A no-new-dependency constraint now preserves the requested behavior rather than implying permission for an unsupported case.
