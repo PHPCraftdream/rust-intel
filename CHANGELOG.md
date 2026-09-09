@@ -8,6 +8,8 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+**Spec consistency review, round 4.** Corrected positional-field compatibility under `#[non_exhaustive]`, private-test access and support-crate limits, and release-test panic-strategy coverage. Scoped Serde contract tests to supported directions and intentional untagged priority; replaced whole-input buffering and universal slowdown claims with pinned, path-dependent behavior.
+
 **Spec consistency review, round 3.** Separated tracing argument skips from explicit fields and return/error events; corrected future construction, forwarding and `select!` ownership rules; made abort guidance handle completion races and actual yield boundaries; clarified cooperative scheduling limits.
 
 **Spec consistency review, round 2.** Restricted the single-shot hasher exception to randomized foldhash, separated overflow checks from debug assertions, corrected the subtraction-guard advice, and distinguished fallible length validation from programmer assertions. Equality/hash guidance now follows the chosen equivalence relation, including bit-identity float keys, while retaining the project lint-policy requirement.
