@@ -8,6 +8,8 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+**Spec consistency review, round 5.** Scoped crypto-error opacity to authentication boundaries and removed the implication that prehashing alone hides secret length. Corrected Windows argument-encoding guarantees, allowed deliberate `SameSite=None; Secure` flows with CSRF controls, and distinguished recursive directory ensure from exclusive creation.
+
 **Spec consistency review, round 4.** Corrected positional-field compatibility under `#[non_exhaustive]`, private-test access and support-crate limits, and release-test panic-strategy coverage. Scoped Serde contract tests to supported directions and intentional untagged priority; replaced whole-input buffering and universal slowdown claims with pinned, path-dependent behavior.
 
 **Spec consistency review, round 3.** Separated tracing argument skips from explicit fields and return/error events; corrected future construction, forwarding and `select!` ownership rules; made abort guidance handle completion races and actual yield boundaries; clarified cooperative scheduling limits.
