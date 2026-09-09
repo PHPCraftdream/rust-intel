@@ -62,6 +62,7 @@ Concrete defenses:
 
 **REQUIRED**:
 - Before inserting `.clone()`, ask: can this be solved by restructuring ownership (split borrows, borrow earlier-release later, take `&self` instead of `self`)?
+- If the next stage needs ownership of a field behind `&mut self`, consider `mem::take` / `Option::take` / `mem::replace` (§E2) when emptying/replacing the source is allowed. Keep a clone when an independent copy or unchanged-on-failure state is required (§B19).
 - For `Copy` types (i32, bool, small struct of `Copy` fields), `.clone()` is a code smell — `clippy::clone_on_copy` exists for a reason. Never insert it.
 - For `&str` → `String` conversions purely to escape a lifetime: re-examine the lifetime first. The String allocation is often masking the real problem from §B1.
 - For `Vec<T>` clones in hot paths: consider `&[T]`, `Cow<'_, [T]>`, or `Arc<[T]>`.
