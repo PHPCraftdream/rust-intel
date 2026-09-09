@@ -8,7 +8,7 @@
 
 ## §B2. `std::sync::Mutex` held across `.await`
 
-**The trap**: LLMs default to `std::sync::Mutex` because it dominates training data. Holding it across `.await` violates tokio's contract and can deadlock under load. `clippy::await_holding_lock` catches only ~30% of cases (misses guards hidden in closures, `if let`, early-return blocks). Statistics: in the 2026 field report (~80k LOC), this single category was the proximate cause of failure in roughly half of async tasks; pinning crate versions in the prompt cut it sharply.
+**The trap**: LLMs default to `std::sync::Mutex` because it dominates training data. Holding it across `.await` violates tokio's contract and can deadlock under load. `clippy::await_holding_lock` catches only ~30% of cases (misses guards hidden in closures, `if let`, early-return blocks). The published field report is directional motivation for this failure shape, not a reproducible prevalence or causation measurement; the normative basis is Tokio's documented lock and `Send` contracts.
 
 **BANNED** in any function annotated `async`, called from `tokio::spawn`, or used in a tokio runtime context:
 - `std::sync::Mutex` / `parking_lot::Mutex` whose guard lives across a `.await`.

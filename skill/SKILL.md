@@ -151,7 +151,7 @@ Tier A is not "bugs the compiler catches and stops". The compiler does its job �
 
 These pass `cargo build`, often pass `cargo test`, and fail in production. The twenty-nine categories below are the ones that hurt — and this is where the spec's real value lives.
 
-**Why this tier exists**: high compilation rate is not correctness. The published 2026 field report on ~80k LOC of LLM-generated tokio/sqlx code (see [`references/sources.md`](references/sources.md)) shows that **§B2 alone (`Mutex` across `.await`) was responsible for failure in roughly half of async tasks** before defensive prompting cut it sharply; security-focused evaluations show static analyzers miss a large share of vulnerabilities in LLM-generated crypto Rust that *does* compile (§B12). The category list below is structured around this gap between `cargo test` green and actual correctness — see [`references/sources.md`](references/sources.md) for the full evidence trail.
+**Why this tier exists**: high compilation rate is not correctness. The published 2026 field report on ~80k LOC of LLM-generated tokio/sqlx code provides directional motivation for §B2's `Mutex`-across-`.await` failure shape; it is not a reproducible prevalence or causation measurement. The normative contract is Tokio's documented lock and `Send` behavior. Security-focused evaluations show static analyzers miss a large share of vulnerabilities in LLM-generated crypto Rust that *does* compile (§B12). The category list below is structured around this gap between `cargo test` green and actual correctness — see [`references/sources.md`](references/sources.md) for the full evidence trail.
 
 # TIER C — Architecture and ergonomics
 
