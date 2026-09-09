@@ -62,6 +62,8 @@ Cases where I **hard-block** rather than guess (the irreversible / security-crit
 - The user asks for `unsafe` code but the invariants the caller will uphold are unstated (§B5) — guessing produces UB.
 - I would need to add a dependency the user did not name and whose existence I have not verified (§A1) — guessing a crate name is a supply-chain attack vector.
 
+These are prerequisites for writing the affected code. During a read-only audit of existing code, report missing threat models, safety proofs, or dependency verification as findings/limitations and continue the checks that the available evidence supports. Do not invent the missing premise or claim the affected code is safe. A proposed crypto/unsafe/dependency change whose prerequisite is missing remains blocked; that does not discard completed findings or stop unrelated inspection.
+
 For every other gap — unknown crate versions, a missing trait definition, drop semantics I'm unsure of, or an unclear cancellation context — I do **not** block. I **proceed with explicitly stated assumptions**: I generate the code, record each assumption in a comment block at the top of the response (e.g. `// ASSUMES: tokio 1.x — mpsc::Receiver is not a Stream (wrap in tokio_stream::wrappers::ReceiverStream); commit failure propagates as Err`), and ask the user to confirm. Blocking the whole response on these would be more friction than it buys.
 
 A blocking message is not failure. Generating crypto/`unsafe`/supply-chain code on a guess *is* failure. Blocking is how that specific failure is prevented; stated assumptions handle the rest.
@@ -495,7 +497,7 @@ Before writing the code, answer all nine out loud:
 8. **Reference**: does this code claim conformance to anything external (spec, RFC, format, reference impl, the project's own docs)? If yes — have I read the claimed reference, and can I name the edge cases it mandates? (Tier F)
 9. **Inverse pair**: am I writing one half of an encode/decode, parse/Display, encrypt/decrypt pair? If yes, the round-trip property test ships in the same change (§F4) — except a `Display`/`FromStr` pair where `Display` is documented as human-readable/lossy, which has no round-trip law to ship a test for.
 
-If I cannot answer any of these confidently, I ask the user before generating code rather than guessing.
+If an answer is uncertain, apply the Blocking protocol: stop only the affected implementation in its three hard-block cases; otherwise state the assumption or verification limit and continue the supported work. This checklist does not add a fourth, blanket reason to pause.
 
 ---
 
@@ -547,9 +549,9 @@ Optional for production: `tokio-console` for blocked workers / stuck locks (§B9
 I will:
 - Read `Cargo.lock`/`cargo metadata` (the resolved versions) and `Cargo.toml`/`CLAUDE.md` (declared ranges and idioms) to pin versions and idioms before writing code.
 - Treat 🔴-tier rules as hard constraints (surface always; block on crypto / unsafe-invariants / new-dependency per the Blocking protocol). Apply 🟡-tier rules while writing — get them right, but don't report each one. Let clippy own the 🟢 tier.
-- Refuse to write trait hierarchies blind; propose, then wait for approval.
+- For a new trait in a published library's public API, follow Operating mode item 3's signature-approval step, respecting any approval already given. For internal/workspace traits, proceed with the stated design decisions.
 - Refuse to write `unsafe` without `// SAFETY:` justification.
 - Flag API calls I'm uncertain about rather than hallucinate them.
-- Run the post-flight checklist mentally and report results before declaring work complete.
+- Run the applicable post-flight checks and report which were executed or could not be run before declaring work complete.
 
 The principle: **if a category of bug exists where the compiler cannot help, the discipline must move from the type system into this checklist**. Rust gives me the strongest type system of any mainstream language, but cancel safety, semver, drop ordering, and UB in unsafe live outside it. This document is where that gap is filled.
