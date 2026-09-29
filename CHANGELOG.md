@@ -19,6 +19,16 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 **Net tooling state.** The fixture suite has 500 controls.
 
+### Specification currency — 2026-09-29 (second pass)
+
+- Closed a trailing-separator hole in the §C2 path-containment recipe: a trailing `/` makes `lstat`/`fs::symlink_metadata` and `O_NOFOLLOW` follow the final symlink, so checked prefixes and the opened path are now built from `components()`. `cap-std`/`cap-primitives` ≤ 4.0.2 shipped that escape (GHSA-hp8f-xmx4-4qrg, critical). It was published only as a repository advisory, so RustSec, OSV and the GitHub Advisory Database all missed it. The spec now requires `cap-std` ≥ 4.0.3 / 3.4.6 and states in Post-flight that database-backed scanners are necessary but not sufficient.
+- Required `pub unsafe extern "C" fn` with `# Safety` for exports that dereference, reclaim or slice a pointer argument, with clippy `not_unsafe_ptr_arg_deref` treated as a floor. Added module-wide safety invariants covering `DerefMut`, safe `&mut` access and derived `Deserialize` vs `#[serde(try_from)]`. Added `staticlib` symbol-export control and foreign-reported length units (bytes vs elements).
+- Added §C2 rules for CRLF injection into line-oriented protocol commands, inbound DNS rebinding to loopback-bound servers, credential-bearing HTTP headers in debug logs (`HeaderValue::set_sensitive`) and PID-keyed authorization. §B12 stubbed crypto must fail closed, and §D1a now requires rejection controls on verify/MAC/decrypt paths.
+- Recorded that since Rust 1.98.0 a derived `partial_cmp` delegates to `Ord::cmp`, so a `PartialOrd`/`Ord` inconsistency changes `<` on a toolchain upgrade (§B16). Added the float-`Duration` panics and `try_from_secs_f64`/`f32` (§B27).
+- Added dependency cooldown (Cargo `min-publish-age`, respected from Cargo 1.100; Dependabot and Renovate settings) and review of the published crate bytes rather than the repository (§A1).
+- Re-attributed the Rust-specific LLM-crypto figures to arXiv:2604.27001 with severity qualifiers, and corrected the SafeGenBench summary. Added the cJSON LLM-porting study and ledger entries for every new claim, plus grounding rows for recent advisories.
+- Aligned the trigger and red-flag tables, version pins, Post-flight, the `fix`/`audit` command adapters and the generated Codex mirror. The 59 numbered categories, Rust 1.85 MSRV and package version remain unchanged.
+
 ## [0.7.0] — 2026-09-09
 
 ### Release summary
