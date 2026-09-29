@@ -57,7 +57,8 @@ Catches mistakes at the design stage, while rolling them back is still cheap. Th
 
 ## After implementation (Post-flight)
 - `cargo clippy -- -W clippy::await_holding_lock -W clippy::unwrap_used ...`
-- If any `unsafe` is added — `cargo +nightly miri test`.
+- If any `unsafe` is added — `cargo +nightly miri test --workspace`; record the Miri build and keep any PR-readable build cache secret-free (§D3).
+- For production SIMD/crypto backends — execute backend-specific contract and invalid-input tests on capable runners, confirming dispatch (§D3); a feature compilation sweep alone does not cover behavior.
 - Surface in the summary — file:line + justification each — every 🔴-tier item from the skill's Enforcement tiers (e.g. `unsafe`, `unbounded_channel`, a new dependency (§A1 defense)). Red-only: `unwrap` and routine `Arc<Mutex<_>>` are noted inline at write time, not enumerated in the summary.
 ```
 

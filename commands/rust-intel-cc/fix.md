@@ -150,6 +150,8 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
 **Preventive rule.** <one line from the spec>
 
 **Run after.** `cargo clippy -- -W clippy::await_holding_lock` (for §B2), `miri` (for §B5), `tokio-console` (for §B11), etc.
+
+For Miri/cached CI, apply §D3's secret-free cache-producing-step and tool-build checks. For a SIMD/crypto backend fix, execute the affected production path's contract and invalid-input controls; record which backend actually ran.
 ```
 
 ## Behavioral principles

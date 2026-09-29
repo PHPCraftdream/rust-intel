@@ -8,6 +8,17 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+### Specification currency — 2026-09-29
+
+- Added secret-free cache-producing CI guidance for Cargo, tests and Miri, with the precise PR-readable-cache exposure conditions from the September 21 Rust security notice. The Miri build/fix check and remediation of old affected caches are separate obligations.
+- Required behavioral coverage of supported production SIMD/crypto backends, including actual dispatch, invalid-input and length-boundary controls. Clarified that a feature-powerset `cargo check` establishes compilation only.
+- Added the Rust 1.98.0 vtable miscompilation fixed in 1.98.1 to the pinned-and-patched toolchain rule, keeping production toolchain review separate from MSRV compatibility testing.
+- Corrected `ManuallyDrop`-based manual Vec decomposition availability to Rust 1.20 and replaced the blanket Rust 1.0 pin for integer operation families with method-specific examples.
+- Updated the source ledger and worked examples for backend-specific pqc_kyber/faster-hex defects, rustls TLS record conformance, ringbuf panic safety, connectrpc post-handler reader lifetime, and the ongoing maintainer-compromise campaign.
+- Aligned core triggers, pre/post-flight guidance, command adapters and the generated Codex mirror. The 59 numbered categories, Rust 1.85 MSRV and package version remain unchanged.
+
+**Net tooling state.** The fixture suite has 500 controls.
+
 ## [0.7.0] — 2026-09-09
 
 ### Release summary

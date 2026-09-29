@@ -79,6 +79,8 @@ let mut buf = Vec::with_capacity(n as usize);  // violates the documented guaran
 - Explicit EOF policy per stream: on `Ok(0)` — flush and `shutdown()` write side? close both? Document it; "whatever the code happens to do" is where the bug lives.
 - Tests must include the rude peer: connects and stalls, sends a partial frame and dies, half-closes mid-stream. An in-memory duplex that always behaves is the §D1a stub-oracle trap.
 
+**Post-handler lifetime grounding:** connectrpc RUSTSEC-2026-0304 kept a background request-body reader alive after a streaming handler returned, an interceptor rejected the call, or the request timeout fired. A stalled peer could retain the reader, partial-message buffer and stream indefinitely. Bound any deliberate post-handler drain in both lifetime and retained work, and make terminal cleanup observable; a completed handler or its timeout does not by itself cancel a sibling reader (§B21/§B14). Fixed in 0.8.2 on the 0.8 line and 0.9.1 on the 0.9 line; see `references/sources.md`.
+
 **Example — compiles, green, wrong**:
 ```rust
 async fn handle(mut client: TcpStream) -> io::Result<()> {
