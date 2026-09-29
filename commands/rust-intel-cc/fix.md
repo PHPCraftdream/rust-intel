@@ -42,10 +42,13 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | `clippy::await_holding_lock` | §B2 (but clippy catches ~30% — check hidden cases too) |
    | `clippy::clone_on_copy`, `clippy::redundant_clone` | §C5 |
    | `clippy::unwrap_used`, `clippy::expect_used` | §C2 |
-   | A path under an attacker-mutable directory is `canonicalize`d + `starts_with(base)`-checked, then `open`ed / read — escape reported despite the check | §C2 (TOCTOU — the static check is not race-free; CWE-367; use `openat`+`O_NOFOLLOW` or the `cap-std` crate when the tree is attacker-mutable) |
+   | A path under an attacker-mutable directory is `canonicalize`d + `starts_with(base)`-checked, then `open`ed / read — escape reported despite the check | §C2 (TOCTOU — the static check is not race-free; CWE-367; use `openat`+`O_NOFOLLOW` or the `cap-std` crate when the tree is attacker-mutable; also a trailing `/` on the path — `lstat`/`symlink_metadata` and `O_NOFOLLOW` follow the final symlink, so build checked prefixes and the opened path from `components()`, and require `cap-std` ≥ 4.0.3 / ≥ 3.4.6 with the resolved `cap-primitives` verified in `Cargo.lock`, GHSA-hp8f-xmx4-4qrg) |
    | `clippy::missing_safety_doc`, `clippy::undocumented_unsafe_blocks` | §B5 |
+| `clippy::not_unsafe_ptr_arg_deref` ("this public function might dereference a raw pointer but is not marked `unsafe`"), or an `#[allow]` of it on an export | §B25 (an exported `extern "C" fn` that dereferences, `Box::from_raw`s or slices a pointer argument must be `pub unsafe extern "C" fn` with a `# Safety` section; a null check does not discharge it; never `#[allow]` the lint on an export) |
+| `clippy::non_canonical_partial_ord_impl`, `clippy::derive_ord_xor_partial_ord`; or `<`, sort order or `max`/`min` results changed after a toolchain upgrade to Rust 1.98 with no source change | §B16 (a derived `partial_cmp` delegates to `Ord::cmp` since 1.98.0, exposing a `PartialOrd`/`Ord` inconsistency in a field type — write `Some(self.cmp(other))`, add a `partial_cmp == Some(cmp)` property test; do not `#[allow]` the lints) |
    | panic "Cannot start a runtime from within a runtime" | §B15 (block_on inside async) |
    | panic "cannot recursively acquire mutex" | §B9 (lock ordering / re-entry) |
+| panic "cannot convert float seconds to Duration" (or a panic in `Duration::mul_f64`/`div_f64`/`mul_f32`/`div_f32`) | §B27 (`from_secs_f64`/`from_secs_f32` panic on a negative, non-finite or overflowing float — use `try_from_secs_f64`/`try_from_secs_f32` (stable 1.66), handle the `Err`, validate the factor before `mul_f64`/`div_f64`) |
    | panic "PoisonError" / `poisoned lock` | §B2 (poisoning cascade) |
    | Task hangs, `Poll::Pending` forever | §B15 (Waker not registered) |
    | Deadlock without panic, two threads waiting on each other | §B9 |
