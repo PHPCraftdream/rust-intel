@@ -4,7 +4,7 @@
 
 # rust-intel
 
-**v0.7.0 (2026-09-09).** Broad correctness and source-alignment review, expanded ownership/performance guidance, transactional installers, and hardened validation. Node.js **24+** is now required for npm installation and repository tooling. Numbered categories now **59** (unchanged; Tier C runs §C1–§C12). See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.8.0 (2026-09-30).** Specification currency review against Rust 1.98 and recent advisories, a fixed fan-out audit workflow, and change-scoped installer CI. Node.js **24+** is required for npm installation and repository tooling. Numbered categories now **59** (unchanged; Tier C runs §C1–§C12). See [`CHANGELOG.md`](CHANGELOG.md).
 
 A living specification that defends against the systematic mistakes LLMs make when writing Rust.
 
@@ -43,13 +43,15 @@ Its supported Markdown surface is explicit:
 
 ## Status
 
-**v0.7.0 (2026-09-09).** The npm, Claude Code, and Codex manifests are aligned at `0.7.0`. This is a **MINOR** release because the Node.js runtime/install floor rises to **24.0.0**; the existing **59** numbered categories are unchanged. The release brings cross-module correctness fixes, eight additional spec-consistency passes, performance/ownership guidance, and installer/validator hardening. See [`CHANGELOG.md`](CHANGELOG.md).
+**v0.8.0 (2026-09-30).** The npm, Claude Code, and Codex manifests are aligned at `0.8.0`. This is a **MINOR** release by maintainer decision; nothing becomes incompatible, and the Node.js **24.0.0** floor and the **59** numbered categories are unchanged. It brings two specification-currency passes (Rust 1.98, recent RustSec/GHSA advisories including the repository-only `cap-std` containment escape, dependency cooldowns, FFI export and protocol-injection rules), a fix for the fan-out audit workflow that did not parse in 0.7.0, and change-scoped installer CI with a stricter publish gate. See [`CHANGELOG.md`](CHANGELOG.md).
 
 The validator fixture suite currently has **500** controls. Of these, **425** spawn child processes (**396** validator-entrypoint and **29** focused lexer/helper children), and **75** run in-process; the fixture registry machine-checks that split against the spawns it actually routes. Six release-rollover controls verify empty `Unreleased` handling, current-count selection, and rejection of stale, missing, or mismatched release metadata. The separate `dev/test-installer-recovery.mjs` matrix covers installer interruption/restart behavior across Node, Bash, Windows PowerShell, and pwsh. CI runs that matrix and the other installer suites when a push or pull request changes installer inputs (installer scripts, `bin/`, the recovery harness, `ci.yml`, manifests, or the set of installed files), and on every tag push, manual dispatch and weekly schedule; content-only spec edits skip them.
 
 The eight lexer anti-vacuity differentials (controls 401, 402, 458, 459, and 491–494) detect the measured accidental scanner shortcuts, not deliberate forgery by the probe vehicle or lexer. Both files' integrity remains a review obligation. The two Rust calibration cases remain a regression seed, not a measurement of audit recall.
 
-**Release verification.** [Round 54](docs/reviews/latest-commits-review-round-54-2026-09-09-0213.md) closed the reviewed P0/P1 blockers; the later spec-consistency fixes and their evidence are recorded in the changelog and review reports. The [publish workflow](.github/workflows/npm-publish.yml) requires a successful full `validate` run for the exact release commit, then reruns validation, checks all three manifest versions, and smoke-tests both npm installers before publishing through OIDC with provenance. Historical CI results do not substitute for that release-commit check. Windows recovery guarantees cover process interruption, not sudden power loss.
+**Release verification.** The currency passes, the review follow-ups and their evidence are recorded in the changelog and the source ledger. The [publish workflow](.github/workflows/npm-publish.yml) requires a successful `validate` run for the exact release commit in which every job ran, then reruns validation, checks all three manifest versions, and smoke-tests both npm installers before publishing through OIDC with provenance. Historical CI results do not substitute for that release-commit check. Windows recovery guarantees cover process interruption, not sudden power loss.
+
+**v0.7.0 (2026-09-09).** A **MINOR** release because the Node.js runtime/install floor rose to **24.0.0**; the **59** numbered categories were unchanged. It brought cross-module correctness fixes, eight additional spec-consistency passes, performance/ownership guidance, and installer/validator hardening. [Round 54](docs/reviews/latest-commits-review-round-54-2026-09-09-0213.md) closed the reviewed P0/P1 blockers. See [`CHANGELOG.md`](CHANGELOG.md).
 
 **v0.6.0 (2026-08-19).** Added §C12/§C12a and related §A1 default-of-an-earlier-era coverage; numbered categories reached **59**. This entry backfills the release's omitted Status record. See [`CHANGELOG.md`](CHANGELOG.md).
 

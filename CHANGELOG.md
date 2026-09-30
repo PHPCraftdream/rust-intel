@@ -8,6 +8,18 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-30
+
+### Release summary
+
+**MINOR release by maintainer decision.** Nothing becomes incompatible: the 59 numbered categories, the BANNED/REQUIRED shapes, the Node.js 24.0.0 floor, the installer entry points and the installed paths are unchanged. Under the classification policy above, the content alone would be a patch release.
+
+- **Specification currency.** Two review passes against Rust 1.98, recent RustSec/GHSA advisories and new LLM-Rust studies. They closed the trailing-separator hole in §C2 path containment (with the repository-only cap-std advisory GHSA-hp8f-xmx4-4qrg) and required `unsafe` on pointer-dereferencing C exports. They also added dependency cooldowns, protocol-injection, DNS-rebinding and credential-logging rules, and the Rust 1.98 `PartialOrd`/`Ord` behavior change, plus source-ledger entries for every new claim.
+- **Audit workflow fixed.** The fan-out `audit-project.workflow.js` shipped in 0.7.0 did not parse. It is fixed, and CI and the publish workflow now check workflow scripts the way the Workflow runtime loads them.
+- **CI and release gate.** The Windows recovery sweep is sharded, and installer suites run only when installer inputs change or on tag, manual and weekly runs. Publication requires a CI run for the release commit in which every job ran.
+
+**Release evidence.** Local validation passed all 500 controls, and release-version recovery calibration passed 48 interruption boundaries. The publish workflow requires a successful CI run for the exact release commit in which every job, including the installer suites, ran.
+
 ### Specification currency — 2026-09-29
 
 - Added secret-free cache-producing CI guidance for Cargo, tests and Miri, with the precise PR-readable-cache exposure conditions from the September 21 Rust security notice. The Miri build/fix check and remediation of old affected caches are separate obligations.
@@ -15,7 +27,7 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 - Added the Rust 1.98.0 vtable miscompilation fixed in 1.98.1 to the pinned-and-patched toolchain rule, keeping production toolchain review separate from MSRV compatibility testing.
 - Corrected `ManuallyDrop`-based manual Vec decomposition availability to Rust 1.20 and replaced the blanket Rust 1.0 pin for integer operation families with method-specific examples.
 - Updated the source ledger and worked examples for backend-specific pqc_kyber/faster-hex defects, rustls TLS record conformance, ringbuf panic safety, connectrpc post-handler reader lifetime, and the ongoing maintainer-compromise campaign.
-- Aligned core triggers, pre/post-flight guidance, command adapters and the generated Codex mirror. The 59 numbered categories, Rust 1.85 MSRV and package version remain unchanged.
+- Aligned core triggers, pre/post-flight guidance, command adapters and the generated Codex mirror. The 59 numbered categories and Rust 1.85 MSRV remain unchanged.
 
 **Net tooling state.** The fixture suite has 500 controls.
 
@@ -27,7 +39,7 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 - Recorded that since Rust 1.98.0 a derived `partial_cmp` delegates to `Ord::cmp`, so a `PartialOrd`/`Ord` inconsistency changes `<` on a toolchain upgrade (§B16). Added the float-`Duration` panics and `try_from_secs_f64`/`f32` (§B27).
 - Added dependency cooldown (Cargo `min-publish-age`, respected from Cargo 1.100; Dependabot and Renovate settings, including the update types Renovate's crate preset leaves ungated, such as weekly lock-file maintenance) and review of the published crate bytes rather than the repository (§A1).
 - Re-attributed the Rust-specific LLM-crypto figures to arXiv:2604.27001 with severity qualifiers, and corrected the SafeGenBench summary. Added the cJSON LLM-porting study and ledger entries for every new claim, plus grounding rows for recent advisories.
-- Aligned the trigger and red-flag tables, version pins, Post-flight, the `fix`/`audit` command adapters and the generated Codex mirror. The 59 numbered categories, Rust 1.85 MSRV and package version remain unchanged.
+- Aligned the trigger and red-flag tables, version pins, Post-flight, the `fix`/`audit` command adapters and the generated Codex mirror. The 59 numbered categories and Rust 1.85 MSRV remain unchanged.
 - The FFI red-flag row now takes the unit of a foreign-reported length from the C API contract: only a byte length is divided by `size_of::<T>()`, an element length is used unconverted, and both are bounded by the allocated buffer.
 
 ### Fixed
