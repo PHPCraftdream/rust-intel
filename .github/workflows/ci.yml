@@ -3,6 +3,10 @@ name: validate
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly full installer coverage on fresh runner images, whatever changed.
+    - cron: '17 3 * * 1'
 
 permissions:
   contents: read
@@ -14,6 +18,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The installer recovery suites (installer-boundaries, windows-install-smoke, bash-floor) take
+  # up to 20 minutes and exercise only installer inputs, so a push or PR that leaves those inputs
+  # alone skips them. Tag pushes, manual and scheduled runs, an unknown base and any doubt run
+  # them; npm-publish.yml accepts only a run in which every job ran.
+  changes:
+    name: installer change detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      installers: ${{ steps.detect.outputs.installers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide whether installer inputs changed
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # Prints why the suites must run; returns 1 when they may be skipped.
+          installer_reason() {
+            local base changes matched
+            case "$EVENT_NAME" in
+              push)
+                if [ "$REF_TYPE" = tag ]; then echo 'tag push'; return 0; fi
+                base="$PUSH_BEFORE" ;;
+              pull_request) base="$PR_BASE" ;;
+              *) echo "$EVENT_NAME event"; return 0 ;;
+            esac
+            if [ -z "$base" ] || [ -z "${base//0/}" ]; then echo 'no base commit'; return 0; fi
+            if ! changes="$(git diff --no-renames --name-status "$base" HEAD)"; then
+              echo "base commit $base is unavailable"; return 0
+            fi
+            # Installer code, its harness, this workflow and the manifests always count. Under the
+            # installed trees only content edits are neutral: an added, deleted or retyped file
+            # changes the installers' inventories.
+            matched="$(printf '%s\n' "$changes" | awk -F '\t' '
+              $2 ~ /^(rust-cc-[^\/]+|bin\/.+|dev\/(test-installer-recovery|snapshot-install)\.mjs|\.github\/workflows\/ci\.yml|package\.json|\.claude-plugin\/.+|\.codex-plugin\/.+|\.gitattributes)$/ { print; next }
+              $1 != "M" && $2 ~ /^(skill|skills|commands)\// { print }')"
+            if [ -n "$matched" ]; then printf 'installer inputs changed:\n%s\n' "$matched"; return 0; fi
+            return 1
+          }
+          if reason="$(installer_reason)"; then
+            echo 'installers=true' >> "$GITHUB_OUTPUT"
+            printf 'Installer suites run: %s\n' "$reason"
+          else
+            echo 'installers=false' >> "$GITHUB_OUTPUT"
+            echo 'Installer suites skipped: no installer input changed since the base commit.'
+          fi
+
   repository-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 50
@@ -231,6 +291,8 @@ jobs:
 
   installer-boundaries:
     name: ${{ matrix.surface }} installer boundaries
+    needs: changes
+    if: needs.changes.outputs.installers == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -332,6 +394,8 @@ jobs:
 
   windows-install-smoke:
     name: Windows installer and recovery (${{ matrix.powershell }}, shard ${{ matrix.shard }}/2)
+    needs: changes
+    if: needs.changes.outputs.installers == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     strategy:
@@ -483,6 +547,8 @@ jobs:
 
   bash-floor:
     name: Bash 3.2 installer floor
+    needs: changes
+    if: needs.changes.outputs.installers == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
     steps:

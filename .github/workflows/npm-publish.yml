@@ -64,12 +64,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PASSED_RUNS="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-            -f head_sha="$GITHUB_SHA" -f event=push -f status=success -f per_page=1 --jq '.total_count')"
-          if ! [[ "$PASSED_RUNS" =~ ^[1-9][0-9]*$ ]]; then
-            echo '::error::The release commit needs a successful validate workflow. Finish CI, then re-run this release workflow.'
+          # ci.yml skips the installer suites when a push leaves installer inputs alone, and a
+          # skipped job still leaves the run successful. Only a run in which every job ran and
+          # passed qualifies; pull_request runs tested a merge commit, not this one.
+          RUN_IDS="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" -f status=success -f per_page=100 \
+            --jq '.workflow_runs[] | select(.event != "pull_request") | .id')"
+          FULL_RUN=''
+          for RUN_ID in $RUN_IDS; do
+            read -r JOBS NOT_PASSED < <(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" \
+              -f filter=latest -f per_page=100 --jq '"\(.jobs | length) \([.jobs[] | select(.conclusion != "success")] | length)"')
+            if [ "$JOBS" -gt 0 ] && [ "$NOT_PASSED" -eq 0 ]; then FULL_RUN="$RUN_ID"; break; fi
+          done
+          if [ -z "$FULL_RUN" ]; then
+            echo '::error::The release commit needs a successful validate run in which every job ran, including the installer suites. Wait for the tag-push run, or start ci.yml with workflow_dispatch on the release tag, then re-run this release workflow.'
             exit 1
           fi
+          echo "Full validate run for $GITHUB_SHA: $FULL_RUN"
 
       - name: Sanity checks
         run: |
@@ -79,7 +90,7 @@ jobs:
           node --check dev/set-release-version.mjs
           node --check dev/check-release-version.mjs
           node --check dev/sync-mirror.mjs
-          node --check skill/audit-project.workflow.js
+          node dev/check-workflow-syntax.mjs skill/audit-project.workflow.js
           test -f skill/SKILL.md
           test -f skill/references/sources.md
           test -f .codex-plugin/plugin.json

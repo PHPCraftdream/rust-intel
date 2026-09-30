@@ -32,8 +32,12 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ### Fixed
 
-- `audit-project.workflow.js` shipped in 0.7.0 did not parse: unescaped backticks closed the synthesis prompt's template literal. CI now compiles workflow scripts the way the Workflow runtime loads them (`dev/check-workflow-syntax.mjs`) instead of `node --check`, whose module detection let the file through before Node 24.21 and rejects any workflow script from then on.
+- `audit-project.workflow.js` shipped in 0.7.0 did not parse: unescaped backticks closed the synthesis prompt's template literal. CI and the npm publish workflow now compile workflow scripts the way the Workflow runtime loads them (`dev/check-workflow-syntax.mjs`) instead of `node --check`, whose module detection let the file through before Node 24.21 and rejects any workflow script from then on.
 - The Windows installer recovery sweep runs in two shards per PowerShell runtime. Run sequentially it took 36–39 minutes against the 45-minute job limit and was cancelled on a slow runner.
+
+### Changed
+
+- CI runs the installer suites (recovery boundaries, the Windows sweep and the Bash 3.2 floor) only when a push or pull request changes installer inputs: installer scripts, `bin/`, the recovery harness, `ci.yml`, manifests, or the set of installed files. Tag pushes, manual dispatch and a weekly schedule always run them. Content-only spec commits now finish in about six minutes instead of twenty. `npm-publish` accepts only a successful run for the release commit in which every job ran.
 
 ## [0.7.0] — 2026-09-09
 

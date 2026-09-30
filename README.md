@@ -45,7 +45,7 @@ Its supported Markdown surface is explicit:
 
 **v0.7.0 (2026-09-09).** The npm, Claude Code, and Codex manifests are aligned at `0.7.0`. This is a **MINOR** release because the Node.js runtime/install floor rises to **24.0.0**; the existing **59** numbered categories are unchanged. The release brings cross-module correctness fixes, eight additional spec-consistency passes, performance/ownership guidance, and installer/validator hardening. See [`CHANGELOG.md`](CHANGELOG.md).
 
-The validator fixture suite currently has **500** controls. Of these, **425** spawn child processes (**396** validator-entrypoint and **29** focused lexer/helper children), and **75** run in-process; the fixture registry machine-checks that split against the spawns it actually routes. Six release-rollover controls verify empty `Unreleased` handling, current-count selection, and rejection of stale, missing, or mismatched release metadata. The separate `dev/test-installer-recovery.mjs` matrix covers installer interruption/restart behavior across Node, Bash, Windows PowerShell, and pwsh.
+The validator fixture suite currently has **500** controls. Of these, **425** spawn child processes (**396** validator-entrypoint and **29** focused lexer/helper children), and **75** run in-process; the fixture registry machine-checks that split against the spawns it actually routes. Six release-rollover controls verify empty `Unreleased` handling, current-count selection, and rejection of stale, missing, or mismatched release metadata. The separate `dev/test-installer-recovery.mjs` matrix covers installer interruption/restart behavior across Node, Bash, Windows PowerShell, and pwsh. CI runs that matrix and the other installer suites when a push or pull request changes installer inputs (installer scripts, `bin/`, the recovery harness, `ci.yml`, manifests, or the set of installed files), and on every tag push, manual dispatch and weekly schedule; content-only spec edits skip them.
 
 The eight lexer anti-vacuity differentials (controls 401, 402, 458, 459, and 491–494) detect the measured accidental scanner shortcuts, not deliberate forgery by the probe vehicle or lexer. Both files' integrity remains a review obligation. The two Rust calibration cases remain a regression seed, not a measurement of audit recall.
 
@@ -294,9 +294,9 @@ documents the exact, case-sensitive binding and the npm **11.5.1+** / Node **22.
 This repository uses Node 24 and checks the bundled npm version without upgrading dependencies.
 
 The workflow uses a GitHub-hosted runner and `id-token: write`; no `NPM_TOKEN` repository secret
-is needed. It checks out the release event's exact commit, requires successful `ci.yml` push
-validation for that SHA, validates all three manifests against the stable `vMAJOR.MINOR.PATCH`
-tag, runs local checks and installer smoke tests, and publishes with provenance. Publishing a
+is needed. It checks out the release event's exact commit, requires a successful `ci.yml` run
+for that SHA in which every job ran (a run that skipped the installer suites does not count),
+validates all three manifests against the stable `vMAJOR.MINOR.PATCH` tag, runs local checks and installer smoke tests, and publishes with provenance. Publishing a
 draft or prerelease does not publish an npm package. A retry skips publication only when the
 existing registry tarball's integrity matches the local package.
 
@@ -341,7 +341,7 @@ and publication each require explicit authorization.
    ```
 
 9. In GitHub **Releases → Draft a new release**, select the existing `v<version>` tag, add the release notes, leave **Set as a pre-release** unchecked, and click **Publish release**. This `release.published` event triggers npm publication; pushing the tag alone does not.
-10. Confirm `npm-publish` completed successfully and `npm view rust-intel-cc@<version> version` reports the intended version. If the workflow stopped because CI was not yet green, finish the `validate` run for that exact SHA and re-run the failed release workflow. Do not move the tag to a different commit to retry.
+10. Confirm `npm-publish` completed successfully and `npm view rust-intel-cc@<version> version` reports the intended version. If the workflow stopped because CI was not yet green, finish the `validate` run for that exact SHA and re-run the failed release workflow; if the only successful run skipped the installer suites, wait for the tag-push run or start `validate` with **Run workflow** on the release tag first. Do not move the tag to a different commit to retry.
 
 ## Spec architecture
 
