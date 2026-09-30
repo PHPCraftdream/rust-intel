@@ -475,7 +475,7 @@ Format the report EXACTLY like this:
 
 ## Unreachable matches (not findings)
 
-<aggregate every unit's `unreachable` entries: §id, file:line, and what was checked to conclude no entry point reaches it. These are recorded so the next audit does not re-derive them; they are NOT counted in **Found:**. Write "none" if every unit returned an empty list.>
+<aggregate every unit's \`unreachable\` entries: §id, file:line, and what was checked to conclude no entry point reaches it. These are recorded so the next audit does not re-derive them; they are NOT counted in **Found:**. Write "none" if every unit returned an empty list.>
 
 ---
 

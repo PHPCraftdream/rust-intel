@@ -56,7 +56,8 @@ jobs:
           node --check dev/snapshot-install.mjs
           node --check dev/test-installer-recovery.mjs
           node --check dev/validate-all.mjs
-          node --check skill/audit-project.workflow.js
+          node --check dev/check-workflow-syntax.mjs
+          node dev/check-workflow-syntax.mjs skill/audit-project.workflow.js skills/rust-intel/audit-project.workflow.js
       - name: Check shell installer syntax
         run: bash -n rust-cc-install.sh rust-cc-uninstall.sh
       - name: Smoke-test direct POSIX installer entry points and rollback

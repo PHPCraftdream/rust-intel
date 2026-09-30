@@ -297,6 +297,7 @@ const validateInputs = [
   'dev/sync-mirror.mjs',
   'dev/snapshot-install.mjs',
   'dev/test-installer-recovery.mjs',
+  'dev/check-workflow-syntax.mjs',
   'examples/fixtures/cases.json',
 ];
 
