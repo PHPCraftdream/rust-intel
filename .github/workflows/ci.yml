@@ -331,7 +331,7 @@ jobs:
           done
 
   windows-install-smoke:
-    name: Windows installer and recovery (${{ matrix.powershell }})
+    name: Windows installer and recovery (${{ matrix.powershell }}, shard ${{ matrix.shard }}/2)
     runs-on: windows-latest
     timeout-minutes: 45
     strategy:
@@ -340,14 +340,21 @@ jobs:
         # Keep PowerShell 7 coverage, and exercise the powershell.exe runtime used by the
         # documented .bat wrappers (Windows PowerShell 5.1 on stock supported hosts).
         powershell: [pwsh, powershell.exe]
+        # The sequential boundary sweep takes 36-39 minutes on one runner and hit the 45-minute
+        # cap on a slow one; the shards split its cases evenly. Keep in sync with
+        # RUST_INTEL_RECOVERY_SHARDS below.
+        shard: [0, 1]
     env:
       RUST_INTEL_POWERSHELL_EXECUTABLE: ${{ matrix.powershell }}
+      RUST_INTEL_RECOVERY_SHARD: ${{ matrix.shard }}
+      RUST_INTEL_RECOVERY_SHARDS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
       - name: Smoke-test PowerShell transactions, literal source paths, and uninstall
+        if: matrix.shard == 0
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'rust-intel install [literal]'
@@ -434,21 +441,40 @@ jobs:
             & node $arguments
             if ($LASTEXITCODE -ne 0) { throw "PowerShell $operation $mode $boundary recovery case failed with exit $LASTEXITCODE" }
           }
+          $shard = [int]$env:RUST_INTEL_RECOVERY_SHARD
+          $shards = [int]$env:RUST_INTEL_RECOVERY_SHARDS
+          if ($shards -lt 1 -or $shard -lt 0 -or $shard -ge $shards) { throw "invalid recovery shard $shard of $shards" }
+          # Every boundary yields a same-operation and a (slower) cross-operation case. Boundary b's
+          # case runs in shard (b + cross) mod N, so each shard gets both kinds in equal measure.
+          $boundaryIndex = 0
+          $caseIndex = 0
+          $ran = 0
           foreach ($operation in 'install','uninstall') {
             foreach ($mode in 'fresh','upgrade','sparse') {
               if ($operation -eq 'uninstall' -and $mode -eq 'fresh') { continue }
               $boundaries = @(& node $helper '--list' 'powershell' $operation $mode)
               if ($LASTEXITCODE -ne 0) { throw "PowerShell $operation $mode inventory generation failed" }
               if ($boundaries.Count -eq 0 -or ($boundaries | Where-Object { $_.Trim() }).Count -eq 0) { throw "PowerShell $operation $mode inventory was empty" }
+              $started = Get-Date
               foreach ($boundary in $boundaries) {
                 if ($boundary.Trim()) {
-                  Invoke-RecoveryCase $operation $mode $boundary.Trim()
-                  Invoke-RecoveryCase $operation $mode $boundary.Trim() -Cross
+                  foreach ($cross in $false, $true) {
+                    if (($boundaryIndex + [int]$cross) % $shards -eq $shard) {
+                      Invoke-RecoveryCase $operation $mode $boundary.Trim() -Cross:$cross
+                      $ran++
+                    }
+                    $caseIndex++
+                  }
+                  $boundaryIndex++
                 }
               }
+              Write-Host ("{0} {1}: {2} boundaries, {3} cases run so far, {4:n0}s" -f $operation, $mode, $boundaries.Count, $ran, ((Get-Date) - $started).TotalSeconds)
             }
           }
+          if ($ran -eq 0) { throw "recovery shard $shard of $shards ran no cases" }
+          Write-Host "recovery shard $shard of $shards ran $ran of $caseIndex cases"
       - name: Preserve foreign content through PowerShell install/uninstall (${{ matrix.powershell }})
+        if: matrix.shard == 0
         shell: pwsh
         run: |
           $helper = Join-Path $env:GITHUB_WORKSPACE 'dev\test-installer-recovery.mjs'

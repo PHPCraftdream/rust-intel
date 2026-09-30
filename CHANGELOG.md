@@ -25,9 +25,15 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 - Required `pub unsafe extern "C" fn` with `# Safety` for exports that dereference, reclaim or slice a pointer argument, with clippy `not_unsafe_ptr_arg_deref` treated as a floor. Added module-wide safety invariants covering `DerefMut`, safe `&mut` access and derived `Deserialize` vs `#[serde(try_from)]`. Added `staticlib` symbol-export control and foreign-reported length units (bytes vs elements).
 - Added §C2 rules for CRLF injection into line-oriented protocol commands, inbound DNS rebinding to loopback-bound servers, credential-bearing HTTP headers in debug logs (`HeaderValue::set_sensitive`) and PID-keyed authorization. §B12 stubbed crypto must fail closed, and §D1a now requires rejection controls on verify/MAC/decrypt paths.
 - Recorded that since Rust 1.98.0 a derived `partial_cmp` delegates to `Ord::cmp`, so a `PartialOrd`/`Ord` inconsistency changes `<` on a toolchain upgrade (§B16). Added the float-`Duration` panics and `try_from_secs_f64`/`f32` (§B27).
-- Added dependency cooldown (Cargo `min-publish-age`, respected from Cargo 1.100; Dependabot and Renovate settings) and review of the published crate bytes rather than the repository (§A1).
+- Added dependency cooldown (Cargo `min-publish-age`, respected from Cargo 1.100; Dependabot and Renovate settings, including the update types Renovate's crate preset leaves ungated, such as weekly lock-file maintenance) and review of the published crate bytes rather than the repository (§A1).
 - Re-attributed the Rust-specific LLM-crypto figures to arXiv:2604.27001 with severity qualifiers, and corrected the SafeGenBench summary. Added the cJSON LLM-porting study and ledger entries for every new claim, plus grounding rows for recent advisories.
 - Aligned the trigger and red-flag tables, version pins, Post-flight, the `fix`/`audit` command adapters and the generated Codex mirror. The 59 numbered categories, Rust 1.85 MSRV and package version remain unchanged.
+- The FFI red-flag row now takes the unit of a foreign-reported length from the C API contract: only a byte length is divided by `size_of::<T>()`, an element length is used unconverted, and both are bounded by the allocated buffer.
+
+### Fixed
+
+- `audit-project.workflow.js` shipped in 0.7.0 did not parse: unescaped backticks closed the synthesis prompt's template literal. CI now compiles workflow scripts the way the Workflow runtime loads them (`dev/check-workflow-syntax.mjs`) instead of `node --check`, whose module detection let the file through before Node 24.21 and rejects any workflow script from then on.
+- The Windows installer recovery sweep runs in two shards per PowerShell runtime. Run sequentially it took 36–39 minutes against the 45-minute job limit and was cancelled on a slow runner.
 
 ## [0.7.0] — 2026-09-09
 
