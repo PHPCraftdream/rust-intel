@@ -35,7 +35,7 @@
 
 ## §B27. Wall-clock vs monotonic time
 
-**The trap**: measuring durations and timeouts with a wall-clock that is not monotonic — NTP correction, manual clock changes, and DST produce a negative or jumping "duration". It compiles, the test over a few seconds on a stable clock is green, and it breaks days later or whenever the user's clock shifts.
+**The trap**: measuring durations and timeouts with a wall-clock that is not monotonic — NTP correction and manual clock changes produce a negative or jumping "duration". It compiles, the test over a few seconds on a stable clock is green, and it breaks days later or whenever the user's clock shifts.
 
 **BANNED**:
 - `SystemTime::now()` / `chrono::Utc::now()` / `std::time::SystemTime` to measure intervals, durations, timeouts, or benchmarks. The wall-clock can jump backward or forward between two readings.

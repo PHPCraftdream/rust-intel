@@ -69,9 +69,9 @@ Catches mistakes at the design stage, while rolling them back is still cheap. Th
 - **Don't write code.** Not even fragments, not even "for illustration". This command is the design phase.
 - **Don't skip triggers.** If a phrase in the task activates a category, it belongs in the list — even if it seems "not relevant here". The spec is built around the fact that LLMs systematically misjudge category relevance.
 - **Trait hierarchies — text before approval** (operating mode rule 3). If the task needs a new public trait, describe the signatures in the plan and mark "requires confirmation before impl".
-- **Crypto — special mode** (§B12). If activated, the plan must contain a "Threat model: <…> — requires confirmation" section; code doesn't start without it.
+- **Crypto — special mode** (§B12). If activated, the plan must contain a "Threat model: <…>" section, marked "requires confirmation" when the user has not stated it; code doesn't start without a stated threat model (§B12).
 
 ## Limits
 
-- The plan defends against categories that **exist in the spec**. New bug classes (see draft categories in `docs/roadmap.md`) aren't covered until they migrate into the main ruleset.
+- The plan defends against categories that **exist in the spec**. New bug classes (see the draft categories in the skill repository's [roadmap](https://github.com/PHPCraftdream/rust-intel/blob/main/docs/roadmap.md)) aren't covered until they migrate into the main ruleset.
 - This isn't a full architectural review. It's a pre-flight against the risk matrix, not a design doc.

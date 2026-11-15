@@ -43,7 +43,7 @@ So classify `Drop` by *what it does*, not by reflex. A literal-minded "always ru
 
 Async resources have an additional constraint that `Drop` cannot honor — see §B22 for the async-`Drop`-is-not-real problem.
 
-### §B4a. Edition-2024 temporary-scope drop-order changes
+### §B4a. Edition-2024 migration: temporary-scope drop order (plus never-type fallback and `impl Trait` capture)
 
 **The trap**: migrating a crate to edition 2024 silently changes *when* temporaries drop in two places — with no runtime error and usually green tests, but a different drop order under locks and RAII guards.
 

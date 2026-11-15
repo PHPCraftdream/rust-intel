@@ -1,7 +1,7 @@
 # Rust Intel — Security: system boundary (errors, paths, files, commands, SQL, SSRF, archives)
 
 > Sphere of the **rust-intel** skill, group **Security** (until v0.8.0 the group was one module, `security.md`). Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This file holds the category bodies for §C2. Sibling spheres of this group: `security-crypto.md`. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
-> **Tiers in this file:** §C2 🟡 (🔴 for injection, SSRF, traversal and archive escape reachable from untrusted input). Derived from SKILL.md → Enforcement tiers (canonical).
+> **Tiers in this file:** §C2 🟡 (🔴 for injection, SSRF, traversal and archive escape, DNS rebinding and PID-keyed authorization reachable from untrusted input). Derived from SKILL.md → Enforcement tiers (canonical).
 > **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
 ---
