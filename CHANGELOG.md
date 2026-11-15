@@ -8,6 +8,22 @@ Patch = wording refinements, fixes, new sources, and new bullets/gaps/enrichment
 
 ## [Unreleased]
 
+### Specification currency — 2026-11-15
+
+Review of two Rust news channels, This Week in Rust, Habr, dev.to, engineering post-mortems, RustSec and recent studies of LLM-written Rust. Every addition was checked against its primary source; the ledger records what was read and what was not.
+
+- **Corrected statements that had gone stale or wrong.** §B28 no longer recommends `String::from_utf8_lossy` as a general decoder. §B23's advice to hold a pending future across loop iterations now carries the futurelock condition. `Allocator` is stable since Rust 1.100 (§B25). The `cap-std` advisory reached RustSec as RUSTSEC-2026-0482 after 83 days as a repository-only advisory. Cargo `min-publish-age` shipped in 1.100, with two documented gaps (`cargo install`, missing `pubtime`); `cargo install` now uses the packaged lockfile. The toolchain rule adds the Rust 1.99.0 FFI `bool` miscompile and says to ship the latest patch release. The never-type fallback applies to editions 2015–2021 since 1.100. `BufWriter` flush-on-drop is stated for std only. The slopsquatting figure is now the measured one (arXiv:2501.19012).
+- **Operating-system boundary (§C2, §B28).** Permissions set at creation rather than by a later path-based chmod; file names, arguments and environment kept as `OsStr`/bytes; identity decided by `(dev, ino)` instead of path strings; batch operations report the worst result and `.ok()` on a side effect is a discarded error; `println!` on a closed pipe; name lookups before `chroot`; `tokio-tar` has no patched version and an archive must be checked and extracted by one reader. Grounded in the uutils coreutils CVE batch of 2026-04-22.
+- **Generated configuration is untrusted input (§C2)**, with validation before swap and a last-known-good version — the Cloudflare outage of 2025-11-18.
+- **Async (§B23, §B15b, §B11, §B3).** Futurelock (Oxide RFD 609); hand-written `poll_flush`/`poll_shutdown` that loses `Pending`, and tokio's `BufWriter` discarding its buffer on drop; `rayon` handed off through `rayon::spawn` and a `oneshot`; `kill_on_drop` for child processes; `try_join!` cancelling sibling branches.
+- **Unsafe and FFI (§B5, §B25).** File-descriptor ownership; C strings and NUL termination; `unsafe` that trusts a safe trait implementation; soundness that depends on a destructor; a union field matched in the same pattern as its tag; `&raw mut` for fields of uninitialized or packed data; `SAFETY` invariants about collection membership (CVE-2025-68260); `bytemuck::cast_slice` panics.
+- **Guards (§B4, §B9).** `let _ = guard` releases at once; a guard created in a `while let`/`match` scrutinee lives for the whole body.
+- **Tests and LLM-specific oracles (§D1a, §D3, §E6, §B26, §F1).** Fixtures the bug cannot change and fuzzing that never passes validation — the spec's first fuzzing rule; formal-verification results obtained by editing the specification or adding assumptions (VeruSAGE, Kani cover properties); std's debug-only UB checks; side effects inside `debug_assert!`; benchmark gaming by an optimizing agent; accepted-but-ignored options and the limits of an inherited test suite for a port.
+- **Pins and gates.** tokio 1.54.0 is yanked (RUSTSEC-2026-0384); `zip` ≥ 9.0.5; `cargo deny` needs `unsound = "all"` and `yanked = "deny"`.
+- Trigger and red-flag tables, Version pins, the source ledger and the generated Codex mirror are aligned. The 59 numbered categories, Rust 1.85 MSRV and package version remain unchanged.
+
+**Net tooling state.** The fixture suite has 500 controls.
+
 ## [0.8.0] — 2026-09-30
 
 ### Release summary
