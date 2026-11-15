@@ -125,6 +125,7 @@ rust-intel/
 │   ├── validate-fixtures.mjs           # Fixture-control runner
 │   ├── validate-lexer-probes.mjs        # Focused child-process lexer probes
 │   ├── sync-mirror.mjs                 # Canonical skill -> Codex mirror sync/check
+│   ├── held.mjs                        # Hold/release passages kept out of the shipped text until a condition is met (docs/held/)
 │   ├── set-release-version.mjs         # Update package and plugin manifest versions
 │   ├── calibrate-release-version.mjs    # Crash/recovery calibration for release transactions
 │   ├── snapshot-install.mjs             # Byte-aware installer inventory for rollback checks
@@ -156,6 +157,7 @@ rust-intel/
 └── docs/
     ├── roadmap.md                      # Roadmap: open directions and structural notes
     ├── sources.md                      # Empirical sources and citations
+    ├── held/                           # Hold manifests: text withheld from skill/ until its release condition (see dev/held.mjs)
     └── reviews/                        # Review reports and the correction ledger
         └── README.md
 ```
@@ -316,7 +318,7 @@ For later releases, classify changes using the policy at the top of `CHANGELOG.m
 routine reviews must not change versions or release notes implicitly. Commit, push, tag,
 and publication each require explicit authorization.
 
-1. Decide and record the target version and release date.
+1. Decide and record the target version and release date. Run `node dev/held.mjs status`: release every hold whose condition is met, and note the holds that stay out of this release.
 2. Run `node dev/set-release-version.mjs <version>` and review the three manifest changes.
    Run `node dev/calibrate-release-version.mjs` to exercise abrupt-exit recovery at every journal
    and rename boundary, requiring the hook's exact child status `86`, plus a nonexistent-boundary
@@ -364,6 +366,27 @@ The A/B/C/D/F tiers classify *what kind* of bug a category targets. Orthogonally
 A Tier A category for trait bounds / type mismatches (E0277/E0308) was present in earlier drafts and retired in v0.3.0: compile-only failures are out of scope, the compiler is sufficient. The remaining Tier A categories were renumbered to close the gap.
 
 Tier B is the centre of the spec: silent correctness bugs that survive `rustc`, `clippy`, and `cargo test`. Each category cites a published study, production incident, or systematically observed LLM output pattern.
+
+### Sphere files
+
+Category bodies live in **22 sphere files** next to `SKILL.md` (the core: protocols, tiers, trigger tables, version pins, the category→module map). A *group* is a theme; each large group is divided into *spheres* of a few categories, one file each, sized (17–38 KB) so one agent can read a whole sphere and keep its hit list in view. Files are flat with a group prefix — not subdirectories — because the validator compares OS-style relative paths. The authoritative category→file table is the Category map in `SKILL.md`; the validator checks it against the files and against `MODULES`/`AUDIT_UNITS` in the audit workflow.
+
+| Group | Sphere files |
+|---|---|
+| Async | `async-locks-cancel.md`, `async-tasks-blocking.md`, `async-machinery.md` |
+| Concurrency | `concurrency-locks-state.md`, `concurrency-races.md`, `concurrency-channels.md` |
+| Data | `data-contracts.md`, `data-numeric-time.md`, `data-text-iter-cost.md` |
+| Security | `security-crypto.md`, `security-boundary.md` |
+| Unsafe / FFI | `unsafe-core.md`, `unsafe-sync-memory.md`, `unsafe-ffi-abi.md` |
+| Dependencies | `deps-supply-chain.md`, `deps-cargo-macros.md`, `deps-ergonomics.md` |
+| Testing | `testing-oracles.md`, `testing-harness.md` |
+| Single-file groups | `drop-and-raii.md`, `lifetimes-and-api.md`, `semantics-and-conformance.md` |
+
+Up to and including v0.8.0 the same content lived in seven large modules (`async.md`, `concurrency-and-state.md`, `data-and-types.md`, `security.md`, `unsafe-and-ffi.md`, `deps-macros-ergonomics.md`, `testing.md`); the split was a pure move of lines, so `git blame -C -C -w` follows each rule back across it.
+
+### Held text
+
+A passage that is ready but must not ship yet (for example a recommendation of a tool whose release is pending) is *held*, not commented out: HTML comments would still reach the agent's context, and `docs/` is the only tree that is never installed. `docs/held/<name>.json` stores each edit as a pair — the `shown` text and the `hidden` text that stands in its place, both with enough surrounding context to be found again. `node dev/held.mjs status` lists every hold with its release condition, `hold <name>` / `release <name>` swap the pairs in the tree and resync the Codex mirror, and an edit that matches neither form (the text drifted) is reported instead of overwritten. While a hold is active the text exists only in the manifest; the release checklist below includes a `status` check.
 
 ## Principles for evolving the spec
 

@@ -1,7 +1,7 @@
 # Rust Intel — Semantic Conformance
 
-> Module of the **rust-intel** skill. Core lives in `SKILL.md`. This module holds the category bodies for §F1–§F4 — defects of *meaning*: code that compiles, passes its own tests and clippy, and implements the wrong thing. These categories are not found by pattern-matching; see SKILL.md → "Tier F — how to review for meaning".
-> **Tiers in this module:** §F1 🔴/🟡 · §F2 🔴/🟡 · §F3 🟡 (🔴 when attacker-extendable) · §F4 🟡. Derived from SKILL.md → Enforcement tiers (canonical); the conditional-🔴 rule is restated in the "Tier F — how to review for meaning" section there.
+> Sphere of the **rust-intel** skill, group **Semantic conformance** (a single-file group). Core lives in `SKILL.md`. This file holds the category bodies for §F1–§F4 — defects of *meaning*: code that compiles, passes its own tests and clippy, and implements the wrong thing. These categories are not found by pattern-matching; see SKILL.md → "Tier F — how to review for meaning".
+> **Tiers in this file:** §F1 🔴/🟡 · §F2 🔴/🟡 · §F3 🟡 (🔴 when attacker-extendable) · §F4 🟡. Derived from SKILL.md → Enforcement tiers (canonical); the conditional-🔴 rule is restated in the "Tier F — how to review for meaning" section there.
 > **Audit semantics:** unlike Tiers A–E, the auditable artifact here is often an *absence* (a spec-mandated state not handled, a round-trip test not present, a documented guarantee not enforced). An absence finding must name the reference it is absent *from* — "the spec requires X (section/source), the code has no path for X" — never a bare "looks incomplete".
 
 ---
@@ -30,8 +30,9 @@
 ```rust
 /// Encodes a length-prefixed frame "per the wire spec".
 fn encode_frame(payload: &[u8]) -> Vec<u8> {
+    let len = u16::try_from(payload.len()).expect("payload fits the u16 length prefix");
     let mut out = Vec::with_capacity(payload.len() + 2);
-    out.extend_from_slice(&(payload.len() as u16).to_le_bytes()); // spec says big-endian
+    out.extend_from_slice(&len.to_le_bytes()); // spec says big-endian
     out.extend_from_slice(payload);
     out
 }

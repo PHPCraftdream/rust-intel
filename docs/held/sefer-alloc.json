@@ -1,0 +1,41 @@
+{
+  "description": "The sefer-alloc recommendation (E2 allocator paragraph, catalog row, trigger row, ledger entry, changelog line) is out of the shipped text until the crate's 0.3 line is published and its figures are re-read.",
+  "releaseWhen": "sefer-alloc 0.3.0 is published on crates.io; then refresh version, MSRV and benchmark figures from its README before releasing",
+  "edits": [
+    {
+      "file": "skill/data-text-iter-cost.md",
+      "shown": "` or `tikv-jemallocator` (both C-backed), or `sefer-alloc` (also by this skill's maintainer): pure Rust with no C/C++ dependency, `use sefer_alloc::SeferAlloc; #[global_allocator] static GLOBAL: SeferAlloc = SeferAlloc::new();` with the `production` feature. Its own benchmarks (single hosts, criterion) put it ahead of the system allocator and competitive with mimalloc — faster on large alloc/free and `realloc` growth, \"competitive\" on its multi-thread cross-thread runs, ahead on single-thread churn from 256 B (noise-level ties at 16 B and 64 B), slower on cold first-touch of tiny blocks (2.4× at 16 B, 2.7× at 256 B) — and its README says not to extrapolate to mixed-size or cold workloads. These figures describe the published 0.2.x line; the unpublished 0.3 line is a large performance rework, so expect them to be superseded when it ships — re-read the crate's current README before quoting any number. State the maturity honestly when you recommend it: pre-1.0 (0.2.1 published on crates.io as of 2026-11-15, MSRV 1.88 — above this spec's 1.85; 64-bit targets only), the README accepts a known Miri (Stacked Borrows / Tree Borrows) report for free-list links written into freed blocks (no native failure known — do not expect a Miri-clean allocator), the large-object cache keeps up to 256 MiB per heap until `trim_current_thread()`, and the live large-block count is capped (the next request then returns null, which aborts under `GlobalAlloc`). Never switch allocators on the strength of any README, including this one's: run the project's own allocation-heavy ",
+      "hidden": "` or `tikv-jemallocator` (both C-backed). Never switch allocators on the strength of any README: run the project's own allocation-heavy "
+    },
+    {
+      "file": "skill/data-text-iter-cost.md",
+      "shown": "`tikv-jemallocator` (C-backed), or `sefer-alloc`'s `SeferAlloc` (pure Rust, `production` feature) | Allocator cost is in the pr",
+      "hidden": "`tikv-jemallocator` (C-backed) | Allocator cost is in the pr"
+    },
+    {
+      "file": "skill/data-text-iter-cost.md",
+      "shown": " count and target OS; `sefer-alloc` is pre-1.0 with MSRV above 1.85 and a documented, accepted Miri report — see §E2; new dep ",
+      "hidden": " count and target OS — see §E2; new dep "
+    },
+    {
+      "file": "skill/SKILL.md",
+      "shown": "mimalloc`, `tikv-jemallocator`, pure-Rust `sefer-alloc` — pre-1.0, MSRV above 1.85, accepted Miri report) only when the profile shows ",
+      "hidden": "mimalloc`, `tikv-jemallocator`) only when the profile shows "
+    },
+    {
+      "file": "skill/references/sources.md",
+      "shown": "§E6 (disclosure).** `captrack`, `captrack-pgo`, `bench-scale-tool` and `sefer-alloc` are published",
+      "hidden": "§E6 (disclosure).** `captrack`, `captrack-pgo` and `bench-scale-tool` are published"
+    },
+    {
+      "file": "skill/references/sources.md",
+      "shown": "ps://crates.io/crates/bench-scale-tool>. **sefer-alloc** 0.2.1 published (crates.io 2026-06-30; MSRV 1.88 in the crate metadata; the repository README describes the unreleased 0.3 line with MSRV 1.93): \"safe-by-construction, 100% Rust memory toolkit\" with no C/C++ dependency, `SeferAlloc` as `#[global_allocator]` behind the `production` feature (`alloc-global`, `alloc-xthread`, `alloc-decommit`, `fastbin`, …), 64-bit targets only (\"allocator features require a 64-bit target\"), CI on x86_64 linux-gnu/windows-msvc and aarch64 linux/macOS; `forbid(unsafe_code)` by default and `deny` with `allow` only in named seams once allocator features are on. Benchmark statements in the README (author's own, single hosts, criterion `sample_size(10)`): large alloc/free (4/16/64 MiB) \"~12–35× faster than mimalloc\" under same-size reuse within the decay window — the repository description's headline \"up to ~18x\" is not reconciled with that range on the page; single-thread churn faster than mimalloc from 256 B (1.57× at 256 B, 8.59× at 1024 B) with noise-level ties at 16 B and 64 B; cold first-touch of tiny blocks 2.37× (16 B) and 2.71× (256 B) slower; `realloc` growth 64 B→4 MiB about 1.8× faster than mimalloc; multi-thread cross-thread \"Competitive; leads at T≥2\" on a historical 0.2.0 shape; \"do not extrapolate them to mixed-size or cold-first-touch workloads\". Documented limitations: a known, accepted defect — Miri's Stacked Borrows and Tree Borrows report protector violations when free-list links are written into freed blocks (\"no native crash or miscompilation is known\", not to be called Miri-clean); requests above about 253 KiB round up to 4 MiB segments (about 16× commit amplification on Windows); live Large blocks capped at 4095 (the next request returns null, which aborts under `GlobalAlloc`); the default large cache keeps up to 256 MiB per heap (\"Idle alone does not reclaim any of it\"; `trim_current_thread()`); a process-lifetime maintenance worker without a shutdown API. docs.rs gives the scope line: \"For a process-wide allocator, use `SeferAlloc` (opt-in `production` feature) or reach for `mimalloc`.\" The README's performance claims were not independently reproduced for this ledger. <https://github.com/PHPCraftdream/sefer-alloc>, <https://docs.rs/sefer-alloc/latest/sefer_alloc/>, <https://crates.io/crates/sefer-alloc>.",
+      "hidden": "ps://crates.io/crates/bench-scale-tool>."
+    },
+    {
+      "file": "CHANGELOG.md",
+      "shown": "` from observed per-call-site capacities, `bench-scale-tool` as a fixed-iteration benchmark pulse, and `sefer-alloc` as a pure-Rust global-allocator candidate — all three by the skill's maintainer, recommended with their own measurements, limits (pre-1.0, MSRV, a documented Miri report for `sefer-alloc`) and a measure-before-switching rule; the ledger discloses the rela",
+      "hidden": "` from observed per-call-site capacities and `bench-scale-tool` as a fixed-iteration benchmark pulse — both by the skill's maintainer, recommended with their own measurements, limits and a measure-before-switching rule; the ledger discloses the rela"
+    }
+  ]
+}

@@ -97,7 +97,18 @@ These were drafted but will **not** be promoted. Recorded here (rather than left
 
 Drafted, grounded, and confirmed against the existing taxonomy, but with frequency low enough that the value-per-line is below the bullets/triggers/sources cost. Park here rather than ship inline — promote when an actual incident or a reviewer surfaces it as load-bearing.
 
-- **`tokio::sync::Semaphore` permit lifecycle — sibling of §F3.** A `permit` held across `.await` blocks the rate-limit one slot beyond its intent; a `permit` dropped on the `?`/error path *under* an explicit `forget()` (or never `acquire`-ed under a panic between reserve and use) over-admits the limiter. Same shape as §F3 boundary/error-path lifecycle, scoped to the semaphore primitive. Mentioned in passing in `concurrency-and-state.md` under §B14 (`FuturesUnordered` self-deadlock on a shared semaphore); a dedicated bullet would live in §F3 with cross-refs from §B14 and §B11. Grounding: tokio `Semaphore` docs (permit-on-`Drop` release contract). Defer until a concrete incident or reviewer flags it.
+- **`tokio::sync::Semaphore` permit lifecycle — sibling of §F3.** A `permit` held across `.await` blocks the rate-limit one slot beyond its intent; a `permit` dropped on the `?`/error path *under* an explicit `forget()` (or never `acquire`-ed under a panic between reserve and use) over-admits the limiter. Same shape as §F3 boundary/error-path lifecycle, scoped to the semaphore primitive. Mentioned in passing in `concurrency-channels.md` under §B14 (`FuturesUnordered` self-deadlock on a shared semaphore); a dedicated bullet would live in §F3 with cross-refs from §B14 and §B11. Grounding: tokio `Semaphore` docs (permit-on-`Drop` release contract). Defer until a concrete incident or reviewer flags it.
+
+### Backlog — candidates from the 2026-11-15 spec review (need a grounding source before they ship)
+
+Found missing by search in [`docs/reviews/spec-review-2026-11-15.md`](reviews/spec-review-2026-11-15.md). Each fits the acceptance test — compiles, passes its own tests, the cheapest fix is wrong — but under principle 1 none lands without a published incident, study or primary-source documentation.
+
+- **Graceful shutdown that waits only for `tokio::signal::ctrl_c()`** (home: §B21 / §B4). A container stop sends SIGTERM; no cleanup path runs in production although the Ctrl-C path works on the developer's machine.
+- **Outbound HTTP with no timeout** (home: §F3 / §C2). `reqwest`'s total and connect timeouts are off by default, so a stalled upstream pins the task; §F3 covers only the inbound peer.
+- **CORS "fixed" with `CorsLayer::permissive()` / `allow_origin(Any)` next to credentials** (home: §C2).
+- **A 413 "fixed" by removing the request-body limit**, or a framework path that has none (home: §B7).
+- **Tests that never run:** `cargo nextest` does not run doctests and `--all-targets` does not select them — the same shape as the workspace-root hole in §D4 (home: §D4).
+- **§B12 nonce guidance:** XChaCha20-Poly1305 for random nonces at volume and AES-GCM-SIV for misuse resistance are not named, and there is no rule on associated data.
 
 ## 3. Meta-layer refinements
 

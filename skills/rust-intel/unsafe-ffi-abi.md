@@ -1,7 +1,7 @@
 # Rust Intel — Unsafe: panic and ownership across the extern "C" ABI
 
 > Sphere of the **rust-intel** skill, group **Unsafe** (until v0.8.0 the group was one module, `unsafe-and-ffi.md`). Core — operating mode, blocking protocol, enforcement tiers, the trigger table, version pins, and the category→module map — lives in `SKILL.md`. This file holds the category bodies for §B25. Sibling spheres of this group: `unsafe-core.md`, `unsafe-sync-memory.md`. Tier labels (🔴/🟡/🟢; A–F) and all cross-references are preserved verbatim.
-> **Tiers in this file:** §B25 🔴 · §B25a 🔴. Derived from SKILL.md → Enforcement tiers (canonical).
+> **Tiers in this file:** §B25 🔴. Derived from SKILL.md → Enforcement tiers (canonical).
 > **Audit semantics:** 🔴 = report every occurrence; 🟡 = write-time discipline — report only load-bearing/non-obvious cases; 🟢 = clippy's, don't hand-report. Audit the *artifact* (a BANNED pattern present, a REQUIRED code artifact absent); process-REQUIREMENTs ("propose first", "ask the user") are not auditable findings.
 
 ---
