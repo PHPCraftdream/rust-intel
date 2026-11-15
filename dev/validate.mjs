@@ -552,7 +552,7 @@ for (const entry of parsedModules || []) {
   }
   workflowModuleCategories.set(file, seenIds);
 }
-for (const module of ['async.md', 'concurrency-and-state.md', 'data-and-types.md', 'security.md', 'unsafe-and-ffi.md', 'drop-and-raii.md', 'deps-macros-ergonomics.md', 'lifetimes-and-api.md', 'testing.md', 'semantics-and-conformance.md']) {
+for (const module of ['async-locks-cancel.md', 'async-tasks-blocking.md', 'async-machinery.md', 'concurrency-locks-state.md', 'concurrency-races.md', 'concurrency-channels.md', 'data-contracts.md', 'data-numeric-time.md', 'data-text-iter-cost.md', 'security-crypto.md', 'security-boundary.md', 'unsafe-core.md', 'unsafe-sync-memory.md', 'unsafe-ffi-abi.md', 'drop-and-raii.md', 'deps-supply-chain.md', 'deps-cargo-macros.md', 'deps-ergonomics.md', 'lifetimes-and-api.md', 'testing-oracles.md', 'testing-harness.md', 'semantics-and-conformance.md']) {
   if (!workflowModuleCategories.has(module)) errors.push(`workflow missing module: ${module}`);
 }
 
@@ -1280,20 +1280,31 @@ for (const unit of auditUnits) {
   labels.add(unit.label);
   if (!workflowModuleCategories.has(unit.module)) errors.push(`workflow AUDIT_UNITS references unknown module ${unit.module}`);
 }
-// Keep the fan-out policy executable and reviewable: changing a label's module, category slice,
-// required artifact set, or documentation obligation must be an intentional validator change,
-// not a silent reshuffle of work between agents.
+// Keep the fan-out policy executable and reviewable: changing a sphere's file, required artifact
+// set, or documentation obligation must be an intentional validator change, not a silent
+// reshuffle of work between agents. Every sphere file has exactly one full audit unit.
 const auditUnitPolicy = new Map([
-  ['async/discipline', { module: 'async.md', onlyCategories: 'B2, B3, B3a, B8, B11, B21, B22, B23', groups: [], requiresDocs: false }],
-  ['async/machinery', { module: 'async.md', onlyCategories: 'B15a–e, C3, C9, E1', groups: [], requiresDocs: false }],
-  ['concurrency', { module: 'concurrency-and-state.md', groups: [], requiresDocs: false }],
-  ['data-types', { module: 'data-and-types.md', groups: [], requiresDocs: false }],
-  ['security', { module: 'security.md', groups: ['manifests', 'configs'], requiresDocs: false }],
-  ['unsafe-ffi', { module: 'unsafe-and-ffi.md', groups: ['manifests', 'configs', 'scripts', 'ffi'], requiresDocs: false }],
+  ['async/locks-cancel', { module: 'async-locks-cancel.md', groups: [], requiresDocs: false }],
+  ['async/tasks-blocking', { module: 'async-tasks-blocking.md', groups: [], requiresDocs: false }],
+  ['async/machinery', { module: 'async-machinery.md', groups: [], requiresDocs: false }],
+  ['concurrency/locks-state', { module: 'concurrency-locks-state.md', groups: [], requiresDocs: false }],
+  ['concurrency/races', { module: 'concurrency-races.md', groups: [], requiresDocs: false }],
+  ['concurrency/channels', { module: 'concurrency-channels.md', groups: [], requiresDocs: false }],
+  ['data/contracts', { module: 'data-contracts.md', groups: [], requiresDocs: false }],
+  ['data/numeric-time', { module: 'data-numeric-time.md', groups: [], requiresDocs: false }],
+  ['data/text-iter-cost', { module: 'data-text-iter-cost.md', groups: [], requiresDocs: false }],
+  ['security/crypto', { module: 'security-crypto.md', groups: ['manifests', 'configs'], requiresDocs: false }],
+  ['security/boundary', { module: 'security-boundary.md', groups: ['manifests', 'configs'], requiresDocs: false }],
+  ['unsafe/core', { module: 'unsafe-core.md', groups: ['manifests', 'configs', 'scripts'], requiresDocs: false }],
+  ['unsafe/sync-memory', { module: 'unsafe-sync-memory.md', groups: ['manifests', 'ffi'], requiresDocs: false }],
+  ['unsafe/ffi-abi', { module: 'unsafe-ffi-abi.md', groups: ['manifests', 'configs', 'scripts', 'ffi'], requiresDocs: false }],
   ['drop-raii', { module: 'drop-and-raii.md', groups: [], requiresDocs: false }],
-  ['deps-macros', { module: 'deps-macros-ergonomics.md', groups: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts'], requiresDocs: false }],
+  ['deps/supply-chain', { module: 'deps-supply-chain.md', groups: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts'], requiresDocs: false }],
+  ['deps/cargo-macros', { module: 'deps-cargo-macros.md', groups: ['manifests', 'lockfiles', 'configs', 'ci'], requiresDocs: false }],
+  ['deps/ergonomics', { module: 'deps-ergonomics.md', groups: ['manifests'], requiresDocs: false }],
   ['lifetimes-api', { module: 'lifetimes-and-api.md', groups: ['manifests', 'toolchains'], requiresDocs: false }],
-  ['testing', { module: 'testing.md', groups: ['configs', 'ci', 'scripts'], requiresDocs: false }],
+  ['testing/oracles', { module: 'testing-oracles.md', groups: [], requiresDocs: false }],
+  ['testing/harness', { module: 'testing-harness.md', groups: ['configs', 'ci', 'scripts'], requiresDocs: false }],
   ['semantics', { module: 'semantics-and-conformance.md', groups: [], requiresDocs: true }],
 ]);
 const allowedArtifactGroups = new Set(['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts', 'ffi']);
@@ -1316,48 +1327,11 @@ for (const unit of auditUnits) {
 }
 for (const [label] of auditUnitPolicy) if (!labels.has(label)) errors.push(`workflow AUDIT_UNITS is missing policy-matrix label ${label}`);
 
-function expandOnlyCategories(text) {
-  if (typeof text !== 'string' || !text.trim()) return null;
-  const expanded = [];
-  for (const raw of text.split(',')) {
-    const token = raw.trim();
-    const match = token.match(/^([A-Z]\d+)([a-z])?(?:\s*[\u2013-]\s*([a-z]))?$/);
-    if (!match || (match[3] && !match[2])) return null;
-    const [, base, first, last] = match;
-    if (!last) expanded.push(base + (first || ''));
-    else {
-      // Match the category-map notation (§B15 (a–e)): a family range covers its parent id as
-      // well as each lettered subsection.
-      expanded.push(base);
-      for (let code = first.charCodeAt(0); code <= last.charCodeAt(0); code += 1) expanded.push(base + String.fromCharCode(code));
-    }
-  }
-  return expanded;
-}
 for (const module of workflowModuleCategories.keys()) {
   const units = auditUnits.filter((unit) => unit.module === module);
   if (!units.length) { errors.push(`workflow AUDIT_UNITS has no unit for ${module}`); continue; }
-  if (module !== 'async.md') {
-    if (units.length !== 1) errors.push(`workflow module ${module} must have exactly one full audit unit`);
-    else if (units[0].onlyCategories !== undefined) errors.push(`workflow module ${module} must not use onlyCategories`);
-    continue;
-  }
-  const partial = units.filter((unit) => unit.onlyCategories !== undefined);
-  const full = units.filter((unit) => unit.onlyCategories === undefined);
-  if (partial.length && full.length) errors.push('workflow async.md mixes full and partial audit units');
-  if (!partial.length && full.length !== 1) errors.push('workflow async.md must have exactly one full unit when unsplit');
-  const expected = workflowModuleCategories.get(module);
-  const covered = new Set();
-  for (const unit of partial) {
-    const ids = expandOnlyCategories(unit.onlyCategories);
-    if (!ids) { errors.push(`workflow AUDIT_UNITS unit ${unit.label} has invalid onlyCategories`); continue; }
-    for (const id of ids) {
-      if (covered.has(id)) errors.push(`workflow async.md partial units overlap on category ${id}`);
-      covered.add(id);
-      if (!expected.has(id)) errors.push(`workflow async.md unit ${unit.label} references category ${id} not owned by MODULES`);
-    }
-  }
-  if (partial.length) for (const id of expected) if (!covered.has(id)) errors.push(`workflow async.md partial units omit category ${id}`);
+  if (units.length !== 1) errors.push(`workflow module ${module} must have exactly one full audit unit`);
+  else if (units[0].onlyCategories !== undefined) errors.push(`workflow module ${module} must not use onlyCategories`);
 }
 
 // Category-id parity between SKILL.md's "Category map" table and the workflow's MODULES list.

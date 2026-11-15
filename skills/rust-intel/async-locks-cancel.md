@@ -50,7 +50,7 @@
 
 - The body of a `lock()` block should be: read/write a few fields, clone what's needed, drop the guard. Anything else (I/O, allocation, parsing, logging, format!) goes outside.
 - If a critical section grows beyond ~10 lines, it's a candidate for restructuring.
-- Exception: do not shorten a critical section by moving the protected collection's elements out (`mem::take`, `drain`, `split_off`) and processing them after unlock when `unsafe` code elsewhere relies on where those elements live — the Linux `rust_binder` CVE-2025-68260 shape (`unsafe-and-ffi.md` §B5). Pop one element at a time under the lock instead.
+- Exception: do not shorten a critical section by moving the protected collection's elements out (`mem::take`, `drain`, `split_off`) and processing them after unlock when `unsafe` code elsewhere relies on where those elements live — the Linux `rust_binder` CVE-2025-68260 shape (`unsafe-core.md` §B5). Pop one element at a time under the lock instead.
 
 ## §B3. Async cancellation (invisible in signatures)
 

@@ -108,9 +108,9 @@ rust-intel/
 │   └── marketplace.json                # This repo is its own marketplace (/plugin marketplace add PHPCraftdream/rust-intel)
 ├── skill/                              # The skill (this is what installs) — modular
 │   ├── SKILL.md                        # Core: protocols, enforcement tiers, trigger table, category→module map
-│   ├── <theme>.md                      # Theme modules (async, unsafe-and-ffi, security, … — the category bodies)
+│   ├── <group>-<sphere>.md             # Sphere files (async-locks-cancel, unsafe-core, security-boundary, … — the category bodies, a few categories each)
 │   ├── references/sources.md           # The evidence base — ships inside the skill
-│   └── audit-project.workflow.js       # Fan-out project audit (one agent per module)
+│   └── audit-project.workflow.js       # Fan-out project audit (one agent per sphere file)
 ├── skills/rust-intel/                  # DERIVED mirror of skill/ — Codex needs a skills/<name>/ layout.
 │                                       # Never edit by hand: run `npm run sync` (dev/sync-mirror.mjs); CI enforces byte-identity.
 ├── .codex-plugin/plugin.json           # Codex plugin manifest (points at skills/rust-intel/)
@@ -132,7 +132,7 @@ rust-intel/
 │   ├── js-lexer.mjs                     # Shared bounded JavaScript lexical scanner
 │   ├── check-release-version.mjs       # Verify a release tag matches all manifests
 │   ├── semver.mjs                      # Shared version parsing/comparison helpers
-│   └── review-modules.workflow.js      # Fan-out review workflow helper
+│   └── review-modules.workflow.js      # Fan-out review workflow helper (one agent per sphere file)
 ├── .github/workflows/npm-publish.yml   # Publishes stable GitHub Releases to npm via OIDC
 ├── .github/workflows/ci.yml            # Repository validation and Node floor checks
 ├── README.md                           # This file

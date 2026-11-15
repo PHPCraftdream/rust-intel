@@ -16,7 +16,7 @@ skill/ (SKILL.md core + theme modules + references/sources.md + audit-project.wo
 ```
 
 - **Knowledge** lives in the skill modules — edit once, every command sees the change immediately.
-- **Process** lives per command (serial audit) and in `audit-project.workflow.js` (fan-out audit, one agent per module).
+- **Process** lives per command (serial audit) and in `audit-project.workflow.js` (fan-out audit, one agent per sphere file).
 
 If a command wants a new rule, the rule lands in the relevant `skill/` module, not in the command file. Duplication of knowledge is forbidden by design.
 

@@ -1,18 +1,19 @@
 // Fan-out audit of a Rust project against the rust-intel skill.
-// One agent per skill module (async.md splits into two), fed runtime slices of
-// SKILL.md's trigger tables + 🔴 inventory by a slicer agent, scoped to the
-// target crate by a scoper agent, then merged into a /rust-cc-audit report.
+// One agent per sphere file (the former modules are groups of small files, a few categories
+// each), fed that sphere's runtime slice of SKILL.md's trigger tables + 🔴 inventory by a
+// slicer agent, scoped to the target crate by a scoper agent, then merged into a
+// /rust-cc-audit report.
 //   Workflow({ scriptPath: "skill/audit-project.workflow.js",
 //              args: { target: "<crate dir>", skillDir: "<skill dir>" } })
 // NO rule text lives here: knowledge is in the modules, process in the workflow,
-// slices arrive at runtime. Keep MODULES/AUDIT_UNITS in sync with skill/.
+// slices arrive at runtime. Keep MODULES/AUDIT_UNITS in sync with the files in skill/.
 
 export const meta = {
   name: 'audit-rust-project',
-  description: 'Fan-out audit of a Rust project against rust-intel — one agent per skill module',
+  description: 'Fan-out audit of a Rust project against rust-intel — one agent per sphere file (a few categories each)',
   phases: [
     { title: 'Prepare', detail: 'slice SKILL.md triggers + scope the target crate' },
-    { title: 'Audit', detail: 'one agent per module (async splits into two)' },
+    { title: 'Audit', detail: 'one agent per sphere file' },
     { title: 'Synthesize', detail: 'merge, dedup, format the report' },
   ],
 }
@@ -34,32 +35,56 @@ const deepFreezeRecords = (records) => {
   return Object.freeze(records)
 };
 
-// Module -> category-ids it owns. Mirrors the category->module map in SKILL.md.
+// Sphere file -> category-ids it owns. Mirrors the category->module map in SKILL.md.
 const MODULES = deepFreezeRecords([
-  { file: 'async.md', categories: ['B2','B3','B3a','B8','B11','B15','B15a','B15b','B15c','B15d','B15e','B21','B22','B23','C3','C9','E1'] },
-  { file: 'concurrency-and-state.md', categories: ['A2','B9','B10','B13','B14','B17','B19','C8','E4'] },
-  { file: 'data-and-types.md', categories: ['B6','B16','B20','B26','B27','B28','B29','C4','E2','E3'] },
-  { file: 'security.md', categories: ['B12','B24','C2'] },
-  { file: 'unsafe-and-ffi.md', categories: ['B5','B7','B18','B18a','B25','B25a'] },
+  { file: 'async-locks-cancel.md', categories: ['B2','B3','B3a','B23'] },
+  { file: 'async-tasks-blocking.md', categories: ['B8','B11','B21','B22','C9','E1'] },
+  { file: 'async-machinery.md', categories: ['B15','B15a','B15b','B15c','B15d','B15e','C3'] },
+  { file: 'concurrency-locks-state.md', categories: ['A2','B9','B10','B17','E4'] },
+  { file: 'concurrency-races.md', categories: ['B13','B19'] },
+  { file: 'concurrency-channels.md', categories: ['B14','C8'] },
+  { file: 'data-contracts.md', categories: ['B6','B16','B20'] },
+  { file: 'data-numeric-time.md', categories: ['B26','B27'] },
+  { file: 'data-text-iter-cost.md', categories: ['B28','B29','C4','E2','E3'] },
+  { file: 'security-crypto.md', categories: ['B12','B24'] },
+  { file: 'security-boundary.md', categories: ['C2'] },
+  { file: 'unsafe-core.md', categories: ['B5'] },
+  { file: 'unsafe-sync-memory.md', categories: ['B7','B18','B18a','B25a'] },
+  { file: 'unsafe-ffi-abi.md', categories: ['B25'] },
   { file: 'drop-and-raii.md', categories: ['B4','B4a'] },
-  { file: 'deps-macros-ergonomics.md', categories: ['A1','C5','C6','C7','C10','C11','C12','C12a','E5'] },
+  { file: 'deps-supply-chain.md', categories: ['A1'] },
+  { file: 'deps-cargo-macros.md', categories: ['C6','C7','C10'] },
+  { file: 'deps-ergonomics.md', categories: ['C5','C11','C12','C12a','E5'] },
   { file: 'lifetimes-and-api.md', categories: ['B1','B1a','B1b','C1','C1a','A3'] },
-  { file: 'testing.md', categories: ['D1','D1a','D2','D3','D4','D5','E6'] },
+  { file: 'testing-oracles.md', categories: ['D1','D1a'] },
+  { file: 'testing-harness.md', categories: ['D2','D3','D4','D5','E6'] },
   { file: 'semantics-and-conformance.md', categories: ['F1','F2','F3','F4'] },
 ]);
 
-// One audit agent per unit. async.md splits into two (discipline vs machinery, G6).
+// One audit agent per sphere file — a few categories, sized so one agent can read all of its rule
+// text and hold the whole hit list in view. The label is the sphere's short name.
 const AUDIT_UNITS = deepFreezeRecords([
-  { module: 'async.md', label: 'async/discipline', onlyCategories: 'B2, B3, B3a, B8, B11, B21, B22, B23', requiredArtifactGroups: [] },
-  { module: 'async.md', label: 'async/machinery', onlyCategories: 'B15a–e, C3, C9, E1', requiredArtifactGroups: [] },
-  { module: 'concurrency-and-state.md', label: 'concurrency', requiredArtifactGroups: [] },
-  { module: 'data-and-types.md', label: 'data-types', requiredArtifactGroups: [] },
-  { module: 'security.md', label: 'security', requiredArtifactGroups: ['manifests', 'configs'] },
-  { module: 'unsafe-and-ffi.md', label: 'unsafe-ffi', requiredArtifactGroups: ['manifests', 'configs', 'scripts', 'ffi'] },
+  { module: 'async-locks-cancel.md', label: 'async/locks-cancel', requiredArtifactGroups: [] },
+  { module: 'async-tasks-blocking.md', label: 'async/tasks-blocking', requiredArtifactGroups: [] },
+  { module: 'async-machinery.md', label: 'async/machinery', requiredArtifactGroups: [] },
+  { module: 'concurrency-locks-state.md', label: 'concurrency/locks-state', requiredArtifactGroups: [] },
+  { module: 'concurrency-races.md', label: 'concurrency/races', requiredArtifactGroups: [] },
+  { module: 'concurrency-channels.md', label: 'concurrency/channels', requiredArtifactGroups: [] },
+  { module: 'data-contracts.md', label: 'data/contracts', requiredArtifactGroups: [] },
+  { module: 'data-numeric-time.md', label: 'data/numeric-time', requiredArtifactGroups: [] },
+  { module: 'data-text-iter-cost.md', label: 'data/text-iter-cost', requiredArtifactGroups: [] },
+  { module: 'security-crypto.md', label: 'security/crypto', requiredArtifactGroups: ['manifests', 'configs'] },
+  { module: 'security-boundary.md', label: 'security/boundary', requiredArtifactGroups: ['manifests', 'configs'] },
+  { module: 'unsafe-core.md', label: 'unsafe/core', requiredArtifactGroups: ['manifests', 'configs', 'scripts'] },
+  { module: 'unsafe-sync-memory.md', label: 'unsafe/sync-memory', requiredArtifactGroups: ['manifests', 'ffi'] },
+  { module: 'unsafe-ffi-abi.md', label: 'unsafe/ffi-abi', requiredArtifactGroups: ['manifests', 'configs', 'scripts', 'ffi'] },
   { module: 'drop-and-raii.md', label: 'drop-raii', requiredArtifactGroups: [] },
-  { module: 'deps-macros-ergonomics.md', label: 'deps-macros', requiredArtifactGroups: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts'] },
+  { module: 'deps-supply-chain.md', label: 'deps/supply-chain', requiredArtifactGroups: ['manifests', 'lockfiles', 'toolchains', 'configs', 'ci', 'scripts'] },
+  { module: 'deps-cargo-macros.md', label: 'deps/cargo-macros', requiredArtifactGroups: ['manifests', 'lockfiles', 'configs', 'ci'] },
+  { module: 'deps-ergonomics.md', label: 'deps/ergonomics', requiredArtifactGroups: ['manifests'] },
   { module: 'lifetimes-and-api.md', label: 'lifetimes-api', requiredArtifactGroups: ['manifests', 'toolchains'] },
-  { module: 'testing.md', label: 'testing', requiredArtifactGroups: ['configs', 'ci', 'scripts'] },
+  { module: 'testing-oracles.md', label: 'testing/oracles', requiredArtifactGroups: [] },
+  { module: 'testing-harness.md', label: 'testing/harness', requiredArtifactGroups: ['configs', 'ci', 'scripts'] },
   // §F1/§F2 need the project's own spec/README/docs, not just source — see scoper docsFiles + auditPrompt.
   { module: 'semantics-and-conformance.md', label: 'semantics', requiredArtifactGroups: [], requiresDocs: true },
 ]);
@@ -74,7 +99,7 @@ const SLICER_SCHEMA = {
         type: 'object',
         required: ['module', 'phraseRows', 'codePatternRows', 'redItems'],
         properties: {
-          module: { type: 'string', description: 'module filename, e.g. async.md' },
+          module: { type: 'string', description: 'sphere file name, e.g. async-locks-cancel.md' },
           phraseRows: { type: 'string', description: 'verbatim phrase-trigger table rows whose Activates column names a § of this module' },
           codePatternRows: { type: 'string', description: 'verbatim code-pattern table rows whose Activates column names a § of this module' },
           redItems: { type: 'string', description: 'verbatim 🔴 enforcement-tier items belonging to this module' },
@@ -188,7 +213,7 @@ const FINDINGS_SCHEMA = {
 }
 
 function slicerPrompt() {
-  return `You are slicing the trigger tables of the rust-intel skill so per-module audit agents each get only the rows relevant to their module.
+  return `You are slicing the trigger tables of the rust-intel skill so per-sphere audit agents each get only the rows relevant to their sphere file.
 
 Read: ${args.skillDir}/SKILL.md
 
@@ -239,7 +264,7 @@ Read the doc files directly if you need more than the digest. For §F1, fetch/lo
 Your audit unit label is exactly: ${unit.label}
 Return that exact value in the JSON label field. You are responsible for this unit's own evidence; another agent's review does not satisfy your obligations.
 
-Read the module: ${args.skillDir}/${unit.module}
+Read your sphere file in full: ${args.skillDir}/${unit.module}
 ${focus}${docs}
 TIER SEMANTICS:
 🔴 = report EVERY occurrence (no judgement on whether it "looks fine").

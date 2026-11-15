@@ -37,10 +37,10 @@ const fixtureRoot = path.join(root, 'examples', 'fixtures');
 const cases = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'cases.json'), 'utf8'));
 const skillText = fs.readFileSync(path.join(root, 'skill', 'SKILL.md'), 'utf8');
 const moduleFor = {
-  B5: 'unsafe-and-ffi.md',
-  B26: 'data-and-types.md',
-  C12: 'deps-macros-ergonomics.md',
-  C12a: 'deps-macros-ergonomics.md',
+  B5: 'unsafe-core.md',
+  B26: 'data-numeric-time.md',
+  C12: 'deps-ergonomics.md',
+  C12a: 'deps-ergonomics.md',
 };
 
 function detectUnionValidity(source) {
@@ -1294,7 +1294,7 @@ observeControls(69);
       mapAnchor,
       '| Category | Module |',
       '|---|---|',
-      '| \u00a7Z99 | ' + t + 'async.md' + t + ' |',
+      '| \u00a7Z99 | ' + t + 'async-locks-cancel.md' + t + ' |',
       t.repeat(3),
       '');
     return lines.join('\n');
@@ -1307,7 +1307,7 @@ observeControls(70);
 // derived numbered-category count. The unknown id makes accidental fence inclusion observable.
 {
   const t = fixtureTick;
-  const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
+  const result = runValidateAgainstMutatedFiles(['skill/async-locks-cancel.md', 'skills/rust-intel/async-locks-cancel.md'], (source) => {
     const lines = splitFixtureLines(source);
     const live = lines.findIndex((line) => line.startsWith('## \u00a7B2.'));
     if (live < 0) return null;
@@ -1322,7 +1322,7 @@ observeControls(71);
 // heading. This is deliberately a failure: the map still routes B2, but the body no longer does.
 {
   const t = fixtureTick;
-  const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
+  const result = runValidateAgainstMutatedFiles(['skill/async-locks-cancel.md', 'skills/rust-intel/async-locks-cancel.md'], (source) => {
     const lines = splitFixtureLines(source);
     const live = lines.findIndex((line) => line.startsWith('## \u00a7B2.'));
     if (live < 0) return null;
@@ -1374,12 +1374,12 @@ observeControls(75);
     'skills/rust-intel/audit-project.workflow.js',
   ], (source) => {
     const lines = splitFixtureLines(source);
-    const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
+    const at = lines.findIndex((line) => line.includes("{ file: 'async-locks-cancel.md', categories:"));
     if (at < 0) return null;
     lines[at] = '//' + lines[at];
     return lines.join('\n');
   });
-  expectFixture(result, 'commented workflow MODULES entry fails parity', 1, ['async.md'], 75);
+  expectFixture(result, 'commented workflow MODULES entry fails parity', 1, ['async-locks-cancel.md'], 75);
 }
 
 // Control 76: force the deterministic code-span budget path directly. This keeps the guard pinned
@@ -1421,12 +1421,12 @@ observeControls(78);
 {
   const result = runValidateAgainstMutatedFiles(['skill/audit-project.workflow.js'], (source) => {
     const lines = splitFixtureLines(source);
-    const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
+    const at = lines.findIndex((line) => line.includes("{ file: 'async-locks-cancel.md', categories:"));
     if (at < 0) return null;
     lines.splice(at + 1, 0, lines[at]);
     return lines.join('\n');
   });
-  expectFixture(result, 'duplicate executable workflow MODULES entry', 1, ['async.md'], 78);
+  expectFixture(result, 'duplicate executable workflow MODULES entry', 1, ['async-locks-cancel.md'], 78);
 }
 
 // Control 79: quoted string and template-literal decoys containing a complete canonical-looking
@@ -1446,12 +1446,12 @@ observeControls(79);
     const decoyTemplate = `const MODULES_DECOY_TEMPLATE = \`${assignment}\`;`;
     if (live < 0) return null;
     lines.splice(live, 0, decoyString, decoyTemplate);
-    const asyncEntry = lines.findIndex((line, index) => index > live + 1 && line.startsWith("  { file: 'async.md', categories:"));
+    const asyncEntry = lines.findIndex((line, index) => index > live + 1 && line.startsWith("  { file: 'async-locks-cancel.md', categories:"));
     if (asyncEntry < 0) return null;
     lines[asyncEntry] = '//' + lines[asyncEntry];
     return lines.join('\n');
   });
-  expectFixture(result, 'quoted MODULES decoys do not mask live corruption', 1, ['async.md'], 79);
+  expectFixture(result, 'quoted MODULES decoys do not mask live corruption', 1, ['async-locks-cancel.md'], 79);
 }
 
 // Control 80: an executable MODULES array may not contain an extra unparsed element. A parser
@@ -1481,14 +1481,14 @@ observeControls(81);
     'skills/rust-intel/audit-project.workflow.js',
   ], (source) => {
     const lines = splitFixtureLines(source);
-    const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
+    const at = lines.findIndex((line) => line.includes("{ file: 'async-locks-cancel.md', categories:"));
     if (at < 0) return null;
     const quoted = lines[at].replaceAll("'", '"');
     lines[at] = '//' + lines[at];
     lines.splice(at + 1, 0, quoted);
     return lines.join('\n');
   });
-  expectFixture(result, 'double-quoted MODULES object is rejected', 1, ['async.md'], 81);
+  expectFixture(result, 'double-quoted MODULES object is rejected', 1, ['async-locks-cancel.md'], 81);
 }
 
 // Control 82: duplicate category ids within one executable MODULES entry are an integrity error,
@@ -1497,12 +1497,12 @@ observeControls(82);
 {
   const result = runValidateAgainstMutatedFiles(['skill/audit-project.workflow.js'], (source) => {
     const lines = splitFixtureLines(source);
-    const at = lines.findIndex((line) => line.includes("{ file: 'async.md', categories:"));
+    const at = lines.findIndex((line) => line.includes("{ file: 'async-locks-cancel.md', categories:"));
     if (at < 0 || !lines[at].includes("'B2'")) return null;
     lines[at] = lines[at].replace("'B2','B3'", "'B2','B2','B3'");
     return lines.join('\n');
   });
-  expectFixture(result, 'duplicate category id within MODULES entry', 1, ['duplicate category', 'async.md'], 82);
+  expectFixture(result, 'duplicate category id within MODULES entry', 1, ['duplicate category', 'async-locks-cancel.md'], 82);
 }
 
 // Controls 83-85: every Category-map ownership collision is rejected: repeated ids in one row,
@@ -1533,7 +1533,7 @@ observeControls({ start: 83, end: 85 });
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line.includes('| \u00a7B2,'));
     if (at < 0) return null;
-    lines.splice(at + 1, 0, '| \u00a7B2 | `concurrency-and-state.md` |');
+    lines.splice(at + 1, 0, '| \u00a7B2 | `concurrency-locks-state.md` |');
     return lines.join('\n');
   });
   expectFixture(result, 'cross-owner Category-map duplicate', 1, ['category map contains duplicate', '\u00a7B2'], 85);
@@ -1542,7 +1542,7 @@ observeControls({ start: 83, end: 85 });
 // Controls 86-87: live category headings are unique both within one module and across modules.
 observeControls({ start: 86, end: 87 });
 {
-  const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
+  const result = runValidateAgainstMutatedFiles(['skill/async-locks-cancel.md', 'skills/rust-intel/async-locks-cancel.md'], (source) => {
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line.startsWith('## \u00a7B2.'));
     if (at < 0) return null;
@@ -1552,7 +1552,7 @@ observeControls({ start: 86, end: 87 });
   expectFixture(result, 'duplicate live heading within module', 1, ['live module headings contain duplicate', '\u00a7B2'], 86);
 }
 {
-  const result = runValidateAgainstMutatedFiles(['skill/concurrency-and-state.md', 'skills/rust-intel/concurrency-and-state.md'], (source) => {
+  const result = runValidateAgainstMutatedFiles(['skill/concurrency-locks-state.md', 'skills/rust-intel/concurrency-locks-state.md'], (source) => {
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line.startsWith('## \u00a7A2.'));
     if (at < 0) return null;
@@ -1570,7 +1570,7 @@ observeControls(88);
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line.includes('| \u00a7B2,'));
     if (at < 0) return null;
-    lines.splice(at + 1, 0, '| no-category-id | `async.md` |');
+    lines.splice(at + 1, 0, '| no-category-id | `async-locks-cancel.md` |');
     return lines.join('\n');
   });
   expectFixture(result, 'Category-map no-op cell is rejected', 1, ['Category map'], 88);
@@ -1600,21 +1600,21 @@ observeControls(90);
   ], (source) => {
     const lines = splitFixtureLines(source);
     const live = lines.findIndex((line) => line.includes('const MODULES =') && line.includes('['));
-    const asyncEntry = lines.findIndex((line, index) => index > live && line.includes("{ file: 'async.md', categories:"));
+    const asyncEntry = lines.findIndex((line, index) => index > live && line.includes("{ file: 'async-locks-cancel.md', categories:"));
     if (live < 0 || asyncEntry < 0) return null;
     lines.splice(live, 0, 'const MODULES_REGEX_DECOY = /\\[/;');
     const shiftedAsync = asyncEntry + 1;
     lines[shiftedAsync] = '//' + lines[shiftedAsync];
     return lines.join('\n');
   });
-  expectFixture(result, 'regex literal before MODULES does not hide assignment', 1, ['async.md'], 90);
+  expectFixture(result, 'regex literal before MODULES does not hide assignment', 1, ['async-locks-cancel.md'], 90);
 }
 
 // Controls 91-96: live module headings may be indented by 1-3 spaces in Markdown, and duplicate
 observeControls({ start: 91, end: 96 });
 // detection must still see them both within one module and across module files.
 for (const spaces of [' ', '  ', '   ']) {
-  const result = runValidateAgainstMutatedFiles(['skill/async.md', 'skills/rust-intel/async.md'], (source) => {
+  const result = runValidateAgainstMutatedFiles(['skill/async-locks-cancel.md', 'skills/rust-intel/async-locks-cancel.md'], (source) => {
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line.startsWith('## \u00a7B2.'));
     if (at < 0) return null;
@@ -1622,7 +1622,7 @@ for (const spaces of [' ', '  ', '   ']) {
     return lines.join('\n');
   });
   expectFixture(result, `${spaces.length}-space duplicate live heading within module`, 1, ['live module headings contain duplicate', '\u00a7B2'], 90 + spaces.length);
-  const cross = runValidateAgainstMutatedFiles(['skill/concurrency-and-state.md', 'skills/rust-intel/concurrency-and-state.md'], (source) => {
+  const cross = runValidateAgainstMutatedFiles(['skill/concurrency-locks-state.md', 'skills/rust-intel/concurrency-locks-state.md'], (source) => {
     const lines = splitFixtureLines(source);
     const at = lines.findIndex((line) => line.startsWith('## \u00a7A2.'));
     if (at < 0) return null;
@@ -1906,16 +1906,16 @@ function fixtureFenceCloser(line, fence) {
   return match !== null && match[1][0] === fence.marker && match[1].length >= fence.length;
 }
 const ruleTextControls = [
-  { name: 'B2 map-guard types (skill/async.md §B2)', file: 'skill/async.md', section: '## §B2.', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one', 'MappedRef', 'RefMulti', 'get_sync`/`get_async` return `Option<OccupiedEntry>`'] },
+  { name: 'B2 map-guard types (skill/async-locks-cancel.md §B2)', file: 'skill/async-locks-cancel.md', section: '## §B2.', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one', 'MappedRef', 'RefMulti', 'get_sync`/`get_async` return `Option<OccupiedEntry>`'] },
   { name: 'B2 map-guard phrase-trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'DashMap/concurrent-map lazy init + await', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one', 'MappedRef', 'RefMulti', 'owns or contains a map guard'] },
   { name: 'B2 map-guard code-pattern trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'a guard of a concurrent map (`DashMap`/`scc::HashMap`) live across a later `.await`', require: ['VacantEntry', 'ReplaceResult', 'mapref::entry', 'mapref::one', 'MappedRef', 'RefMutMulti', 'owns or contains a map guard'] },
-  { name: 'B14 JoinSet admission-gated drain (skill/concurrency-and-state.md §B14)', file: 'skill/concurrency-and-state.md', section: '## §B14.', require: ['poll_join_next', 'len() < N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
+  { name: 'B14 JoinSet admission-gated drain (skill/concurrency-channels.md §B14)', file: 'skill/concurrency-channels.md', section: '## §B14.', require: ['poll_join_next', 'len() < N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
   { name: 'B14 JoinSet trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'constructed or grown by any operation that adds tasks', require: ['poll_join_next', 'len() < N'], forbid: ['polling the `JoinSet` as a `Stream`'] },
   { name: 'C12 either-defense Markdown row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'Markdown-to-HTML renderer', require: ['Event::Html', 'Event::InlineHtml', 'either one alone satisfies this obligation'] },
-  { name: 'C12 either-defense catalog row (skill/deps-macros-ergonomics.md)', file: 'skill/deps-macros-ergonomics.md', section: '## §C12.', moduleRowAnchor: 'Markdown rendering of untrusted content', require: ['either drop', '`Html`/`InlineHtml` events or'] },
+  { name: 'C12 either-defense catalog row (skill/deps-ergonomics.md)', file: 'skill/deps-ergonomics.md', section: '## §C12.', moduleRowAnchor: 'Markdown rendering of untrusted content', require: ['either drop', '`Html`/`InlineHtml` events or'] },
   { name: 'F1 decode-observable corpus oracle (skill/semantics-and-conformance.md §F1)', file: 'skill/semantics-and-conformance.md', section: '## §F1.', require: ['finite graph of distinct serialized type/variant definitions', 'two representatives, not every runtime depth', 'decode-observable, not typed-value-level', 'schema-mutation negative control'] },
   { name: 'F1 corpus trigger row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'golden-bytes decode **corpus**', require: ['finite graph of distinct serialized type/variant definitions', 'two representatives, not every runtime depth', 'decode-observable, not typed-value-level', 'schema-mutation negative control'] },
-  { name: 'B12 Argon2/OsRng feature obligations (skill/security.md §B12)', file: 'skill/security.md', section: '## §B12.', require: ['State both obligations', 'getrandom` feature for `OsRng` to source entropy'] },
+  { name: 'B12 Argon2/OsRng feature obligations (skill/security-crypto.md §B12)', file: 'skill/security-crypto.md', section: '## §B12.', require: ['State both obligations', 'getrandom` feature for `OsRng` to source entropy'] },
   { name: 'B12 clean-TOML recipe row (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'store a password', require: ['rand_core = { version = "0.6", features = ["getrandom"] }', 'two feature obligations, not one'] },
   { name: 'B1a out-parameter cache witness (skill/SKILL.md)', file: 'skill/SKILL.md', section: '## Operating mode', listItemAnchor: 'Show the caller for the §B1a laundering shape', require: ['fn remember', 'captured into a longer-lived cache/container that outlives the call'] },
   { name: 'B13 pure-reader exemption (skill/SKILL.md)', file: 'skill/SKILL.md', rowAnchor: 'pure reader that makes no check-then-act decision', require: ['need not hold the same guard'] },
@@ -2059,13 +2059,13 @@ observeControls(120);
 {
   const result = runValidateAgainstMutatedFiles(['skill/SKILL.md', 'skills/rust-intel/SKILL.md'], (source) => {
     const lines = splitFixtureLines(source);
-    const at = lines.findIndex((line) => line === '| \u00a7B2, \u00a7B3, \u00a7B3a, \u00a7B8, \u00a7B11, \u00a7B15 (a\u2013e), \u00a7B21, \u00a7B22, \u00a7B23 | `async.md` |');
+    const at = lines.findIndex((line) => line === '| \u00a7B2, \u00a7B3, \u00a7B3a, \u00a7B23 | `async-locks-cancel.md` |');
     if (at < 0) return null;
-    const intactCellEnd = '\u00a7B23 | `async.md` |';
+    const intactCellEnd = '\u00a7B23 | `async-locks-cancel.md` |';
     if (!lines[at].includes(intactCellEnd)) return null;
     // Append the comma immediately before the final column separator; every live id stays
     // intact, so this is a pure trailing-residue mutation rather than an accidental omission.
-    lines[at] = lines[at].replace(intactCellEnd, '\u00a7B23, | `async.md` |');
+    lines[at] = lines[at].replace(intactCellEnd, '\u00a7B23, | `async-locks-cancel.md` |');
     return lines.join('\n');
   });
   expectFixture(result, 'trailing Category-map category comma is rejected', 1, ['Category map'], 120);
@@ -2087,32 +2087,32 @@ observeControls({ start: 121, end: 131 });
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
-      const at = lines.findIndex((line) => line.includes("module: 'testing.md'"));
+      const at = lines.findIndex((line) => line.includes("module: 'testing-oracles.md'"));
       if (at < 0) return false;
       lines[at] = '//' + lines[at];
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS missing testing unit is rejected', 1, ['testing.md'], 122);
+  expectFixture(result, 'AUDIT_UNITS missing testing unit is rejected', 1, ['testing-oracles.md'], 122);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
-      const at = lines.findIndex((line) => line.includes("onlyCategories: 'B2, B3, B3a"));
+      const at = lines.findIndex((line) => line.includes("module: 'async-machinery.md'"));
       if (at < 0) return false;
-      lines[at] = lines[at].replace('B3a, ', '');
+      lines[at] = '//' + lines[at];
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS async category omission is rejected', 1, ['omit'], 123);
+  expectFixture(result, 'AUDIT_UNITS missing async sphere is rejected', 1, ['async-machinery.md'], 123);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
-      const at = lines.findIndex((line) => line.includes("onlyCategories: 'B15a–e"));
+      const at = lines.findIndex((line) => line.includes("module: 'async-machinery.md'"));
       if (at < 0) return false;
-      lines[at] = lines[at].replace("E1'", "E1, B2'");
+      lines.splice(at + 1, 0, lines[at]);
       return true;
     }));
-  expectFixture(result, 'AUDIT_UNITS async category overlap is rejected', 1, ['overlap'], 124);
+  expectFixture(result, 'AUDIT_UNITS duplicate sphere unit is rejected', 1, ['duplicate label'], 124);
 }
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
@@ -2137,7 +2137,7 @@ observeControls({ start: 121, end: 131 });
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
-      const at = lines.findIndex((line) => line.includes("module: 'security.md'"));
+      const at = lines.findIndex((line) => line.includes("module: 'security-crypto.md'"));
       if (at < 0) return false;
       lines[at] = lines[at].replace("requiredArtifactGroups: ['manifests', 'configs']", 'requiredArtifactGroups: []');
       return true;
@@ -2147,7 +2147,7 @@ observeControls({ start: 121, end: 131 });
 {
   const result = runValidateAgainstMutatedFiles(workflowFiles, (source) =>
     mutateWorkflowLines(source, (lines) => {
-      const at = lines.findIndex((line) => line.includes("module: 'deps-macros-ergonomics.md'"));
+      const at = lines.findIndex((line) => line.includes("module: 'deps-supply-chain.md'"));
       if (at < 0) return false;
       lines[at] = lines[at].replace("'ci', 'scripts']", "'ci']");
       return true;
