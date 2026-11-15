@@ -81,3 +81,9 @@ Each is mechanical and would have caught a finding of these two rounds:
 3. Each sphere header's category list and tier line equal the file's headings; every 🔴 in a header appears in the `SKILL.md` list (round-1 C6).
 4. Every category has at least one trigger row (R2-13).
 5. Advisory ids resolve on OSV with the cited package — a scheduled job, not a per-commit check (R2-1).
+
+## Status after the fixes (same day)
+
+Applied: R2-1 (`rsa` ≥ 0.10.0 in §B12, the `SKILL.md` trigger row and the ledger entry); R2-2 as the second option — the ledger now states that an advisory id or a URL cited in rule text is its own citation and that an entry is required only where a rule interprets the advisory, plus new entries for the `ammonia` advisories, the `jsonwebtoken` 12.0.0 re-read, the 1.92/1.100 release-note items and the two version-scoped panic texts (the 19 remaining ids without an entry fall under the stated exemption; enforcing it in the validator is a roadmap item); R2-3 … R2-5; R2-6 (every abbreviated id written out); R2-7 … R2-8; R2-9 as the first option — `-D unused_must_use` stays and the Post-flight note says what it does to an existing backlog; R2-10 … R2-22; R2-23 as labels on the four remedies instead of moving them back.
+
+Not done: nothing from this report is left open except the validator checks listed at its end, which are in `docs/roadmap.md`.

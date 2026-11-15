@@ -61,3 +61,7 @@ R2-2 stands, and R3-5 and R3-7 are further instances of the ledger drifting from
 ## Still open
 
 Round 1: L1–L6, N1–N3, U5. Round 2: R2-1 (the `rsa` advisory, a Major), R2-2 and R2-3 … R2-23. Not examined by any round: `references/sources.md` lines 336–425 as prose, and the sphere files as a whole read again after the round-1 edits.
+
+## Status after the fixes (same day)
+
+Applied: R3-2 (tokio's real `pause()` message, versioned), R3-3 (rustls's two texts and the releases that print them: 0.23.25 and earlier, 0.23.30 and later), R3-4, R3-5, R3-7 (five paraphrases corrected; the OSV text of CVE-2026-35353 now quoted), R3-8 (the quotation withdrawn — the zip 9.6.0 sources contain no such warning), R3-9 (four rows in `/rust-cc-fix`: §B6, §B19, §B29, §C4), R3-10, R3-11, R3-12, R3-13; R3-6 in part — the `jsonwebtoken` entry now states which versions documented the escape hatch and which removed it, but its link still points at `latest` and the other 60 `docs.rs/…/latest` links were judged to support claims about the current API and left as they are; R3-1 in part — the ledger states that its probes were run once and cannot be re-run and that new probes must be committed under `docs/probes/`; re-creating the existing ones is a roadmap item; R3-14 is a roadmap item.

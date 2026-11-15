@@ -29,12 +29,12 @@
 **Example — compiles, green, wrong**:
 ```rust
 /// Encodes a length-prefixed frame "per the wire spec".
-fn encode_frame(payload: &[u8]) -> Vec<u8> {
-    let len = u16::try_from(payload.len()).expect("payload fits the u16 length prefix");
+fn encode_frame(payload: &[u8]) -> Result<Vec<u8>, std::num::TryFromIntError> {
+    let len = u16::try_from(payload.len())?;
     let mut out = Vec::with_capacity(payload.len() + 2);
     out.extend_from_slice(&len.to_le_bytes()); // spec says big-endian
     out.extend_from_slice(payload);
-    out
+    Ok(out)
 }
 // decode_frame reads to_le_bytes too — round-trip test green, clippy silent,
 // interop with any conforming peer: every frame length is byte-swapped.

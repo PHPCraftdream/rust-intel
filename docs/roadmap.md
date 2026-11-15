@@ -122,6 +122,8 @@ This is now the top of the value-per-cost order. The two items below are also **
 
 - Public repository — ✅ shipped in v0.1+.
 - **CI: broken-internal-link checks** (plus markdown linting). Highest value — must land *before* the remaining dedup / section-length rebalance so renumbering can't silently rot cross-references.
+- **Probes as artifacts.** About 25 ledger entries rest on a local probe (a command run once on rustc 1.97.0, Tokio 1.53.1 or Cargo 1.97.0) whose source was not kept. Re-create each as a small file under `docs/probes/` with its toolchain, reference it from its entry, and add a scheduled job that reruns them on the current stable — the next toolchain bump would then check the ledger instead of leaving it to be re-read (spec review round 3, R3-1).
+- **Spec checks worth moving into the validator or a scheduled job.** Every advisory id in rule text has a ledger entry or falls under the ledger's stated exemption; no abbreviated advisory ids; each sphere header's category list and tier line equals its headings; every category has a trigger row; advisory ids resolve on OSV with the cited package; every quotation of 40 characters or more re-matches its source (spec review rounds 2 and 3). Each changes the fixture-control count, so they are added together with the controls.
 - **Test corpus: `examples/`** with deliberately broken Rust per category, to run through `/rust-cc-audit` as a regression suite. Needed as the safety net for structural edits and for the §1 repro-snippet work.
 - **Dedup + section-length rebalance** — the structural work still open (the §B15a–e split is ✅ shipped; see [§2 "Structural"](#2-shipped-expansions-archive)). Sequence it *after* the link-checker and corpus above so the change is verifiable.
 

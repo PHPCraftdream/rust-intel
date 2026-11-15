@@ -125,6 +125,10 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    | Lock contention / scales poorly across cores / `Mutex` hot | §E4 (atomics / `ArcSwap` / sharding) |
    | "Need a faster HashMap" | §E4 (hasher choice) + §B16 — pick by trust boundary: fast hasher for trusted input, DoS-resistant for untrusted |
    | Recompiles `Regex` / reparses every call / unbuffered I/O | §E5 (`LazyLock`; buffer I/O; reuse; lazy logging) |
+   | A new enum variant was added and nothing failed to compile or warn; a `_ =>` arm swallows it silently, or panics later at runtime | §B6 (a wildcard arm hides the new variant at compile time — write explicit arms; a logged/typed fallback only for a foreign `#[non_exhaustive]` enum) |
+   | A BFS/DFS or "visit everything" loop stops early and misses newly discovered items; or a `RefCell` borrow panics while the same vector is being iterated | §B19 (`for i in 0..vec.len()` captures the initial length; `borrow_mut` while an iterating `Ref` is alive) |
+   | Output has fewer items than the input after `zip` or `collect` into a map; a `dedup` left duplicates behind; `chunks(0)`/`windows(0)`/`step_by(0)` panics | §B29 (`zip` truncates to the shorter side; `dedup` removes only adjacent duplicates; a zero size panics; `collect` into a map overwrites duplicate keys) |
+   | Truncated or spliced messages under load that a local test never shows; `read`/`write` returned `Ok(n)` with `n` below the buffer length; the last bytes are missing after a `BufWriter` was dropped | §C4 (one `read`/`write` may transfer fewer bytes — `read_exact`/`write_all`; a `BufWriter` flush on drop discards its error) |
 
    If the symptom maps to **multiple** categories, list them all and explain which is primary.
 
